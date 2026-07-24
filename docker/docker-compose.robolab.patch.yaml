@@ -1,0 +1,25 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# Mounts a host RoboLab checkout (https://github.com/NVLabs/RoboLab) into the
+# Isaac Lab container for XR teleoperation of RoboLab benchmark tasks.
+#
+# Usage (combine with the CloudXR patch for AVP hand tracking):
+#   export ROBOLAB_PATH=$HOME/RoboLab   # optional; this is the default
+#   ./docker/container.py start \
+#       --files docker-compose.cloudxr-runtime.patch.yaml \
+#       --files docker-compose.robolab.patch.yaml \
+#       --env-file .env.cloudxr-runtime
+#
+# Then, once per container, install RoboLab into the Isaac Sim python:
+#   ./docker/container.py enter base
+#   bash scripts/environments/teleoperation/robolab/install_robolab.sh
+
+services:
+  isaac-lab-base:
+    volumes:
+      - type: bind
+        source: ${ROBOLAB_PATH:-~/RoboLab}
+        target: /workspace/robolab
