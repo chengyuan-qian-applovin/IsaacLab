@@ -32,9 +32,12 @@ Keyboard: R = discard current demo and reset.
 # isort: skip_file
 import argparse
 import contextlib
+import functools
 import sys
 
 import cv2  # noqa: F401  Must import before isaaclab/omni modules (RoboLab requirement).
+
+print = functools.partial(print, flush=True)  # noqa: A001  kit may hard-exit before buffers flush
 
 from isaaclab.app import AppLauncher
 
@@ -55,6 +58,10 @@ parser.add_argument(
     "--anchor_rot", type=float, nargs=4, default=(1.0, 0.0, 0.0, 0.0), help="XR anchor rotation quat (w x y z)."
 )
 parser.add_argument("--record_images", action="store_true", help="Also record per-step image observations to HDF5.")
+parser.add_argument(
+    "--episode_length_s", type=float, default=None,
+    help="Override the task's episode time limit in seconds (demos end at task success or this timeout).",
+)
 parser.add_argument(
     "--render_interval", type=int, default=None,
     help="Override sim render interval (default: 2 under XR, RoboLab default otherwise).",
@@ -83,7 +90,7 @@ from robolab.core.environments.runtime import create_env, end_episode
 from robolab.registrations.droid.auto_env_registrations_abs_ik import auto_register_droid_abs_ik_envs
 from robolab.robots.droid import EEF_OFFSET_ROT
 
-from isaaclab.devices import Se3Keyboard
+from isaaclab.devices import Se3Keyboard, Se3KeyboardCfg
 from isaaclab.devices.device_base import DeviceBase, DevicesCfg
 from isaaclab.devices.openxr import OpenXRDeviceCfg, XrCfg
 from isaaclab.devices.teleop_device_factory import create_teleop_device
@@ -109,7 +116,11 @@ class KeyboardAbsIKAdapter:
     def __init__(self, env, sensitivity: float):
         self._env = env
         self._device = Se3Keyboard(
-            pos_sensitivity=0.005 * sensitivity, rot_sensitivity=0.01 * sensitivity
+            Se3KeyboardCfg(
+                pos_sensitivity=0.005 * sensitivity,
+                rot_sensitivity=0.01 * sensitivity,
+                sim_device="cpu",
+            )
         )
         self._target_pos: torch.Tensor | None = None
         self._target_quat: torch.Tensor | None = None
@@ -131,8 +142,9 @@ class KeyboardAbsIKAdapter:
     def advance(self) -> torch.Tensor:
         if self._target_pos is None:
             self._init_target_from_robot()
-        delta_pose, gripper_close = self._device.advance()
-        delta_pose = torch.as_tensor(delta_pose, dtype=torch.float32)
+        command = self._device.advance()  # 7-el tensor: [dx dy dz rx ry rz gripper(+1 open/-1 close)]
+        delta_pose = command[:6].to(dtype=torch.float32, device="cpu")
+        gripper_close = command[6].item() < 0.0
         self._target_pos += delta_pose[:3]
         if torch.any(delta_pose[3:] != 0.0):
             # Compose small world-frame rotation onto the target orientation.
@@ -192,6 +204,10 @@ def main():
         # ManagerBasedEnv.step() reads cfg.sim.render_interval live on every physics
         # substep, so mutating the cfg after env creation takes effect immediately.
         env.cfg.sim.render_interval = render_interval
+    if args_cli.episode_length_s is not None:
+        # max_episode_length is a live property over cfg.episode_length_s, so this
+        # takes effect immediately (the time_out termination reads it every step).
+        env.cfg.episode_length_s = args_cli.episode_length_s
 
     # Teleoperation state, toggled by the XR client's Play/Stop/Reset buttons.
     teleop_active = not args_cli.xr  # XR starts paused until the client sends "start"
