@@ -14,6 +14,9 @@ episode for **two** data pipelines at once:
 The AVP client app (Isaac XR Teleop Sample Client) is unchanged — Play/Stop/Reset
 buttons work exactly as with the stock Isaac Lab teleop tasks.
 
+> Design rationale, upstream findings, validation record, and bring-up bugs are
+> documented in [IMPLEMENTATION_NOTES.md](IMPLEMENTATION_NOTES.md).
+
 ## How it works
 
 RoboLab's DROID robot exposes an 8-D absolute-IK action `[pos(3), quat wxyz(4), gripper(1)]`
