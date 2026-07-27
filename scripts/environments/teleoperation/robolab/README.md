@@ -39,11 +39,13 @@ auto-export on termination), so recordings are indistinguishable from policy-eva
 # 1) Host: clone RoboLab next to IsaacLab (or set ROBOLAB_PATH)
 git clone https://github.com/NVLabs/RoboLab.git ~/RoboLab
 
-# 2) Start containers with the CloudXR + RoboLab patches
+# 2) Start containers with the CloudXR + RoboLab patches.
+#    NOTE: both files go after ONE --files flag — container.py's --files uses
+#    nargs="*", so a repeated --files flag silently overwrites the previous one
+#    (dropping the CloudXR runtime).
 cd ~/IsaacLab
 ./docker/container.py start \
-    --files docker-compose.cloudxr-runtime.patch.yaml \
-    --files docker-compose.robolab.patch.yaml \
+    --files docker-compose.cloudxr-runtime.patch.yaml docker-compose.robolab.patch.yaml \
     --env-file .env.cloudxr-runtime
 
 # 3) Once per container: install RoboLab into the Isaac Sim python
