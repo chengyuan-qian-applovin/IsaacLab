@@ -74,6 +74,20 @@ args_cli = parser.parse_args()
 if "handtracking" in args_cli.teleop_device.lower():
     args_cli.xr = True
 
+# In GUI mode the AR session only starts when someone clicks "Start AR" in the
+# desktop window's AR panel; the headless XR experience auto-starts it
+# (xr.profile.ar.enabled=true). Without a display, GUI mode silently streams
+# nothing — warn loudly.
+import os  # noqa: E402
+
+if getattr(args_cli, "xr", False) and not args_cli.headless and not os.environ.get("DISPLAY"):
+    print(
+        "[WARNING] XR teleop in GUI mode without a DISPLAY: the AR session will never start "
+        "(no window to click 'Start AR' in) and the headset will see nothing. "
+        "Add --headless to auto-start the AR session.",
+        flush=True,
+    )
+
 # RoboLab scenes carry a wrist camera on the robot; cameras must be enabled.
 args_cli.enable_cameras = True
 

@@ -64,6 +64,11 @@ container image needs (mismatched CUDA-13 nvidia packages vs torch cu128).
     --task BananaInBowlTask --teleop_device handtracking --num_demos 10
 ```
 
+- **No desktop display / X11 forwarding disabled? Add `--headless`.** In GUI
+  mode the AR session starts only when you click "Start AR" in the desktop
+  window; the headless XR experience auto-starts it (`xr.profile.ar.enabled`).
+  Without a display and without `--headless`, the headset connects but sees
+  nothing (or a frozen frame from a previous session).
 - Press **Play** in the AVP client to start teleoperating; **Stop** pauses;
   **Reset** discards the current demo and restarts the episode.
 - Pinch (thumb–index) to close the gripper; move your hand to drive the arm.
