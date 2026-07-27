@@ -88,8 +88,11 @@ if getattr(args_cli, "xr", False) and not args_cli.headless and not os.environ.g
         flush=True,
     )
 
-# RoboLab scenes carry a wrist camera on the robot; cameras must be enabled.
-args_cli.enable_cameras = True
+# Cameras stay in the scene for non-XR runs (RoboLab image obs / recording).
+# Under XR they are stripped (see strip_cameras_for_xr): the renderer is paced by
+# the headset session, and tiled-camera sensor updates deadlock env creation in
+# headless XR. Isaac Lab's own XR teleop removes cameras the same way.
+args_cli.enable_cameras = "handtracking" not in args_cli.teleop_device.lower()
 
 app_launcher = AppLauncher(vars(args_cli))
 simulation_app = app_launcher.app
@@ -99,6 +102,7 @@ simulation_app = app_launcher.app
 import torch
 
 import robolab.constants
+from robolab.core.environments.config import parse_env_cfg as robolab_parse_env_cfg
 from robolab.core.environments.factory import get_envs
 from robolab.core.environments.runtime import create_env, end_episode
 from robolab.registrations.droid.auto_env_registrations_abs_ik import auto_register_droid_abs_ik_envs
@@ -173,6 +177,48 @@ class KeyboardAbsIKAdapter:
         return torch.cat([self._target_pos, base_quat, gripper])
 
 
+def strip_cameras_for_xr(env_cfg) -> list[str]:
+    """Remove camera sensors and their observation terms from a RoboLab env cfg.
+
+    Under XR the renderer is paced by the headset session, and tiled-camera sensor
+    updates deadlock env creation in headless XR mode. This mirrors what Isaac Lab's
+    ``remove_camera_configs`` does for its own XR tasks, extended to RoboLab's custom
+    observation groups (``image_obs``, ``viewport_cam``). Camera imagery remains
+    reproducible offline via RoboLab replay of the recorded states.
+
+    Returns the names of the removed scene cameras.
+    """
+    from isaaclab.managers import ObservationTermCfg, SceneEntityCfg
+    from isaaclab.sensors import CameraCfg  # TiledCameraCfg subclasses CameraCfg
+
+    removed: list[str] = []
+    for attr_name in list(vars(env_cfg.scene).keys()):
+        if isinstance(getattr(env_cfg.scene, attr_name, None), CameraCfg):
+            delattr(env_cfg.scene, attr_name)
+            removed.append(attr_name)
+    if not removed:
+        return removed
+
+    # Drop observation terms referencing removed cameras; null groups left empty
+    # (the ObservationManager skips None groups).
+    for group_name in list(vars(env_cfg.observations).keys()):
+        group = getattr(env_cfg.observations, group_name, None)
+        if group is None:
+            continue
+        term_names = [
+            n for n in list(vars(group).keys()) if isinstance(getattr(group, n, None), ObservationTermCfg)
+        ]
+        if not term_names:
+            continue
+        for term_name in term_names:
+            params = getattr(getattr(group, term_name), "params", None) or {}
+            if any(isinstance(v, SceneEntityCfg) and v.name in removed for v in params.values()):
+                delattr(group, term_name)
+        if not any(isinstance(getattr(group, n, None), ObservationTermCfg) for n in list(vars(group).keys())):
+            setattr(env_cfg.observations, group_name, None)
+    return removed
+
+
 def build_xr_teleop_device(device_name: str, sim_device: str, callbacks: dict):
     """Construct the OpenXR hand-tracking device with RoboLab retargeters."""
     bound_hand = (
@@ -207,7 +253,19 @@ def main():
     env_name = env_names[0]
     print(f"[INFO] Teleoperating RoboLab environment: {env_name}")
 
-    env, env_cfg = create_env(env_name, device=args_cli.device or "cuda:0", num_envs=1, use_fabric=True)
+    if args_cli.xr:
+        # Parse the cfg ourselves so cameras can be stripped before env creation
+        # (tiled-camera init deadlocks under headless XR; see strip_cameras_for_xr).
+        env_cfg = robolab_parse_env_cfg(env_name, device=args_cli.device or "cuda:0", num_envs=1, use_fabric=True)
+        env_cfg.env_name = env_name  # recorder stamps this into the HDF5 env_args
+        removed = strip_cameras_for_xr(env_cfg)
+        if removed:
+            print(f"[INFO] XR mode: removed scene cameras {removed} and their image observations.")
+        if args_cli.record_images:
+            print("[WARNING] --record_images is ignored under XR (cameras are stripped).")
+        env, env_cfg = create_env(env_cfg, device=args_cli.device or "cuda:0", num_envs=1, use_fabric=True)
+    else:
+        env, env_cfg = create_env(env_name, device=args_cli.device or "cuda:0", num_envs=1, use_fabric=True)
 
     # XR-friendly rendering: RoboLab's default renders once per control step (15 Hz),
     # which is too choppy for a headset.
