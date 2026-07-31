@@ -100,11 +100,45 @@ Successful demos only by default (`--include_failed` to keep everything). The
 output follows the `data/demo_N/{initial_state, actions, states, ...}` layout with
 robomimic `env_args` attrs — the same shape `record_demos.py` produces.
 
+## SharpaWave duo rig (bimanual, dexterous hands)
+
+`teleop_sharpa_duo_agent.py` teleoperates the FR3 Duo + dual SharpaWave rig
+(58 DoF: 2×7 arms + 2×22 finger joints) with **both hands and full finger
+retargeting** — the GR1T2 teleop experience on RoboLab benchmark scenes.
+
+Requires the SharpaWave RoboLab fork (adds `robolab.registrations.sharpa_wave`,
+the `franka_duo_sharpa_wave` robot, and vendored Sharpa hand assets) installed in
+place of stock RoboLab: point `ROBOLAB_PATH` at that checkout (or install it with
+`pip install --no-deps -e <path>` inside the container).
+
+```bash
+./isaaclab.sh -p scripts/environments/teleoperation/robolab/teleop_sharpa_duo_agent.py \
+    --task BananaInBowlTask --num_demos 5 --headless --device cuda:0
+```
+
+How it maps (GR1T2-pattern, per component):
+
+- **Arms**: your two wrist poses drive the rig's existing 58-D
+  `FrankaDuoSharpaIKActionCfg` — absolute differential IK per arm on
+  `panda_link8`, commands in the robot root frame (the script converts from the
+  XR world frame each step).
+- **Fingers**: all ten fingers dex-retargeted (DexPilot, `dex_retargeting`)
+  against the vendored SharpaWave URDFs (`sharpa_dex_retargeting/`), scattered
+  by joint name into RoboLab's `HAND_JOINTS_ORDERED`.
+- **Frame calibration**: the OpenXR-wrist → flange rotation offsets are baked
+  constants derived at the rig's ready pose by `calibrate_sharpa_duo.py`
+  (they encode the rig's ∓45° flange mounts). Re-run that script if the rig's
+  mounts change; if the hands track with a constant twist, re-derive.
+- **Recording**: identical dual pipeline to the single-arm flow (`run_<N>.hdf5`
+  per demo + the robomimic converter).
+- `--anchor_pos` (default `0 0 -0.7`) raises the scene so the tabletop sits at a
+  comfortable standing height; tune to your body.
+
 ## Known limitations / notes
 
-- Single-arm DROID (Franka + Robotiq) only. A GR1T2 humanoid port requires
-  registering the robot inside RoboLab (robot/action/observation/contact configs)
-  and is out of scope for this integration.
+- Stock RoboLab ships single-arm DROID (Franka + Robotiq) only; the bimanual
+  SharpaWave flow above needs the fork. A GR1T2 humanoid port inside RoboLab
+  remains out of scope.
 - Teleop is single-env (`num_envs=1`), matching Isaac Lab's teleop scripts.
 - RoboLab renders at 15 Hz by default; under XR this script raises it
   (`--render_interval`, default 2 → 60 Hz) for headset comfort. Control rate stays

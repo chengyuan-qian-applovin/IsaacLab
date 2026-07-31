@@ -114,7 +114,8 @@ from isaaclab.devices.openxr import OpenXRDeviceCfg, XrCfg
 from isaaclab.devices.teleop_device_factory import create_teleop_device
 from isaaclab.utils.math import quat_inv, quat_mul
 
-# Local module (script directory is on sys.path when run as __main__).
+# Local modules (script directory is on sys.path when run as __main__).
+from robolab_teleop_common import strip_cameras_for_xr  # noqa: F401
 from robolab_retargeters import RobolabAbsIKRetargeterCfg, RobolabGripperRetargeterCfg
 
 robolab.constants.VERBOSE = False
@@ -175,48 +176,6 @@ class KeyboardAbsIKAdapter:
         base_quat = quat_mul(self._target_quat.unsqueeze(0), _EEF_OFFSET_ROT_INV).squeeze(0)
         gripper = torch.tensor([1.0 if gripper_close else 0.0], dtype=torch.float32)
         return torch.cat([self._target_pos, base_quat, gripper])
-
-
-def strip_cameras_for_xr(env_cfg) -> list[str]:
-    """Remove camera sensors and their observation terms from a RoboLab env cfg.
-
-    Under XR the renderer is paced by the headset session, and tiled-camera sensor
-    updates deadlock env creation in headless XR mode. This mirrors what Isaac Lab's
-    ``remove_camera_configs`` does for its own XR tasks, extended to RoboLab's custom
-    observation groups (``image_obs``, ``viewport_cam``). Camera imagery remains
-    reproducible offline via RoboLab replay of the recorded states.
-
-    Returns the names of the removed scene cameras.
-    """
-    from isaaclab.managers import ObservationTermCfg, SceneEntityCfg
-    from isaaclab.sensors import CameraCfg  # TiledCameraCfg subclasses CameraCfg
-
-    removed: list[str] = []
-    for attr_name in list(vars(env_cfg.scene).keys()):
-        if isinstance(getattr(env_cfg.scene, attr_name, None), CameraCfg):
-            delattr(env_cfg.scene, attr_name)
-            removed.append(attr_name)
-    if not removed:
-        return removed
-
-    # Drop observation terms referencing removed cameras; null groups left empty
-    # (the ObservationManager skips None groups).
-    for group_name in list(vars(env_cfg.observations).keys()):
-        group = getattr(env_cfg.observations, group_name, None)
-        if group is None:
-            continue
-        term_names = [
-            n for n in list(vars(group).keys()) if isinstance(getattr(group, n, None), ObservationTermCfg)
-        ]
-        if not term_names:
-            continue
-        for term_name in term_names:
-            params = getattr(getattr(group, term_name), "params", None) or {}
-            if any(isinstance(v, SceneEntityCfg) and v.name in removed for v in params.values()):
-                delattr(group, term_name)
-        if not any(isinstance(getattr(group, n, None), ObservationTermCfg) for n in list(vars(group).keys())):
-            setattr(env_cfg.observations, group_name, None)
-    return removed
 
 
 def build_xr_teleop_device(device_name: str, sim_device: str, callbacks: dict):
