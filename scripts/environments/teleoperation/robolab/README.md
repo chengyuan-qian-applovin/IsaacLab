@@ -106,6 +106,9 @@ robomimic `env_args` attrs — the same shape `record_demos.py` produces.
 (58 DoF: 2×7 arms + 2×22 finger joints) with **both hands and full finger
 retargeting** — the GR1T2 teleop experience on RoboLab benchmark scenes.
 
+> Design record — which IK was chosen and why, frame calibration, integration
+> architecture, validation — in [SHARPA_DUO_NOTES.md](SHARPA_DUO_NOTES.md).
+
 Requires the SharpaWave RoboLab fork (adds `robolab.registrations.sharpa_wave`,
 the `franka_duo_sharpa_wave` robot, and vendored Sharpa hand assets) installed in
 place of stock RoboLab: point `ROBOLAB_PATH` at that checkout (or install it with
