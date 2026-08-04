@@ -110,14 +110,34 @@ retargeting** — the GR1T2 teleop experience on RoboLab benchmark scenes.
 > architecture, validation — in [SHARPA_DUO_NOTES.md](SHARPA_DUO_NOTES.md).
 
 Requires the SharpaWave RoboLab fork (adds `robolab.registrations.sharpa_wave`,
-the `franka_duo_sharpa_wave` robot, and vendored Sharpa hand assets) installed in
-place of stock RoboLab: point `ROBOLAB_PATH` at that checkout (or install it with
-`pip install --no-deps -e <path>` inside the container).
+the `franka_duo_sharpa_wave` robot, and vendored Sharpa hand assets) — the
+compose patch mounts it via `ROBOLAB_PATH` (default: `~/rebecca/RoboLab`).
+
+### Quick start: BananaInBowl with the duo rig
 
 ```bash
+# 1) Host: start the containers (CloudXR + RoboLab patches)
+cd ~/IsaacLab
+./docker/container.py start \
+    --files docker-compose.cloudxr-runtime.patch.yaml docker-compose.robolab.patch.yaml \
+    --env-file .env.cloudxr-runtime
+
+# 2) Once per container: install the fork + CUDA ldconfig fix
+./docker/container.py enter base
+bash scripts/environments/teleoperation/robolab/install_robolab.sh
+
+# 3) Launch the teleop (leave --device unset: the XR default, CPU physics,
+#    is the RIGHT choice — benchmarked ~22 ms/step vs ~90 ms on GPU for one env)
 ./isaaclab.sh -p scripts/environments/teleoperation/robolab/teleop_sharpa_duo_agent.py \
-    --task BananaInBowlTask --num_demos 5 --headless --device cuda:0
+    --task BananaInBowlTask --num_demos 5 --headless
+
+# 4) Wait for "Starting teleop loop", then on the AVP: connect to the
+#    workstation IP, press Play. Both hands drive the arms; pinch/curl your
+#    fingers to close the Sharpa hands. Reset discards the current demo.
 ```
+
+Verify the runtime config of a session anytime:
+`grep -oE '"(device|max_position_iteration_count)": [^,]*' <ROBOLAB_PATH>/output/env_cfg.json`
 
 How it maps (GR1T2-pattern, per component):
 
