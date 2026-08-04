@@ -62,6 +62,17 @@ for iters in args_cli.iters:
     env, _ = create_env(env_cfg, num_envs=1, use_fabric=True)
     env.reset()
 
+    # Log the CPU<->GPU communication settings actually in effect.
+    import carb
+
+    s = carb.settings.get_settings()
+    for path in (
+        "/physics/suppressReadback",
+        "/physxFabric/fabricUseGPUInterop",
+        "/app/xr/enabled",
+    ):
+        print(f"[SETTING] {path} = {s.get(path)}")
+
     frames = env.scene["frames"]
     eef_idx = frames.data.target_frame_names.index("eef_frame")
     pos = frames.data.target_pos_w[0, eef_idx, :].cpu()
