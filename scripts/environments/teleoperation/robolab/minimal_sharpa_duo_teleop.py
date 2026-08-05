@@ -145,6 +145,11 @@ class MinimalDuoEnvCfg(ManagerBasedRLEnvCfg):
         # The duo articulation requests 64 solver iterations; clamp lower for a
         # snappy minimal scene (one banana's worth of contact needs far less).
         self.sim.physx.max_position_iteration_count = 16
+        # Guard against fast hand motions tunneling the banana through the table.
+        # Only executes on the CPU pipeline (the XR default for this script);
+        # silently ignored on GPU. Note: bodies also need their per-body CCD flag
+        # (an asset property) for sweeps to actually run on them.
+        self.sim.physx.enable_ccd = True
 
 
 # -- Teleop loop ----------------------------------------------------------------
