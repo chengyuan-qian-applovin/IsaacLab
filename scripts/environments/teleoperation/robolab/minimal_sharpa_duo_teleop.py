@@ -94,9 +94,9 @@ class MinimalDuoSceneCfg(InteractiveSceneCfg):
     banana = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/banana",
         spawn=sim_utils.UsdFileCfg(usd_path=os.path.join(OBJECT_DIR, "ycb", "banana.usd")),
-        # Dropped slightly above the tabletop between the two ready-pose wrists;
-        # it settles onto the table during the first steps after reset.
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.35, 0.0, 0.10)),
+        # Dropped slightly above the tabletop, near the robot base (the tabletop
+        # under this fixture pose does not extend far in +x; x=0 lands on it).
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.10)),
     )
 
     light = AssetBaseCfg(
