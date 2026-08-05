@@ -33,7 +33,7 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="Minimal FR3 Duo + SharpaWave teleop scene.")
 parser.add_argument(
-    "--anchor_pos", type=float, nargs=3, default=(0.0, 0.0, -0.7), help="XR anchor position (x y z)."
+    "--anchor_pos", type=float, nargs=3, default=(-0.35, 0.0, -0.7), help="XR anchor position (x y z): default stands you at the robot torso."
 )
 parser.add_argument(
     "--anchor_rot", type=float, nargs=4, default=(1.0, 0.0, 0.0, 0.0), help="XR anchor rotation quat (w x y z)."

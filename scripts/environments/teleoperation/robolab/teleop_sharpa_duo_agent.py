@@ -41,8 +41,8 @@ parser = argparse.ArgumentParser(description="Teleoperate the SharpaWave duo rig
 parser.add_argument("--task", type=str, default="BananaInBowlTask", help="RoboLab task class name.")
 parser.add_argument("--num_demos", type=int, default=0, help="Stop after N recorded demos (0 = unlimited).")
 parser.add_argument(
-    "--anchor_pos", type=float, nargs=3, default=(0.0, 0.0, -0.7),
-    help="XR anchor position (x y z): shifts where the sim world appears relative to you.",
+    "--anchor_pos", type=float, nargs=3, default=(-0.35, 0.0, -0.7),
+    help="XR anchor position (x y z): default stands you at the robot torso for embodied control.",
 )
 parser.add_argument(
     "--anchor_rot", type=float, nargs=4, default=(1.0, 0.0, 0.0, 0.0), help="XR anchor rotation quat (w x y z)."
