@@ -236,6 +236,7 @@ def main():
         return out
 
     prof = LoopProfiler(enabled=args_cli.profile)
+    prof.wrap_render(env.sim)  # split rendering (incl. XR compositor/encode) out of "step"
     print("[INFO] Starting teleop loop. AVP: Play=start, Stop=pause, Reset=reset scene.")
     with torch.inference_mode():
         while simulation_app.is_running():
@@ -245,8 +246,7 @@ def main():
                 reset_requested = False
             if not teleop_active:
                 prof.begin()
-                env.sim.render()
-                prof.lap("render(paused)")
+                env.sim.render()  # wrapped: lands in the "render" bucket
                 prof.end()
                 continue
             prof.begin()

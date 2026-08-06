@@ -21,6 +21,11 @@ class LoopProfiler:
         prof.end()             # prints a one-line report every `report_every_s`
 
     Overhead is a few perf_counter calls per loop — negligible next to a sim step.
+
+    Note on reading reports when ``wrap_render`` is used: the ``render`` bucket
+    is a *subset* of ``step`` (renders happen inside env.step). Physics-ish cost
+    ≈ ``step − render``; ``total`` is true wall time per iteration and is less
+    than the sum of buckets.
     """
 
     def __init__(self, enabled: bool, report_every_s: float = 1.0):
@@ -36,6 +41,29 @@ class LoopProfiler:
         if not self.enabled:
             return
         self._t_iter = self._t_lap = time.perf_counter()
+
+    def add_external(self, stage: str, seconds: float) -> None:
+        """Accumulate time measured elsewhere (e.g. a wrapped env.sim.render)."""
+        if not self.enabled:
+            return
+        self._sums[stage] = self._sums.get(stage, 0.0) + seconds
+
+    def wrap_render(self, sim, stage: str = "render") -> None:
+        """Wrap ``sim.render`` so time spent rendering inside env.step() is
+        attributed to its own bucket (includes XR compositor + CloudXR encode,
+        and any frame-pacing waits). ``step`` then reads as physics+overhead
+        minus this bucket."""
+        if not self.enabled:
+            return
+        original = sim.render
+
+        def timed_render(*args, **kwargs):
+            t0 = time.perf_counter()
+            result = original(*args, **kwargs)
+            self.add_external(stage, time.perf_counter() - t0)
+            return result
+
+        sim.render = timed_render
 
     def lap(self, stage: str) -> None:
         if not self.enabled or self._t_lap is None:
