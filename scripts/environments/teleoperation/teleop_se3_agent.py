@@ -32,6 +32,11 @@ parser.add_argument(
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--sensitivity", type=float, default=1.0, help="Sensitivity factor.")
 parser.add_argument(
+    "--profile",
+    action="store_true",
+    help="Print rolling per-stage loop timings (retarget/step/render) once per second.",
+)
+parser.add_argument(
     "--enable_pinocchio",
     action="store_true",
     default=False,
@@ -244,13 +249,25 @@ def main() -> None:
 
     print("Teleoperation started. Press 'R' to reset the environment.")
 
+    # optional per-stage loop profiler (shared with the RoboLab teleop scripts)
+    import os as _os
+    import sys as _sys
+
+    _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "robolab"))
+    from robolab_teleop_common import LoopProfiler
+
+    prof = LoopProfiler(enabled=args_cli.profile)
+    prof.wrap_render(env.sim)  # attribute rendering (XR compositor/encode) to its own bucket
+
     # simulate environment
     while simulation_app.is_running():
         try:
             # run everything in inference mode
             with torch.inference_mode():
+                prof.begin()
                 # get device command
                 action = teleop_interface.advance()
+                prof.lap("retarget")
 
                 # Only apply teleop commands when active
                 if teleoperation_active:
@@ -258,8 +275,10 @@ def main() -> None:
                     actions = action.repeat(env.num_envs, 1)
                     # apply actions
                     env.step(actions)
+                    prof.lap("step")
                 else:
-                    env.sim.render()
+                    env.sim.render()  # wrapped: lands in the "render" bucket
+                prof.end()
 
                 if should_reset_recording_instance:
                     env.reset()
