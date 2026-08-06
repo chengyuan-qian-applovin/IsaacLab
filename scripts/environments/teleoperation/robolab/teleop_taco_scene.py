@@ -46,6 +46,10 @@ parser.add_argument(
     "--anchor_rot", type=float, nargs=4, default=(0.7071068, 0.0, 0.0, 0.7071068),
     help="XR anchor rotation (w x y z): must match the robot root yaw (+90°) so you face the table.",
 )
+parser.add_argument(
+    "--profile", action="store_true",
+    help="Print rolling per-stage loop timings (retarget / frame / step) once per second.",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.xr = True
@@ -85,6 +89,7 @@ from isaaclab.managers import EventTermCfg, ObservationGroupCfg, ObservationTerm
 from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms
 
+from robolab_teleop_common import LoopProfiler
 from sharpa_duo_retargeters import FrankaDuoSharpaRetargeterCfg
 
 # Arm ready pose shared by both repos (IK-solved: fingers forward, palms down).
@@ -175,8 +180,9 @@ class TacoTeleopEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.dt = 1 / 120           # teleop timing, not sim_benchmark's 20 Hz clip timing
         self.sim.render_interval = 2    # 60 Hz for the headset
         self.sim.physx.solver_type = 1  # TGS (sim_benchmark's solver_type=2 is invalid on this stack)
-        self.sim.physx.max_position_iteration_count = 32
+        self.sim.physx.max_position_iteration_count = 8
         self.sim.physx.bounce_threshold_velocity = 0.2
+        self.sim.physx.enable_ccd = False                   # CCD
 
 
 def main():
@@ -229,6 +235,7 @@ def main():
             out[base + 3 : base + 7] = quat.squeeze(0)
         return out
 
+    prof = LoopProfiler(enabled=args_cli.profile)
     print("[INFO] Starting teleop loop. AVP: Play=start, Stop=pause, Reset=reset scene.")
     with torch.inference_mode():
         while simulation_app.is_running():
@@ -237,11 +244,19 @@ def main():
                 teleop.reset()
                 reset_requested = False
             if not teleop_active:
+                prof.begin()
                 env.sim.render()
+                prof.lap("render(paused)")
+                prof.end()
                 continue
-            action = teleop.advance()
+            prof.begin()
+            action = teleop.advance()          # XR poll + wrist offsets + DexPilot QPs
+            prof.lap("retarget")
             action = to_root_frame(action.to(env.device))
-            env.step(action.unsqueeze(0))
+            prof.lap("frame")
+            env.step(action.unsqueeze(0))      # 8 physics substeps + 4 renders
+            prof.lap("step")
+            prof.end()
 
     env.close()
 

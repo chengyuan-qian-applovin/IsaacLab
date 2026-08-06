@@ -7,6 +7,64 @@
 
 from __future__ import annotations
 
+import time
+
+
+class LoopProfiler:
+    """Rolling per-stage wall-time profiler for the teleop loop.
+
+    Usage per iteration:
+        prof.begin()
+        ...retargeting...      ; prof.lap("retarget")
+        ...frame conversion... ; prof.lap("frame")
+        ...env.step...         ; prof.lap("step")
+        prof.end()             # prints a one-line report every `report_every_s`
+
+    Overhead is a few perf_counter calls per loop — negligible next to a sim step.
+    """
+
+    def __init__(self, enabled: bool, report_every_s: float = 1.0):
+        self.enabled = enabled
+        self._report_every = report_every_s
+        self._t_iter: float | None = None
+        self._t_lap: float | None = None
+        self._sums: dict[str, float] = {}
+        self._iters = 0
+        self._window_start = time.perf_counter()
+
+    def begin(self) -> None:
+        if not self.enabled:
+            return
+        self._t_iter = self._t_lap = time.perf_counter()
+
+    def lap(self, stage: str) -> None:
+        if not self.enabled or self._t_lap is None:
+            return
+        now = time.perf_counter()
+        self._sums[stage] = self._sums.get(stage, 0.0) + (now - self._t_lap)
+        self._t_lap = now
+
+    def end(self) -> None:
+        if not self.enabled or self._t_iter is None:
+            return
+        now = time.perf_counter()
+        self._sums["total"] = self._sums.get("total", 0.0) + (now - self._t_iter)
+        self._iters += 1
+        window = now - self._window_start
+        if window >= self._report_every and self._iters > 0:
+            n = self._iters
+            stages = "  ".join(
+                f"{k}={v / n * 1000.0:6.1f}ms" for k, v in self._sums.items() if k != "total"
+            )
+            total_ms = self._sums["total"] / n * 1000.0
+            print(
+                f"[PROFILE] {n / window:5.1f} Hz loop | {stages}  total={total_ms:6.1f}ms",
+                flush=True,
+            )
+            self._sums.clear()
+            self._iters = 0
+            self._window_start = now
+
 
 def strip_cameras_for_xr(env_cfg) -> list[str]:
     """Remove camera sensors and their observation terms from a RoboLab env cfg.
