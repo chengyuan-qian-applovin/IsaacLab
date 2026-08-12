@@ -31,8 +31,10 @@ from dataclasses import dataclass, field
 import numpy as np
 import torch
 
+import isaaclab.sim as sim_utils
 from isaaclab.devices.device_base import DeviceBase
 from isaaclab.devices.retargeter_base import RetargeterBase, RetargeterCfg
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 from isaaclab.utils.math import quat_mul
 
 with contextlib.suppress(Exception):
@@ -57,7 +59,7 @@ _OPERATOR2MANO = np.array([
 class SharpaWaveDexRetargeting:
     """DexPilot retargeting for one pair of SharpaWave hands (GR1TR2DexRetargeting analogue)."""
 
-    def __init__(self, left_config: str, right_config: str):
+    def __init__(self, left_config: str, right_config: str, pinch_separation: float = 1e-4):
         self._dex = {}
         for side, cfg_name in (("left", left_config), ("right", right_config)):
             cfg_path = os.path.join(_DATA_DIR, cfg_name)
@@ -69,6 +71,11 @@ class SharpaWaveDexRetargeting:
             if not os.path.isabs(urdf):
                 cfg["retargeting"]["urdf_path"] = os.path.join(os.path.dirname(_DATA_DIR), urdf)
             self._dex[side] = RetargetingConfig.from_dict(cfg["retargeting"]).build()
+            # Commanded thumb-finger separation once a pinch is projected (library
+            # default eta1 = +1e-4 m: touch). Negative = overshoot past contact so the
+            # PD drives squeeze the object. Only the first 4 entries (thumb pairs) —
+            # entries 4:10 are finger-finger spacing (eta2) and must stay +0.03.
+            self._dex[side].optimizer.projected_dist[:4] = pinch_separation
 
         self.left_dof_names = self._dex["left"].optimizer.robot.dof_joint_names
         self.right_dof_names = self._dex["right"].optimizer.robot.dof_joint_names
@@ -113,7 +120,7 @@ class FrankaDuoSharpaRetargeter(RetargeterBase):
     def __init__(self, cfg: FrankaDuoSharpaRetargeterCfg):
         super().__init__(cfg)
         self._cfg = cfg
-        self._hands = SharpaWaveDexRetargeting(cfg.left_dex_config, cfg.right_dex_config)
+        self._hands = SharpaWaveDexRetargeting(cfg.left_dex_config, cfg.right_dex_config, cfg.pinch_separation)
 
         # Map dex output joint names -> slot in the action's per-hand block.
         self._left_scatter = [cfg.left_hand_joint_names.index(n) for n in self._hands.left_dof_names]
@@ -123,6 +130,20 @@ class FrankaDuoSharpaRetargeter(RetargeterBase):
         self._left_rot_offset = torch.tensor(cfg.left_wrist_rot_offset, dtype=torch.float32, device=dev).unsqueeze(0)
         self._right_rot_offset = torch.tensor(cfg.right_wrist_rot_offset, dtype=torch.float32, device=dev).unsqueeze(0)
         self._pos_offset = torch.tensor(cfg.wrist_pos_offset, dtype=torch.float32, device=dev)
+
+        # Red-sphere markers on the tracked OpenXR hand joints (GR1T2 teleop pattern).
+        self._enable_visualization = cfg.enable_visualization
+        if self._enable_visualization:
+            marker_cfg = VisualizationMarkersCfg(
+                prim_path="/Visuals/hand_joints",
+                markers={
+                    "joint": sim_utils.SphereCfg(
+                        radius=0.005,
+                        visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.0, 0.0)),
+                    ),
+                },
+            )
+            self._markers = VisualizationMarkers(marker_cfg)
 
     def get_requirements(self) -> list[RetargeterBase.Requirement]:
         return [RetargeterBase.Requirement.HAND_TRACKING]
@@ -144,6 +165,13 @@ class FrankaDuoSharpaRetargeter(RetargeterBase):
         left = data.get(DeviceBase.TrackingTarget.HAND_LEFT)
         right = data.get(DeviceBase.TrackingTarget.HAND_RIGHT)
         dev = self._cfg.sim_device
+
+        if self._enable_visualization:
+            # Joint poses arrive already in the Isaac world frame (anchor applied),
+            # so positions can be visualized directly.
+            joints = np.array([pose[:3] for hand in (left, right) if hand for pose in hand.values()])
+            if joints.size:
+                self._markers.visualize(translations=torch.tensor(joints, dtype=torch.float32, device=dev))
 
         left_wrist = self._wrist_pose(left, self._left_rot_offset)
         right_wrist = self._wrist_pose(right, self._right_rot_offset)
@@ -181,4 +209,7 @@ class FrankaDuoSharpaRetargeterCfg(RetargeterCfg):
     # Human-wrist -> flange pullback, in the flange local frame (meters).
     # Calibration measured |flange -> sharpa hand_wrist| = 0.0005 m: coincident.
     wrist_pos_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    # Draw red spheres on the tracked OpenXR hand joints (GR1T2 teleop pattern).
+    enable_visualization: bool = False
     retargeter_type: type[RetargeterBase] = FrankaDuoSharpaRetargeter
+    pinch_separation: float = -0.02  # meters; Overshoot pinch closure to generate grip force.

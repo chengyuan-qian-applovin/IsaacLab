@@ -257,7 +257,17 @@ def main() -> None:
     from robolab_teleop_common import LoopProfiler
 
     prof = LoopProfiler(enabled=args_cli.profile)
-    prof.wrap_render(env.sim)  # attribute rendering (XR compositor/encode) to its own bucket
+    # "render_call" = CPU-blocked wall time of sim.render() (submission + any XR
+    # pacing wait) — the async GPU render/CloudXR encode is NOT included.
+    prof.wrap_render(env.sim)
+    # decompose env.step into its own buckets (wrap ONCE, before the loop:
+    # wrap_method is not idempotent — re-wrapping nests and double-counts)
+    prof.wrap_method(env.sim, "step", "physx")
+    prof.wrap_method(env.action_manager, "process_action", "ik")
+    prof.wrap_method(env.action_manager, "apply_action", "action")
+    prof.wrap_method(env.scene, "write_data_to_sim", "write")
+    prof.wrap_method(env.scene, "update", "readback")
+    prof.wrap_method(env.observation_manager, "compute", "obs")
 
     # simulate environment
     while simulation_app.is_running():
@@ -277,7 +287,7 @@ def main() -> None:
                     env.step(actions)
                     prof.lap("step")
                 else:
-                    env.sim.render()  # wrapped: lands in the "render" bucket
+                    env.sim.render()  # wrapped: lands in the "render_call" bucket
                 prof.end()
 
                 if should_reset_recording_instance:

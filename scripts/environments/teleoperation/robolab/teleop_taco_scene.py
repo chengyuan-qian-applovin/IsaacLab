@@ -50,7 +50,19 @@ parser.add_argument(
     "--profile", action="store_true",
     help="Print rolling per-stage loop timings (retarget / frame / step) once per second.",
 )
+parser.add_argument(
+    "--visualize_hands", action="store_true",
+    help="Draw red spheres on the tracked OpenXR hand joints (like the default GR1T2 teleop).",
+)
+parser.add_argument(
+    "--render_interval", type=int, default=4,
+    help="Render every N physics substeps (default 4 = 30 Hz at dt=1/120).",
+)
 AppLauncher.add_app_launcher_args(parser)
+# Default AppLauncher's --rendering_mode to the cheap preset (still overridable on the
+# CLI: --rendering_mode balanced|quality). Profiling showed ~24 ms/render on "balanced"
+# vs ~13 ms on "performance", and 4 renders happen inside every control step.
+parser.set_defaults(rendering_mode="balanced")
 args_cli = parser.parse_args()
 args_cli.xr = True
 
@@ -89,7 +101,7 @@ from isaaclab.managers import EventTermCfg, ObservationGroupCfg, ObservationTerm
 from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms
 
-from robolab_teleop_common import LoopProfiler
+from robolab_teleop_common import LoopProfiler, OncePerStepDiffIKAction
 from sharpa_duo_retargeters import FrankaDuoSharpaRetargeterCfg
 
 # Arm ready pose shared by both repos (IK-solved: fingers forward, palms down).
@@ -175,14 +187,21 @@ class TacoTeleopEnvCfg(ManagerBasedRLEnvCfg):
     rewards: RewardsCfg = RewardsCfg()
 
     def __post_init__(self):
+        # honor --device (without this, SimulationCfg's default cuda:0 silently wins)
+        self.sim.device = args_cli.device
         self.episode_length_s = 120.0
-        self.decimation = 8
+        self.decimation = 4
         self.sim.dt = 1 / 120           # teleop timing, not sim_benchmark's 20 Hz clip timing
-        self.sim.render_interval = 2    # 60 Hz for the headset
+        self.sim.render_interval = args_cli.render_interval  # 2 = 60 Hz for the headset
         self.sim.physx.solver_type = 1  # TGS (sim_benchmark's solver_type=2 is invalid on this stack)
-        self.sim.physx.max_position_iteration_count = 8
+        self.sim.physx.max_position_iteration_count = 32
         self.sim.physx.bounce_threshold_velocity = 0.2
-        self.sim.physx.enable_ccd = False                   # CCD
+        self.sim.physx.enable_ccd = True                   # CCD
+        # solve arm IK once per control step instead of once per physics substep
+        # (decimation× cheaper; the stock per-substep resolve cost ~65 ms/step on this
+        # scene at decimation 8 — see profiler).
+        self.actions.left_arm.class_type = OncePerStepDiffIKAction
+        self.actions.right_arm.class_type = OncePerStepDiffIKAction
 
 
 def main():
@@ -196,6 +215,7 @@ def main():
                 left_hand_joint_names=LEFT_HAND_JOINTS_ORDERED,
                 right_hand_joint_names=RIGHT_HAND_JOINTS_ORDERED,
                 sim_device=env.device,
+                enable_visualization=args_cli.visualize_hands,
             )
         ],
     )
@@ -236,7 +256,17 @@ def main():
         return out
 
     prof = LoopProfiler(enabled=args_cli.profile)
-    prof.wrap_render(env.sim)  # split rendering (incl. XR compositor/encode) out of "step"
+    # "render_call" = CPU-blocked wall time of sim.render() (submission + any XR pacing
+    # wait) — the async GPU render/CloudXR encode is NOT included. Split out of "step".
+    prof.wrap_render(env.sim, "render_call")
+    prof.wrap_method(env.sim, "step", "physx")  # raw physics call, separated from step's other work
+    # decompose the rest of env.step: IK action apply, sim write, state readback, observations
+    prof.wrap_method(env.action_manager, "apply_action", "action")
+    prof.wrap_method(env.scene, "write_data_to_sim", "write")
+    prof.wrap_method(env.scene, "update", "readback")
+    prof.wrap_method(env.observation_manager, "compute", "obs")
+    prof.wrap_method(env.action_manager, "process_action", "ik")
+
     print("[INFO] Starting teleop loop. AVP: Play=start, Stop=pause, Reset=reset scene.")
     with torch.inference_mode():
         while simulation_app.is_running():
@@ -246,7 +276,7 @@ def main():
                 reset_requested = False
             if not teleop_active:
                 prof.begin()
-                env.sim.render()  # wrapped: lands in the "render" bucket
+                env.sim.render()  # wrapped: lands in the "render_call" bucket
                 prof.end()
                 continue
             prof.begin()

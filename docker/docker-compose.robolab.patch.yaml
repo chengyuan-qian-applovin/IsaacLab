@@ -22,5 +22,5 @@ services:
   isaac-lab-base:
     volumes:
       - type: bind
-        source: ${ROBOLAB_PATH:-~/RoboLab}
+        source: ${ROBOLAB_PATH:-~/rebecca/RoboLab}
         target: /workspace/robolab
