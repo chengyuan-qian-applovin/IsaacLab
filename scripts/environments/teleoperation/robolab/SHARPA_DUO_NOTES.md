@@ -156,8 +156,10 @@ scripts/environments/teleoperation/robolab/
 ├── teleop_sharpa_duo_agent.py        # bimanual teleop + recording loop
 ├── sharpa_duo_retargeters.py         # FrankaDuoSharpaRetargeter + SharpaWaveDexRetargeting
 ├── calibrate_sharpa_duo.py           # derives the wrist rot offsets from the ready pose
+├── calibrate_hand_shape.py           # operator hand-shape calibration scene (§10)
 ├── robolab_teleop_common.py          # shared strip_cameras_for_xr (also used by single-arm script)
 └── sharpa_dex_retargeting/           # DexPilot ymls + vendored Sharpa URDFs + provenance README
+    └── hand_calibration.yml          # per-operator hand-shape calibration (auto-loaded, §10)
 ```
 
 Prerequisite: the **SharpaWave RoboLab fork** installed as `robolab`
@@ -199,6 +201,79 @@ Prerequisite: the **SharpaWave RoboLab fork** installed as `robolab`
 - **Fingers "shuffled"** → the fork's own caveat about `HAND_JOINTS_ORDERED`
   vs vendor URDF order; our name-based scatter makes this unlikely, but check
   the yml `target_joint_names` against the fork first.
+
+## 10. Operator hand-shape calibration (Aug 2026)
+
+The blanket DexPilot `scaling_factor: 1.1` under-corrected the operator↔Sharpa
+shape mismatch (raw fingertip gaps 25–65 mm in the wrist frame; the Sharpa is a
+large hand — measured global scale came out ≈ 1.18). A per-operator calibration
+now measures and removes it.
+
+### Measuring — `calibrate_hand_shape.py`
+
+Empty XR scene (dome light + red joint markers, no robot). Connect the AVP,
+click Play, hold **both hands flat with fingers straight**; `--delay` s later
+(default 5) the first frame with both hands validly tracked is captured. Per
+hand, with human keypoints in the human wrist frame and Sharpa fingertips
+(pinocchio FK at q = 0, its straight-finger pose) in the Sharpa wrist-link
+frame — the two wrist frames identified, wrist pinned at the origin:
+
+1. **Global fit** on index/middle/ring tips: wrist-pinned similarity Procrustes
+   (closed-form SVD), `min over (s, R) of Σ‖s·R·h_i − t_i‖²`, no translation.
+2. **Per-finger corrections** for thumb and pinky (excluded from the fit —
+   their geometry differs most): a length ratio `|t|/|s·R·h|` plus the minimal
+   Rodrigues rotation swinging the globally-calibrated tip direction onto the
+   Sharpa's. Exact tip placement at the capture pose by construction.
+
+Results go to `sharpa_dex_retargeting/hand_calibration.yml` (transform +
+diagnostics + all ten captured fingertips, so corrections can be re-derived
+offline without re-capturing). Current operator: s ≈ 1.181/1.178 (L/R),
+residual wrist rotation ≈ 14.4°/14.3° (a MANO↔Sharpa axis convention — nearly
+identical across hands and sessions, so not tracking noise), fit rms 4.8/4.1 mm,
+thumb ratio ≈ 1.09 (rot 2.5°/7.6°), pinky ratio ≈ 1.15 (rot ≈ 0.5°).
+
+### Applying — `sharpa_duo_retargeters.py`
+
+`FrankaDuoSharpaRetargeterCfg.hand_calibration` (default
+`"hand_calibration.yml"`) auto-loads the file when present — all Sharpa teleop
+scenes pick it up with no flags; set the field to `""` to run uncalibrated.
+On load, per side:
+
+- **Rotation, applied WRIST-side**: `R_corr = M·R_calᵀ·Mᵀ` (M = OPERATOR2MANO)
+  right-multiplies the tracked wrist rotation. Finger keypoints derived from
+  the rotated wrist equal `R_cal·p` exactly (rotating the frame ≡ rotating the
+  points), and the same correction composes into the arm's wrist→flange offset
+  (`q_flange = q_wrist ⊗ q_corr ⊗ q_offset`) — the robot's **fingers**, not its
+  wrist axes, align with the operator's in the world (~14° flange tilt vs the
+  uncalibrated rig).
+- **Scale** multiplies the keypoints; the DexPilot optimizer `scaling` is
+  overridden to 1.0 (the yml `scaling_factor` no longer applies).
+- **Thumb/pinky corrections** (`{finger}_ratio`, `{finger}_rotation`) apply
+  after the global transform to that finger's MANO rows only (rows 1–4 / 17–20),
+  about the wrist. Hand-tunable in the yml; identity entries cost nothing.
+- **Pinch detection stays on the operator's real fingers**
+  (`raw_pinch_detection`, default on with calibration): the calibrated scale
+  would otherwise inflate every pair distance ~18%, shifting DexPilot's
+  3 cm/5 cm project/escape hysteresis. The same hysteresis now runs on the
+  *uncalibrated* thumb-pair distances and is written into
+  `optimizer.projected[:4]`; the internal update is neutralized with ∓inf
+  thresholds. (Known residue: the library's S2 finger–finger rule keeps its
+  hardcoded ≤ 3 cm gate on calibrated distances — multi-finger-pinch spacing
+  only.)
+
+Related knob from the same bring-up: `pinch_separation` (cfg) patches
+`optimizer.projected_dist[:4]` — the commanded thumb–finger gap once a pinch
+projects; negative overshoots past contact so the PD drives squeeze the object.
+
+### Revisit triggers
+
+- **New operator** → re-run `calibrate_hand_shape.py` (≈10 s); the yml is
+  per-person. Thumb comfortably extended in the natural flat pose — its
+  captured direction sets `thumb_rotation`.
+- **Thumb over/under-reaches mid-curl** → tune `thumb_ratio` in the yml
+  (corrections are exact at the flat pose, first-order elsewhere).
+- **Fit rms > ~1 cm** in the calibration output → fingers weren't straight;
+  re-capture.
 - **Success scoring** on this rig is unvalidated upstream (single-fingertip
   `contact_gripper`, predicates written for parallel grippers) — treat
   recorded `success` attrs with care until the fork validates them.

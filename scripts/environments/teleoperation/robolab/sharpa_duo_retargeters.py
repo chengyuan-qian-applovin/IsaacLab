@@ -56,10 +56,99 @@ _OPERATOR2MANO = np.array([
 ])
 
 
+def convert_hand_joints(hand_poses: dict[str, np.ndarray], wrist_rot_corr: np.ndarray | None = None) -> np.ndarray:
+    """26 OpenXR joint poses -> wrist-relative 21x3 MANO-style positions.
+
+    ``wrist_rot_corr`` (3x3, optional) right-multiplies the tracked wrist rotation —
+    i.e. it rotates the wrist FRAME the points are expressed in. Passing the
+    calibration's ``M @ R_cal.T @ M.T`` here reproduces ``R_cal @ p`` exactly
+    (rotating the frame one way == rotating the points the other way).
+    """
+    joint_position = np.zeros((21, 3))
+    hand_joints = list(hand_poses.values())
+    for i, idx in enumerate(_HAND_JOINTS_INDEX):
+        joint_position[i] = hand_joints[idx][:3]
+    joint_position = joint_position - joint_position[0:1, :]
+    wq = hand_poses["wrist"][3:]  # w,x,y,z
+    wrist_rot = R.from_quat([wq[1], wq[2], wq[3], wq[0]]).as_matrix()
+    if wrist_rot_corr is not None:
+        wrist_rot = wrist_rot @ wrist_rot_corr
+    return joint_position @ wrist_rot @ _OPERATOR2MANO
+
+
+def load_hand_calibration(path: str) -> dict[str, dict] | None:
+    """Load a hand-shape calibration yml written by ``calibrate_hand_shape.py``.
+
+    Returns ``{side: {rotation 3x3, scale, {thumb,pinky}_ratio, {thumb,pinky}_rotation}}``
+    for the sides present, or ``None`` if the file does not exist. The per-finger
+    entries are corrections applied AFTER the global transform, about the wrist: a
+    length multiplier (default 1.0) and a rotation aligning that finger's tip
+    direction with the Sharpa's (default identity; absent in older ymls). Relative
+    paths resolve against the data dir.
+    """
+    import yaml as _yaml
+
+    if not os.path.isabs(path):
+        path = os.path.join(_DATA_DIR, path)
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        data = _yaml.safe_load(f)
+    out = {}
+    for side in ("left", "right"):
+        if isinstance(data.get(side), dict):
+            entry = {
+                "rotation": np.asarray(data[side]["rotation"], dtype=np.float64),
+                "scale": float(data[side]["scale"]),
+            }
+            for finger in ("thumb", "pinky"):
+                entry[f"{finger}_ratio"] = float(data[side].get(f"{finger}_ratio", 1.0))
+                entry[f"{finger}_rotation"] = np.asarray(
+                    data[side].get(f"{finger}_rotation", np.eye(3).tolist()), dtype=np.float64
+                )
+            out[side] = entry
+    return out or None
+
+
 class SharpaWaveDexRetargeting:
     """DexPilot retargeting for one pair of SharpaWave hands (GR1TR2DexRetargeting analogue)."""
 
-    def __init__(self, left_config: str, right_config: str, pinch_separation: float = 1e-4):
+    def __init__(
+        self,
+        left_config: str = "sharpa_wave_left_dexpilot.yml",
+        right_config: str = "sharpa_wave_right_dexpilot.yml",
+        pinch_separation: float = 1e-4,
+        calibration: dict[str, dict] | None = None,
+        raw_pinch_detection: bool = True,
+    ):
+        self._calibration = calibration or {}
+        # Calibration is applied WRIST-side: R_corr = M @ R_cal^T @ M^T (the calibration
+        # rotation moved from MANO axes to OpenXR wrist axes, inverted) right-multiplies
+        # the tracked wrist rotation. Expressing the raw keypoints in that rotated wrist
+        # frame yields exactly R_cal @ p, so DexPilot sees the same corrected shape as
+        # keypoint-side application — but the same correction can now also tilt the arm's
+        # wrist target (see FrankaDuoSharpaRetargeter).
+        self.wrist_corrections: dict[str, np.ndarray] = {}
+        for side, cal in self._calibration.items():
+            m = _OPERATOR2MANO.astype(np.float64)
+            self.wrist_corrections[side] = m @ cal["rotation"].T @ m.T
+        # Per-finger thumb/pinky corrections (applied after the global transform,
+        # about the wrist): list of (row-slice, ratio, rotation) per side, kept only
+        # where they differ from identity so the common path stays cheap.
+        self._finger_corrections: dict[str, list[tuple[slice, float, np.ndarray]]] = {}
+        for side, cal in self._calibration.items():
+            corrs = []
+            for finger, rows in (("thumb", slice(1, 5)), ("pinky", slice(17, 21))):
+                ratio = cal[f"{finger}_ratio"]
+                rot = cal[f"{finger}_rotation"]
+                if ratio != 1.0 or not np.allclose(rot, np.eye(3)):
+                    corrs.append((rows, ratio, rot))
+            if corrs:
+                self._finger_corrections[side] = corrs
+        # Raw-distance pinch detection state (see the raw_pinch_detection block below):
+        # per side, the 4 thumb-pair hysteresis booleans and the original thresholds.
+        self._pinch_state: dict[str, np.ndarray] = {}
+        self._pinch_thresholds: dict[str, tuple[float, float]] = {}
         self._dex = {}
         for side, cfg_name in (("left", left_config), ("right", right_config)):
             cfg_path = os.path.join(_DATA_DIR, cfg_name)
@@ -76,24 +165,63 @@ class SharpaWaveDexRetargeting:
             # PD drives squeeze the object. Only the first 4 entries (thumb pairs) —
             # entries 4:10 are finger-finger spacing (eta2) and must stay +0.03.
             self._dex[side].optimizer.projected_dist[:4] = pinch_separation
+            # Hand-shape calibration replaces the yml scaling_factor: the calibrated
+            # scale is baked into the keypoints, so the optimizer must not scale again.
+            if side in self._calibration:
+                self._dex[side].optimizer.scaling = 1.0
+            # Pinch detection on RAW human distances: the optimizer's internal
+            # projection update sees CALIBRATED vectors (global scale inflates every
+            # pair distance; thumb/pinky ratios distort thumb pairs pose-dependently),
+            # so detection there no longer reflects your physical fingers. Instead we
+            # run the same project/escape hysteresis on raw keypoints in _compute_one
+            # and write optimizer.projected[:4] directly; setting the thresholds to
+            # -inf/+inf makes the internal S1 update a no-op so our state persists.
+            # (S2 finger-finger pairs are still derived inside the optimizer from our
+            # S1 states, with its hardcoded <= 0.03 gate on calibrated distances.)
+            if raw_pinch_detection and side in self._calibration:
+                opt = self._dex[side].optimizer
+                if hasattr(opt, "projected"):
+                    self._pinch_thresholds[side] = (float(opt.project_dist), float(opt.escape_dist))
+                    self._pinch_state[side] = np.zeros(4, dtype=bool)
+                    opt.project_dist = -np.inf
+                    opt.escape_dist = np.inf
 
         self.left_dof_names = self._dex["left"].optimizer.robot.dof_joint_names
         self.right_dof_names = self._dex["right"].optimizer.robot.dof_joint_names
 
-    def _convert_hand_joints(self, hand_poses: dict[str, np.ndarray]) -> np.ndarray:
-        """26 OpenXR joint poses -> wrist-relative 21x3 MANO-style positions."""
-        joint_position = np.zeros((21, 3))
-        hand_joints = list(hand_poses.values())
-        for i, idx in enumerate(_HAND_JOINTS_INDEX):
-            joint_position[i] = hand_joints[idx][:3]
-        joint_position = joint_position - joint_position[0:1, :]
-        wq = hand_poses["wrist"][3:]  # w,x,y,z
-        wrist_rot = R.from_quat([wq[1], wq[2], wq[3], wq[0]]).as_matrix()
-        return joint_position @ wrist_rot @ _OPERATOR2MANO
+    def _convert_hand_joints(self, hand_poses: dict[str, np.ndarray], side: str) -> np.ndarray:
+        """26 OpenXR joint poses -> wrist-relative 21x3 MANO positions. The calibration
+        rotation is applied by rotating the WRIST frame (opposite direction) instead of
+        the keypoints — numerically identical for the fingers — then the global scale,
+        then the per-finger thumb/pinky corrections (ratio + rotation about the wrist;
+        those fingers are excluded from the Procrustes fit, so they get their own)."""
+        cal = self._calibration.get(side)
+        if cal is None:
+            return convert_hand_joints(hand_poses)
+        pts = cal["scale"] * convert_hand_joints(hand_poses, self.wrist_corrections[side])
+        # Per-finger thumb/pinky corrections about the wrist, applied after the global
+        # transform: p' = ratio * R_f @ p on that finger's rows only.
+        # MANO-21 rows: 0 wrist | 1-4 thumb | 5-8 index | 9-12 middle | 13-16 ring | 17-20 pinky
+        for rows, ratio, rot in self._finger_corrections.get(side, ()):
+            pts[rows] = ratio * (pts[rows] @ rot.T)
+        return pts
 
     def _compute_one(self, side: str, hand_poses: dict[str, np.ndarray]) -> np.ndarray:
         retargeting = self._dex[side]
-        joint_pos = self._convert_hand_joints(hand_poses)
+        joint_pos = self._convert_hand_joints(hand_poses, side)
+        if side in self._pinch_state:
+            # Pinch detection on the ORIGINAL (uncalibrated) keypoints: same
+            # project/escape hysteresis as DexPilot, but on your real fingertip
+            # distances. Pair order matches the optimizer's S1 layout:
+            # thumb-index, thumb-middle, thumb-ring, thumb-pinky.
+            raw = convert_hand_joints(hand_poses)
+            tips = raw[[4, 8, 12, 16, 20]]  # MANO tip rows: thumb, index, middle, ring, pinky
+            dists = np.linalg.norm(tips[1:] - tips[0], axis=1)
+            project_dist, escape_dist = self._pinch_thresholds[side]
+            state = self._pinch_state[side]
+            state[dists < project_dist] = True
+            state[dists > escape_dist] = False
+            retargeting.optimizer.projected[:4] = state
         indices = retargeting.optimizer.target_link_human_indices
         if retargeting.optimizer.retargeting_type == "POSITION":
             ref_value = joint_pos[indices, :]
@@ -120,7 +248,18 @@ class FrankaDuoSharpaRetargeter(RetargeterBase):
     def __init__(self, cfg: FrankaDuoSharpaRetargeterCfg):
         super().__init__(cfg)
         self._cfg = cfg
-        self._hands = SharpaWaveDexRetargeting(cfg.left_dex_config, cfg.right_dex_config, cfg.pinch_separation)
+        calibration = load_hand_calibration(cfg.hand_calibration) if cfg.hand_calibration else None
+        if calibration:
+            print(
+                f"[FrankaDuoSharpaRetargeter] Hand-shape calibration loaded for {sorted(calibration)} "
+                f"from '{cfg.hand_calibration}': rotation applied wrist-side (arm target tilts by the "
+                f"inverse; fingers unchanged vs keypoint-side), scale on keypoints, DexPilot yml "
+                f"scaling overridden to 1.0."
+            )
+        self._hands = SharpaWaveDexRetargeting(
+            cfg.left_dex_config, cfg.right_dex_config, cfg.pinch_separation, calibration,
+            raw_pinch_detection=cfg.raw_pinch_detection,
+        )
 
         # Map dex output joint names -> slot in the action's per-hand block.
         self._left_scatter = [cfg.left_hand_joint_names.index(n) for n in self._hands.left_dof_names]
@@ -130,6 +269,22 @@ class FrankaDuoSharpaRetargeter(RetargeterBase):
         self._left_rot_offset = torch.tensor(cfg.left_wrist_rot_offset, dtype=torch.float32, device=dev).unsqueeze(0)
         self._right_rot_offset = torch.tensor(cfg.right_wrist_rot_offset, dtype=torch.float32, device=dev).unsqueeze(0)
         self._pos_offset = torch.tensor(cfg.wrist_pos_offset, dtype=torch.float32, device=dev)
+
+        # Hand-shape calibration, wrist-side: compose the wrist correction (the
+        # calibration rotation, inverted and moved to OpenXR wrist axes) into the
+        # wrist->flange offset. q_flange = q_wrist ⊗ q_corr ⊗ q_offset. The arm now
+        # tilts the robot hand so its FINGERS align with yours in the world, instead
+        # of its wrist axes aligning with your wrist axes; the fingers derive from the
+        # same rotated wrist inside SharpaWaveDexRetargeting, so DexPilot input is
+        # unchanged vs the old keypoint-side application.
+        for side, attr in (("left", "_left_rot_offset"), ("right", "_right_rot_offset")):
+            corr = self._hands.wrist_corrections.get(side)
+            if corr is not None:
+                q_xyzw = R.from_matrix(corr).as_quat()
+                q_corr = torch.tensor(
+                    [q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]], dtype=torch.float32, device=dev
+                ).unsqueeze(0)
+                setattr(self, attr, quat_mul(q_corr, getattr(self, attr)))
 
         # Red-sphere markers on the tracked OpenXR hand joints (GR1T2 teleop pattern).
         self._enable_visualization = cfg.enable_visualization
@@ -212,4 +367,17 @@ class FrankaDuoSharpaRetargeterCfg(RetargeterCfg):
     # Draw red spheres on the tracked OpenXR hand joints (GR1T2 teleop pattern).
     enable_visualization: bool = False
     retargeter_type: type[RetargeterBase] = FrankaDuoSharpaRetargeter
-    pinch_separation: float = -0.02  # meters; Overshoot pinch closure to generate grip force.
+    pinch_separation: float = -0.00  # meters; Overshoot pinch closure to generate grip force.
+    # Hand-shape calibration yml (written by calibrate_hand_shape.py), resolved against
+    # the sharpa_dex_retargeting data dir. Loaded automatically if the file exists;
+    # set to "" to disable. Applied WRIST-side: the calibration rotation R is composed
+    # (inverted, in wrist axes) into the tracked wrist frame — the arm's flange target
+    # tilts so the robot's fingers align with yours, and the finger keypoints derived
+    # from the rotated wrist reproduce R @ p exactly (identical DexPilot input). The
+    # scale still multiplies the keypoints; the yml scaling_factor is overridden to 1.0.
+    hand_calibration: str = "hand_calibration.yml"
+    # Run DexPilot's pinch project/escape hysteresis on the ORIGINAL (uncalibrated)
+    # keypoint distances instead of the calibrated ones, so the 3 cm / 5 cm thresholds
+    # mean your real fingertip gaps regardless of scale and thumb/pinky ratios.
+    # Only takes effect when a hand calibration is loaded (without one they coincide).
+    raw_pinch_detection: bool = True

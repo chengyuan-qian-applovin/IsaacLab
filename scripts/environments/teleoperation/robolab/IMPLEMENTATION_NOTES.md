@@ -86,7 +86,6 @@ scripts/environments/teleoperation/robolab/
 ├── teleop_robolab_agent.py           # main teleop + recording script
 ├── robolab_retargeters.py            # the two adapter retargeters
 ├── convert_robolab_to_robomimic.py   # pure-h5py dataset converter
-├── smoke_test.py                     # headless validation (see §6)
 ├── install_robolab.sh                # container install (+ ldconfig fix)
 ├── README.md                         # usage guide
 └── IMPLEMENTATION_NOTES.md           # this file
@@ -115,7 +114,8 @@ workstation `axon-1100`, 2× RTX 6000 Ada):
 
 ## 6. Validation performed
 
-All headless inside the running `isaac-lab-base` container:
+All headless inside the running `isaac-lab-base` container (via `smoke_test.py`,
+removed after the live-headset validation superseded it — see git history):
 
 1. **Retargeter contract** (`smoke_test.py`): synthetic hand data → 8-D action;
    pinch midpoint position, unit-norm quaternion, frame-offset math checked
