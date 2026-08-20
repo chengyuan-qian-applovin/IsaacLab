@@ -286,8 +286,9 @@ def main():
         record_result = None
         awaiting_result_since = time.monotonic()
         bridge.request_record_result(demo_count)
+        # EpisodeData stores each key as a python list of per-step tensors.
         actions = env.recorder_manager.get_episode(0).data.get("actions")
-        n_steps = actions.shape[0] if actions is not None else 0
+        n_steps = len(actions) if actions is not None else 0
         print(f"[INFO] Episode ended by gesture ({n_steps} steps). "
               "Choose Success/Failure on the headset (Reset discards).")
 
@@ -318,51 +319,63 @@ def main():
           "Align=re-anchor, stop gesture=end episode.")
     with torch.inference_mode():
         while simulation_app.is_running():
-            if reset_requested:
-                if awaiting_result_since is not None:
-                    print("[INFO] Reset while awaiting Success/Failure: episode discarded.")
-                if recording:
-                    env.recorder_manager.reset()
-                env.reset()
-                teleop.reset()
-                gesture.reset()
-                awaiting_result_since = None
-                reset_requested = False
-            if align_requested:
-                align_requested = False
-                # Query XRCore directly: the capture retargeter only refreshes inside
-                # teleop.advance(), which doesn't run while teleop is paused.
-                head = current_head_pose()
-                if head is None:
-                    head = capture.head_pose
-                if head is None:
-                    print("[WARNING] Align: XR reports no head pose (is the headset session live and the "
-                          "visor on?). Try again in a moment.")
-                else:
-                    aligner.align(head)
-            if record_result is not None and awaiting_result_since is not None:
-                export_episode(record_result)
-                record_result = None
-            if awaiting_result_since is not None and time.monotonic() - awaiting_result_since > 5.0:
-                awaiting_result_since = time.monotonic()  # re-send in case the push was lost
-                bridge.request_record_result(demo_count)
-            if not teleop_active:
+            # An exception escaping this loop means simulation_app.close() under a
+            # live XR session, which deadlocks kit's shutdown (frozen stream, dead
+            # UI; '[XR] Render thread failed to render frame N' repeating in the
+            # kit log). Catch, report, pause teleop, and keep the session alive.
+            try:
+                if reset_requested:
+                    if awaiting_result_since is not None:
+                        print("[INFO] Reset while awaiting Success/Failure: episode discarded.")
+                    if recording:
+                        env.recorder_manager.reset()
+                    env.reset()
+                    teleop.reset()
+                    gesture.reset()
+                    awaiting_result_since = None
+                    reset_requested = False
+                if align_requested:
+                    align_requested = False
+                    # Query XRCore directly: the capture retargeter only refreshes inside
+                    # teleop.advance(), which doesn't run while teleop is paused.
+                    head = current_head_pose()
+                    if head is None:
+                        head = capture.head_pose
+                    if head is None:
+                        print("[WARNING] Align: XR reports no head pose (is the headset session live and the "
+                              "visor on?). Try again in a moment.")
+                    else:
+                        aligner.align(head)
+                if record_result is not None and awaiting_result_since is not None:
+                    export_episode(record_result)
+                    record_result = None
+                if awaiting_result_since is not None and time.monotonic() - awaiting_result_since > 5.0:
+                    awaiting_result_since = time.monotonic()  # re-send in case the push was lost
+                    bridge.request_record_result(demo_count)
+                if not teleop_active:
+                    prof.begin()
+                    env.sim.render()  # wrapped: lands in the "render_call" bucket
+                    prof.end()
+                    continue
                 prof.begin()
-                env.sim.render()  # wrapped: lands in the "render_call" bucket
+                action = teleop.advance()          # XR poll + wrist offsets + DexPilot QPs
+                prof.lap("retarget")
+                if gesture.update(capture.latest):
+                    finish_episode()
+                    prof.end()
+                    continue
+                action = to_root_frame(action.to(env.device))
+                prof.lap("frame")
+                env.step(action.unsqueeze(0))      # 8 physics substeps; renders every 2nd step at interval 16
+                prof.lap("step")
                 prof.end()
-                continue
-            prof.begin()
-            action = teleop.advance()          # XR poll + wrist offsets + DexPilot QPs
-            prof.lap("retarget")
-            if gesture.update(capture.latest):
-                finish_episode()
-                prof.end()
-                continue
-            action = to_root_frame(action.to(env.device))
-            prof.lap("frame")
-            env.step(action.unsqueeze(0))      # 8 physics substeps; renders every 2nd step at interval 16
-            prof.lap("step")
-            prof.end()
+            except Exception:
+                import traceback
+
+                traceback.print_exc()
+                print("[ERROR] Teleop loop iteration failed (see traceback above). "
+                      "Teleop paused; the XR session stays alive. Press Play to retry or Reset to reset.")
+                teleop_active = False
 
     env.close()
 
