@@ -196,7 +196,9 @@ def main():
     if recording:
         env_cfg.recorders = TacoRecorderManagerCfg()
         env_cfg.recorders.dataset_export_dir_path = os.path.abspath(args_cli.record_dir)
-        env_cfg.recorders.dataset_filename = "dataset"
+        # Unique per run: the HDF5 handler opens its file in "w" (truncate) mode at
+        # env creation, so a fixed name would wipe earlier sessions on every start.
+        env_cfg.recorders.dataset_filename = time.strftime("dataset_%Y%m%d_%H%M%S")
 
     env = ManagerBasedRLEnv(cfg=env_cfg)
     env.reset()
@@ -314,7 +316,7 @@ def main():
     prof.wrap_method(env.action_manager, "process_action", "ik")
 
     if recording:
-        print(f"[INFO] Recording to {env_cfg.recorders.dataset_export_dir_path}/dataset.hdf5")
+        print(f"[INFO] Recording to {env_cfg.recorders.dataset_export_dir_path}/{env_cfg.recorders.dataset_filename}.hdf5")
     print("[INFO] Starting teleop loop. AVP: Play=start, Stop=pause, Reset=reset scene (discards episode), "
           "Align=re-anchor, stop gesture=end episode.")
     with torch.inference_mode():

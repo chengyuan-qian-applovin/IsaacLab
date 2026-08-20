@@ -39,8 +39,9 @@ print = functools.partial(print, flush=True)  # noqa: A001
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="Kinematic replay of TACO teleop recordings.")
-parser.add_argument("--dataset", type=str, default="./datasets/taco_teleop/dataset.hdf5",
-                    help="Recorded HDF5 dataset from teleop_taco_scene.py.")
+parser.add_argument("--dataset", type=str, default="./datasets/taco_teleop",
+                    help="Recorded HDF5 dataset from teleop_taco_scene.py — a file, or a directory "
+                         "(the newest .hdf5 inside is used; teleop writes one timestamped file per run).")
 parser.add_argument("--episodes", type=str, default="success",
                     help="Which demos to replay: 'success', 'all', or comma-separated indices (e.g. '0,3,7').")
 parser.add_argument("--output_dir", type=str, default="./replays",
@@ -237,10 +238,22 @@ def replay_episode(env, episode: dict, writers: dict) -> int:
     return frames
 
 
+def resolve_dataset_path(path: str) -> str:
+    """Accept a file or a directory; in a directory, pick the newest .hdf5."""
+    path = os.path.abspath(path)
+    if os.path.isdir(path):
+        candidates = [os.path.join(path, n) for n in os.listdir(path) if n.endswith(".hdf5")]
+        if not candidates:
+            raise SystemExit(f"No .hdf5 files in {path}")
+        path = max(candidates, key=os.path.getmtime)
+    return path
+
+
 def main():
     import imageio.v2 as imageio
 
-    dataset_path = os.path.abspath(args_cli.dataset)
+    dataset_path = resolve_dataset_path(args_cli.dataset)
+    print(f"[INFO] Dataset: {dataset_path}")
     with h5py.File(dataset_path, "r") as f:
         demos = list_demos(f)
         if not demos:
