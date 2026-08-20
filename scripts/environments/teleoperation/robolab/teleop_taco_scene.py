@@ -326,6 +326,12 @@ def main():
             # UI; '[XR] Render thread failed to render frame N' repeating in the
             # kit log). Catch, report, pause teleop, and keep the session alive.
             try:
+                # Export BEFORE reset: the client auto-sends stop+reset right after
+                # the Success/Failure choice, and all three messages can arrive in
+                # one pump — reset first would discard the episode before export.
+                if record_result is not None and awaiting_result_since is not None:
+                    export_episode(record_result)
+                    record_result = None
                 if reset_requested:
                     if awaiting_result_since is not None:
                         print("[INFO] Reset while awaiting Success/Failure: episode discarded.")
@@ -348,9 +354,6 @@ def main():
                               "visor on?). Try again in a moment.")
                     else:
                         aligner.align(head)
-                if record_result is not None and awaiting_result_since is not None:
-                    export_episode(record_result)
-                    record_result = None
                 if awaiting_result_since is not None and time.monotonic() - awaiting_result_since > 5.0:
                     awaiting_result_since = time.monotonic()  # re-send in case the push was lost
                     bridge.request_record_result(demo_count)
