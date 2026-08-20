@@ -20,10 +20,11 @@ class OncePerStepDiffIKAction(DifferentialInverseKinematicsAction):
     per decimation substep. At decimation 8 with two arms that is 16 IK solves per control
     step and dominates teleop loop time (~65 ms/step measured on the TACO duo scene).
 
-    Teleop sends absolute pose targets at ~7-15 Hz, so re-linearizing the Jacobian at
-    120 Hz buys nothing: this variant solves in ``process_actions`` (once per control
-    step, against the freshest state) and has ``apply_actions`` only re-issue the cached
-    joint-position target to the PD drives.
+    Teleop delivers a new absolute pose target at most once per control step, so
+    re-linearizing the Jacobian at the physics substep rate buys nothing: this variant
+    solves in ``process_actions`` (once per control step, against the freshest state)
+    and has ``apply_actions`` only re-issue the cached joint-position target to the
+    PD drives.
     """
 
     def process_actions(self, actions):
@@ -57,6 +58,12 @@ class LoopProfiler:
     CPU-blocked wall time of ``sim.render()`` — submission plus any XR pacing
     wait — NOT the async GPU render/encode, so it is not "render latency".
     ``total`` is true wall time per iteration and is less than the sum of buckets.
+
+    Two distortions to keep in mind when reading reports: wrapped methods also
+    accrue time when called outside a begin()/end() iteration (e.g. inside
+    env.reset()), inflating that window's stage averages; and a window spanning
+    a teleop START/STOP transition mixes idle render-only iterations with full
+    steps, diluting both the Hz and the averages.
     """
 
     def __init__(self, enabled: bool, report_every_s: float = 1.0):

@@ -5,19 +5,17 @@
 
 """Teleoperate the sim_benchmark TACO scene (brush + bowl on a table) with the SharpaWave duo.
 
-Composes three sources:
-- **Scene** — sim_benchmark's ``scene/taco_hoi_178_023.usda`` (table, brush ``taco_178``,
-  bowl ``taco_023``, lights), loaded through its own ``TacoSceneCfg`` so the two objects
-  stay individually tracked rigid bodies.
-- **Robot** — sim_benchmark's ``franka_duo`` placement (torso at (0, -0.7, 1.0), +90° yaw,
-  facing the table across +y) with the rig's vendored USD.
-- **Control** — the RoboLab fork's 58-D ``FrankaDuoSharpaIKActionCfg`` (dual absolute
-  wrist IK + per-finger targets) driven by our AVP dual-hand retargeters. sim_benchmark
-  itself ships only joint-position actions; the IK action space plugs in because both
-  repos build the same articulation with the same prim/joint names.
+Scene/env configs live in ``taco_scene_common.py`` (shared with the replay script).
+See RECORD_REPLAY_GUIDE.md for the record→replay pipeline this script anchors:
 
-The XR anchor defaults stand you at the torso *and yaw you to face the table* — the
-anchor rotation must equal the robot root yaw for the calibrated wrist offsets to hold.
+- Records robot joint states + object poses per control step into a robomimic-style
+  HDF5 (``--record_dir``), one demo per episode, with a success flag.
+- Episode flow: AVP Play starts, the cross-hand stop gesture (all five fingertip
+  pairs touching for 0.5 s) ends the episode and pops a Success/Failure dialog on
+  the headset; Reset discards the in-flight episode.
+- ``--arm_visual`` renders the arms 50% transparent (or hides them) during teleop.
+- ``--self_collision`` enables the duo articulation's self collisions.
+- The AVP Align button re-anchors the session so the table is straight in front.
 
 Run (sim_benchmark is expected at <IsaacLab>/sim_benchmark):
 
@@ -28,7 +26,7 @@ Run (sim_benchmark is expected at <IsaacLab>/sim_benchmark):
 import argparse
 import functools
 import os
-import sys
+import time
 
 import cv2  # noqa: F401  Must import before isaaclab/omni modules.
 import pinocchio  # noqa: F401  Must import before AppLauncher (dex_retargeting builds in-kit).
@@ -48,20 +46,55 @@ parser.add_argument(
 )
 parser.add_argument(
     "--profile", action="store_true",
-    help="Print rolling per-stage loop timings (retarget / frame / step) once per second.",
+    help=(
+        "Print rolling per-stage loop timings once per second: retarget/frame/step, plus "
+        "step sub-buckets (render_call/physx/action/write/readback/obs/ik)."
+    ),
 )
 parser.add_argument(
     "--visualize_hands", action="store_true",
     help="Draw red spheres on the tracked OpenXR hand joints (like the default GR1T2 teleop).",
 )
 parser.add_argument(
-    "--render_interval", type=int, default=4,
-    help="Render every N physics substeps (default 4 = 30 Hz at dt=1/120).",
+    "--render_interval", type=int, default=16,
+    help="Render every N physics substeps (default 16 = 30 Hz at dt=1/480).",
+)
+parser.add_argument(
+    "--record_dir", type=str, default="./datasets/taco_teleop",
+    help="Directory for the recorded HDF5 dataset (one file, one demo per episode).",
+)
+parser.add_argument(
+    "--no_record", action="store_true",
+    help="Disable episode recording entirely.",
+)
+parser.add_argument(
+    "--arm_visual", choices=("transparent", "hidden", "normal"), default="transparent",
+    help="Arm rendering during teleop: 50%% transparent (default), hidden (render only; physics untouched), or normal.",
+)
+parser.add_argument(
+    "--self_collision", action="store_true",
+    help="Enable self collisions on the duo articulation (default off, matching sim_benchmark).",
+)
+parser.add_argument(
+    "--gesture_touch_cm", type=float, default=2.0,
+    help="Stop gesture: max same-finger tip distance (cm) counted as touching (default 2).",
+)
+parser.add_argument(
+    "--gesture_hold_s", type=float, default=0.5,
+    help="Stop gesture: seconds all five pairs must stay touching to trigger (default 0.5).",
+)
+parser.add_argument(
+    "--align_head_xy", type=float, nargs=2, default=(0.0, -0.9),
+    help="Align button: world xy the head is moved to (default just behind the torso).",
+)
+parser.add_argument(
+    "--client_msg_dispatch", action="store_true",
+    help="Send server->client messages with dispatch() instead of push() (try this if the S/F dialog never appears).",
 )
 AppLauncher.add_app_launcher_args(parser)
-# Default AppLauncher's --rendering_mode to the cheap preset (still overridable on the
-# CLI: --rendering_mode balanced|quality). Profiling showed ~24 ms/render on "balanced"
-# vs ~13 ms on "performance", and 4 renders happen inside every control step.
+# Keep AppLauncher's "balanced" rendering default, made explicit here (set_defaults is
+# otherwise a no-op). Pass --rendering_mode performance for the cheap preset: profiling
+# on the old dt=1/120 config showed ~13 ms/render vs ~24 ms on "balanced".
 parser.set_defaults(rendering_mode="balanced")
 args_cli = parser.parse_args()
 args_cli.xr = True
@@ -74,140 +107,102 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
-# sim_benchmark is not pip-installed; it lives inside the IsaacLab checkout.
-_SIM_BENCHMARK_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "sim_benchmark"))
-sys.path.insert(0, _SIM_BENCHMARK_ROOT)
-
 import torch
 
-from sim_benchmark.franka_duo import FRANKA_DUO_USD  # noqa: E402
-from sim_benchmark.taco_hoi import TacoSceneCfg, robot_spawn_props  # noqa: E402
-
 from robolab.robots.franka_duo_sharpa_wave import (  # noqa: E402
-    FrankaDuoSharpaIKActionCfg,
     LEFT_HAND_JOINTS_ORDERED,
     RIGHT_HAND_JOINTS_ORDERED,
 )
 
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.assets import ArticulationCfg
 from isaaclab.devices.device_base import DevicesCfg
 from isaaclab.devices.openxr import OpenXRDeviceCfg, XrCfg
 from isaaclab.devices.teleop_device_factory import create_teleop_device
-from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedRLEnvCfg
-from isaaclab.envs.mdp import joint_pos_rel, reset_scene_to_default, time_out
-from isaaclab.managers import EventTermCfg, ObservationGroupCfg, ObservationTermCfg, TerminationTermCfg
+from isaaclab.envs import ManagerBasedRLEnv
+from isaaclab.envs.mdp.recorders.recorders_cfg import (
+    InitialStateRecorderCfg,
+    PostStepStatesRecorderCfg,
+    PreStepActionsRecorderCfg,
+)
+from isaaclab.managers.recorder_manager import DatasetExportMode, RecorderManagerBaseCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms
 
-from robolab_teleop_common import LoopProfiler, OncePerStepDiffIKAction
+from robolab_teleop_common import LoopProfiler
 from sharpa_duo_retargeters import FrankaDuoSharpaRetargeterCfg
-
-# Arm ready pose shared by both repos (IK-solved: fingers forward, palms down).
-_ARM_INIT = {
-    "left_panda_joint1": 1.145, "left_panda_joint2": 1.048, "left_panda_joint3": -0.464,
-    "left_panda_joint4": -1.516, "left_panda_joint5": -2.540, "left_panda_joint6": 2.045,
-    "left_panda_joint7": 0.108,
-    "right_panda_joint1": -1.144, "right_panda_joint2": 1.047, "right_panda_joint3": 0.462,
-    "right_panda_joint4": -1.517, "right_panda_joint5": 2.541, "right_panda_joint6": 2.044,
-    "right_panda_joint7": -0.107,
-}
+from taco_scene_common import TacoTeleopEnvCfg
+from xr_session_tools import (
+    AnchorAligner,
+    CrossHandStopGesture,
+    RawXrCapture,
+    RawXrCaptureCfg,
+    TeleopCommandBridge,
+    current_head_pose,
+)
 
 
 @configclass
-class TacoTeleopSceneCfg(TacoSceneCfg):
-    """sim_benchmark's TACO scene (table + brush + bowl + lights) plus the duo rig.
+class TacoRecorderManagerCfg(RecorderManagerBaseCfg):
+    """initial_state + per-step states (joints + object poses) + raw actions.
 
-    Robot placement mirrors sim_benchmark's franka_duo: torso at (0, -0.7, 1.0),
-    +90° yaw — standing south of the table (top at z = 0.5421), facing +y.
+    All demos land in one file with a per-demo ``success`` attr (EXPORT_ALL);
+    exports happen only through this script's explicit calls, never on env.reset
+    (``export_in_record_pre_reset=False`` — Reset means discard, not export).
     """
 
-    robot = ArticulationCfg(
-        prim_path="{ENV_REGEX_NS}/robot",
-        spawn=sim_utils.UsdFileCfg(usd_path=str(FRANKA_DUO_USD), **robot_spawn_props()),
-        init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, -0.70, 1.0),
-            rot=(0.7071068, 0.0, 0.0, 0.7071068),
-            joint_pos={**_ARM_INIT, "(left|right)_(thumb|index|middle|ring|pinky)_.*": 0.0},
-        ),
-        soft_joint_pos_limit_factor=1.05,
-        actuators={
-            "shoulders": ImplicitActuatorCfg(
-                joint_names_expr=["(left|right)_panda_joint[1-4]"],
-                effort_limit=87.0, velocity_limit=2.175, stiffness=400.0, damping=80.0,
-            ),
-            "forearms": ImplicitActuatorCfg(
-                joint_names_expr=["(left|right)_panda_joint[5-7]"],
-                effort_limit=12.0, velocity_limit=2.61, stiffness=400.0, damping=80.0,
-            ),
-            "fingers": ImplicitActuatorCfg(
-                joint_names_expr=["(left|right)_(thumb|index|middle|ring|pinky)_.*"],
-                stiffness=None, damping=None,  # keep Sharpa's USD-calibrated gains
-            ),
-        },
-    )
+    record_initial_state = InitialStateRecorderCfg()
+    record_post_step_states = PostStepStatesRecorderCfg()
+    record_pre_step_actions = PreStepActionsRecorderCfg()
+
+    dataset_export_mode = DatasetExportMode.EXPORT_ALL
+    export_in_record_pre_reset = False
 
 
-@configclass
-class ObservationsCfg:
-    @configclass
-    class PolicyCfg(ObservationGroupCfg):
-        joint_pos = ObservationTermCfg(func=joint_pos_rel)
+def apply_arm_visual(mode: str) -> None:
+    """Make the two arm subtrees 50% transparent or invisible (render-only)."""
+    arm_paths = sim_utils.find_matching_prim_paths("/World/envs/env_.*/robot/(left|right)_arm")
+    if not arm_paths:
+        print("[WARNING] --arm_visual: no arm prims matched; skipping.")
+        return
+    if mode == "hidden":
+        import isaacsim.core.utils.stage as stage_utils
 
-        def __post_init__(self):
-            self.enable_corruption = False
-            self.concatenate_terms = True
-
-    policy: PolicyCfg = PolicyCfg()
-
-
-@configclass
-class EventsCfg:
-    reset = EventTermCfg(func=reset_scene_to_default, mode="reset")
-
-
-@configclass
-class TerminationsCfg:
-    time_out = TerminationTermCfg(func=time_out, time_out=True)
-
-
-@configclass
-class RewardsCfg:
-    pass
-
-
-@configclass
-class TacoTeleopEnvCfg(ManagerBasedRLEnvCfg):
-    scene: TacoTeleopSceneCfg = TacoTeleopSceneCfg(num_envs=1, env_spacing=3.0)
-    actions: FrankaDuoSharpaIKActionCfg = FrankaDuoSharpaIKActionCfg()
-    observations: ObservationsCfg = ObservationsCfg()
-    events: EventsCfg = EventsCfg()
-    terminations: TerminationsCfg = TerminationsCfg()
-    rewards: RewardsCfg = RewardsCfg()
-
-    def __post_init__(self):
-        # honor --device (without this, SimulationCfg's default cuda:0 silently wins)
-        self.sim.device = args_cli.device
-        self.episode_length_s = 120.0
-        self.decimation = 4
-        self.sim.dt = 1 / 120           # teleop timing, not sim_benchmark's 20 Hz clip timing
-        self.sim.render_interval = args_cli.render_interval  # 2 = 60 Hz for the headset
-        self.sim.physx.solver_type = 1  # TGS (sim_benchmark's solver_type=2 is invalid on this stack)
-        self.sim.physx.max_position_iteration_count = 32
-        self.sim.physx.bounce_threshold_velocity = 0.2
-        self.sim.physx.enable_ccd = True                   # CCD
-        # solve arm IK once per control step instead of once per physics substep
-        # (decimation× cheaper; the stock per-substep resolve cost ~65 ms/step on this
-        # scene at decimation 8 — see profiler).
-        self.actions.left_arm.class_type = OncePerStepDiffIKAction
-        self.actions.right_arm.class_type = OncePerStepDiffIKAction
+        stage = stage_utils.get_current_stage()
+        for path in arm_paths:
+            sim_utils.set_prim_visibility(stage.GetPrimAtPath(path), False)
+        print(f"[INFO] Arms hidden (render only): {arm_paths}")
+    elif mode == "transparent":
+        material_path = "/World/Looks/ArmGhostMaterial"
+        sim_utils.spawn_preview_surface(
+            material_path,
+            sim_utils.PreviewSurfaceCfg(diffuse_color=(0.75, 0.78, 0.85), opacity=0.5, roughness=0.6),
+        )
+        for path in arm_paths:
+            sim_utils.bind_visual_material(path, material_path, stronger_than_descendants=True)
+        print(f"[INFO] Arms 50% transparent: {arm_paths}")
 
 
 def main():
-    env = ManagerBasedRLEnv(cfg=TacoTeleopEnvCfg())
-    env.reset()
+    env_cfg = TacoTeleopEnvCfg()
+    env_cfg.sim.device = args_cli.device  # honor --device (SimulationCfg defaults to cuda:0 otherwise)
+    env_cfg.sim.render_interval = args_cli.render_interval
+    env_cfg.scene.robot.spawn.articulation_props.enabled_self_collisions = args_cli.self_collision
+    if args_cli.self_collision:
+        print("[INFO] Self collisions ENABLED on the duo articulation (covers fingers, arm<->hand, arm<->torso, left<->right).")
+    if args_cli.arm_visual == "transparent":
+        # opacity needs translucency support in the renderer; must be set pre-sim-context
+        env_cfg.sim.render.enable_translucency = True
+    recording = not args_cli.no_record
+    if recording:
+        env_cfg.recorders = TacoRecorderManagerCfg()
+        env_cfg.recorders.dataset_export_dir_path = os.path.abspath(args_cli.record_dir)
+        env_cfg.recorders.dataset_filename = "dataset"
 
+    env = ManagerBasedRLEnv(cfg=env_cfg)
+    env.reset()
+    apply_arm_visual(args_cli.arm_visual)
+
+    capture_cfg = RawXrCaptureCfg(retargeter_type=RawXrCapture)
     device_cfg = OpenXRDeviceCfg(
         xr_cfg=XrCfg(anchor_pos=tuple(args_cli.anchor_pos), anchor_rot=tuple(args_cli.anchor_rot)),
         retargeters=[
@@ -216,15 +211,24 @@ def main():
                 right_hand_joint_names=RIGHT_HAND_JOINTS_ORDERED,
                 sim_device=env.device,
                 enable_visualization=args_cli.visualize_hands,
-            )
+            ),
+            capture_cfg,  # zero-dim: raw hands for the stop gesture, head for align
         ],
     )
 
     teleop_active = False
     reset_requested = False
+    align_requested = False
+    # None = not awaiting; float = time the S/F request was last (re)sent to the client.
+    awaiting_result_since: float | None = None
+    record_result: bool | None = None
+    demo_count = 0
 
     def _start():
         nonlocal teleop_active
+        if awaiting_result_since is not None:
+            print("[INFO] Ignoring Play: waiting for the Success/Failure dialog (or press Reset to discard).")
+            return
         teleop_active = True
 
     def _stop():
@@ -235,8 +239,20 @@ def main():
         nonlocal reset_requested
         reset_requested = True
 
+    def _on_record_result(success: bool):
+        nonlocal record_result
+        record_result = success
+
+    def _on_align():
+        nonlocal align_requested
+        align_requested = True
+
     callbacks = {"START": _start, "STOP": _stop, "RESET": _reset}
     teleop = create_teleop_device("handtracking", DevicesCfg(devices={"handtracking": device_cfg}).devices, callbacks)
+    capture = next(r for r in teleop._retargeters if isinstance(r, RawXrCapture))
+    bridge = TeleopCommandBridge(_on_record_result, _on_align, use_dispatch=args_cli.client_msg_dispatch)
+    gesture = CrossHandStopGesture(touch_dist=args_cli.gesture_touch_cm / 100.0, hold_s=args_cli.gesture_hold_s)
+    aligner = AnchorAligner(args_cli.anchor_pos, args_cli.anchor_rot, target_head_xy=tuple(args_cli.align_head_xy))
 
     robot = env.scene["robot"]
 
@@ -255,6 +271,35 @@ def main():
             out[base + 3 : base + 7] = quat.squeeze(0)
         return out
 
+    def episode_has_data() -> bool:
+        return recording and not env.recorder_manager.get_episode(0).is_empty()
+
+    def finish_episode():
+        """Stop gesture fired: close the buffer and ask the AVP for Success/Failure."""
+        nonlocal teleop_active, awaiting_result_since, record_result
+
+        teleop_active = False
+        if not episode_has_data():
+            print("[INFO] Stop gesture: no recorded steps, nothing to save.")
+            return
+        env.recorder_manager.record_pre_reset([0], force_export_or_skip=False)
+        record_result = None
+        awaiting_result_since = time.monotonic()
+        bridge.request_record_result(demo_count)
+        actions = env.recorder_manager.get_episode(0).data.get("actions")
+        n_steps = actions.shape[0] if actions is not None else 0
+        print(f"[INFO] Episode ended by gesture ({n_steps} steps). "
+              "Choose Success/Failure on the headset (Reset discards).")
+
+    def export_episode(success: bool):
+        nonlocal awaiting_result_since, demo_count
+        env.recorder_manager.set_success_to_episodes([0], torch.tensor([[success]], dtype=torch.bool, device=env.device))
+        env.recorder_manager.export_episodes([0])
+        env.recorder_manager.reset()
+        demo_count += 1
+        awaiting_result_since = None
+        print(f"[INFO] Episode exported as demo_{demo_count - 1} (success={success}). Press Play for the next one.")
+
     prof = LoopProfiler(enabled=args_cli.profile)
     # "render_call" = CPU-blocked wall time of sim.render() (submission + any XR pacing
     # wait) — the async GPU render/CloudXR encode is NOT included. Split out of "step".
@@ -267,13 +312,40 @@ def main():
     prof.wrap_method(env.observation_manager, "compute", "obs")
     prof.wrap_method(env.action_manager, "process_action", "ik")
 
-    print("[INFO] Starting teleop loop. AVP: Play=start, Stop=pause, Reset=reset scene.")
+    if recording:
+        print(f"[INFO] Recording to {env_cfg.recorders.dataset_export_dir_path}/dataset.hdf5")
+    print("[INFO] Starting teleop loop. AVP: Play=start, Stop=pause, Reset=reset scene (discards episode), "
+          "Align=re-anchor, stop gesture=end episode.")
     with torch.inference_mode():
         while simulation_app.is_running():
             if reset_requested:
+                if awaiting_result_since is not None:
+                    print("[INFO] Reset while awaiting Success/Failure: episode discarded.")
+                if recording:
+                    env.recorder_manager.reset()
                 env.reset()
                 teleop.reset()
+                gesture.reset()
+                awaiting_result_since = None
                 reset_requested = False
+            if align_requested:
+                align_requested = False
+                # Query XRCore directly: the capture retargeter only refreshes inside
+                # teleop.advance(), which doesn't run while teleop is paused.
+                head = current_head_pose()
+                if head is None:
+                    head = capture.head_pose
+                if head is None:
+                    print("[WARNING] Align: XR reports no head pose (is the headset session live and the "
+                          "visor on?). Try again in a moment.")
+                else:
+                    aligner.align(head)
+            if record_result is not None and awaiting_result_since is not None:
+                export_episode(record_result)
+                record_result = None
+            if awaiting_result_since is not None and time.monotonic() - awaiting_result_since > 5.0:
+                awaiting_result_since = time.monotonic()  # re-send in case the push was lost
+                bridge.request_record_result(demo_count)
             if not teleop_active:
                 prof.begin()
                 env.sim.render()  # wrapped: lands in the "render_call" bucket
@@ -282,9 +354,13 @@ def main():
             prof.begin()
             action = teleop.advance()          # XR poll + wrist offsets + DexPilot QPs
             prof.lap("retarget")
+            if gesture.update(capture.latest):
+                finish_episode()
+                prof.end()
+                continue
             action = to_root_frame(action.to(env.device))
             prof.lap("frame")
-            env.step(action.unsqueeze(0))      # 8 physics substeps + 4 renders
+            env.step(action.unsqueeze(0))      # 8 physics substeps; renders every 2nd step at interval 16
             prof.lap("step")
             prof.end()
 
