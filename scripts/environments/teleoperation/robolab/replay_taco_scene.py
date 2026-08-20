@@ -239,13 +239,25 @@ def replay_episode(env, episode: dict, writers: dict) -> int:
 
 
 def resolve_dataset_path(path: str) -> str:
-    """Accept a file or a directory; in a directory, pick the newest .hdf5."""
+    """Accept a file or a directory; in a directory, pick the newest .hdf5 that
+    actually contains demos (every teleop start leaves a file, but sessions that
+    exported nothing leave an empty shell)."""
     path = os.path.abspath(path)
     if os.path.isdir(path):
         candidates = [os.path.join(path, n) for n in os.listdir(path) if n.endswith(".hdf5")]
         if not candidates:
             raise SystemExit(f"No .hdf5 files in {path}")
-        path = max(candidates, key=os.path.getmtime)
+        non_empty = []
+        for candidate in candidates:
+            try:
+                with h5py.File(candidate, "r") as f:
+                    if "data" in f and len(f["data"]) > 0:
+                        non_empty.append(candidate)
+            except OSError:
+                continue  # unreadable / still being written
+        if not non_empty:
+            raise SystemExit(f"No .hdf5 file in {path} contains demos (all empty shells).")
+        path = max(non_empty, key=os.path.getmtime)
     return path
 
 
