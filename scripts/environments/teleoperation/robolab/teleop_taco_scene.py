@@ -56,8 +56,9 @@ parser.add_argument(
     help="Draw red spheres on the tracked OpenXR hand joints (like the default GR1T2 teleop).",
 )
 parser.add_argument(
-    "--render_interval", type=int, default=16,
-    help="Render every N physics substeps (default 16 = 30 Hz at dt=1/480).",
+    "--render_frequency", type=float, default=30.0,
+    help="Target render rate in Hz; the physics-substep render interval is computed "
+         "from the sim dt (default 30 = every 16th substep at dt=1/480).",
 )
 parser.add_argument(
     "--record_dir", type=str, default="./datasets/taco_teleop",
@@ -186,7 +187,12 @@ def apply_arm_visual(mode: str) -> None:
 def main():
     env_cfg = TacoTeleopEnvCfg()
     env_cfg.sim.device = args_cli.device  # honor --device (SimulationCfg defaults to cuda:0 otherwise)
-    env_cfg.sim.render_interval = args_cli.render_interval
+    # Renders happen every N physics substeps; N follows from the requested rate.
+    physics_hz = 1.0 / env_cfg.sim.dt
+    env_cfg.sim.render_interval = max(1, round(physics_hz / args_cli.render_frequency))
+    actual_hz = physics_hz / env_cfg.sim.render_interval
+    print(f"[INFO] Render frequency {args_cli.render_frequency:g} Hz -> interval "
+          f"{env_cfg.sim.render_interval} ({actual_hz:g} Hz actual at {physics_hz:g} Hz physics)")
     env_cfg.scene.robot.spawn.articulation_props.enabled_self_collisions = args_cli.self_collision
     if args_cli.self_collision:
         print("[INFO] Self collisions ENABLED on the duo articulation (covers fingers, arm<->hand, arm<->torso, left<->right).")
@@ -372,7 +378,7 @@ def main():
                     continue
                 action = to_root_frame(action.to(env.device))
                 prof.lap("frame")
-                env.step(action.unsqueeze(0))      # 8 physics substeps; renders every 2nd step at interval 16
+                env.step(action.unsqueeze(0))      # 8 physics substeps; renders per --render_frequency
                 prof.lap("step")
                 prof.end()
             except Exception:
