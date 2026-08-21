@@ -13,7 +13,7 @@ See RECORD_REPLAY_GUIDE.md for the record→replay pipeline this script anchors:
 - Episode flow: AVP Play starts, the cross-hand stop gesture (all five fingertip
   pairs touching for 0.5 s) ends the episode and pops a Success/Failure dialog on
   the headset; Reset discards the in-flight episode.
-- ``--arm_visual`` renders the arms 20% transparent (or hides them) during teleop.
+- ``--arm_visual`` renders the arms 5% transparent (or hides them) during teleop.
 - ``--self_collision`` enables the duo articulation's self collisions.
 - The AVP Align button re-anchors the session so the table is straight in front.
 
@@ -70,7 +70,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--arm_visual", choices=("transparent", "hidden", "normal"), default="transparent",
-    help="Arm rendering during teleop: 20%% transparent (default), hidden (render only; physics untouched), or normal.",
+    help="Arm rendering during teleop: 5%% transparent (default), hidden (render only; physics untouched), or normal.",
 )
 parser.add_argument(
     "--self_collision", action="store_true",
@@ -85,9 +85,9 @@ parser.add_argument(
     help="Stop gesture: seconds all five pairs must stay touching to trigger (default 0.5).",
 )
 parser.add_argument(
-    "--align_head_xy", type=float, nargs=2, default=(0.0, -0.8),
-    help="Align button: world xy the head is moved to. Default (0, -0.8) stands you "
-         "~20 cm from the table's near edge (tabletop spans y in [-0.6, 0.6]).",
+    "--align_head_xy", type=float, nargs=2, default=(0.0, -1.0),
+    help="Align button: world xy the head is moved to. Default (0, -1.0) stands you "
+         "~40 cm from the table's near edge (tabletop spans y in [-0.6, 0.6]).",
 )
 parser.add_argument(
     "--client_msg_dispatch", action="store_true",
@@ -130,7 +130,9 @@ from isaaclab.managers.recorder_manager import DatasetExportMode, RecorderManage
 from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms
 
-from robolab_teleop_common import LoopProfiler
+from isaaclab.managers import EventTermCfg
+
+from robolab_teleop_common import LoopProfiler, filter_near_link_pairs
 from sharpa_duo_retargeters import FrankaDuoSharpaRetargeterCfg
 from taco_scene_common import TacoTeleopEnvCfg
 from xr_session_tools import (
@@ -161,7 +163,7 @@ class TacoRecorderManagerCfg(RecorderManagerBaseCfg):
 
 
 def apply_arm_visual(mode: str) -> None:
-    """Make the two arm subtrees 20% transparent or invisible (render-only)."""
+    """Make the two arm subtrees 5% transparent or invisible (render-only)."""
     arm_paths = sim_utils.find_matching_prim_paths("/World/envs/env_.*/robot/(left|right)_arm")
     if not arm_paths:
         print("[WARNING] --arm_visual: no arm prims matched; skipping.")
@@ -177,11 +179,11 @@ def apply_arm_visual(mode: str) -> None:
         material_path = "/World/Looks/ArmGhostMaterial"
         sim_utils.spawn_preview_surface(
             material_path,
-            sim_utils.PreviewSurfaceCfg(diffuse_color=(0.75, 0.78, 0.85), opacity=0.2, roughness=0.2),
+            sim_utils.PreviewSurfaceCfg(diffuse_color=(0.75, 0.78, 0.85), opacity=0.05, roughness=0.0),
         )
         for path in arm_paths:
             sim_utils.bind_visual_material(path, material_path, stronger_than_descendants=True)
-        print(f"[INFO] Arms 20% transparent: {arm_paths}")
+        print(f"[INFO] Arms 5% transparent: {arm_paths}")
 
 
 def main():
@@ -196,6 +198,11 @@ def main():
     env_cfg.scene.robot.spawn.articulation_props.enabled_self_collisions = args_cli.self_collision
     if args_cli.self_collision:
         print("[INFO] Self collisions ENABLED on the duo articulation (covers fingers, arm<->hand, arm<->torso, left<->right).")
+        # Without this, the knuckles jam: the Sharpa MCP gimbals route through
+        # zero-length virtual links with their own convex hulls, so palm<->proximal
+        # pairs (2 joints apart — not auto-excluded by PhysX) interpenetrate at rest
+        # and overpower the finger drives' tiny effort caps. See filter_near_link_pairs.
+        env_cfg.events.filter_near_links = EventTermCfg(func=filter_near_link_pairs, mode="startup")
     if args_cli.arm_visual == "transparent":
         # opacity needs translucency support in the renderer; must be set pre-sim-context
         env_cfg.sim.render.enable_translucency = True

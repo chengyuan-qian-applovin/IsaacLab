@@ -149,6 +149,83 @@ class LoopProfiler:
         self._window_start = now
 
 
+def filter_near_link_pairs(env, env_ids, robot_name: str = "robot", max_joint_distance: int = 2) -> None:
+    """Startup event: filter self-collision between robot links ≤ N joints apart.
+
+    Why: PhysX's ``enabled_self_collisions`` auto-excludes only directly-jointed
+    link pairs. The SharpaWave knuckles are two joints in series through a
+    zero-length virtual link (``*_MCP_VL``) that carries its own convex hull, so
+    palm<->proximal (and phalanx<->elastomer, panda link i<->i+2, ...) are
+    distance-2 pairs whose hulls interpenetrate at rest. The resulting contact
+    forces dwarf the finger drives' tiny effort caps (0.19-1.86 Nm) and jam the
+    fingers open. Filtering everything within ``max_joint_distance`` keeps the
+    contacts that matter (finger<->finger across fingers, hand<->hand,
+    hand<->arm) while removing the structural overlaps.
+
+    Mirrors sim_benchmark's ``filter_contact_pairs``: filtering is authored on
+    the individual collider prims (root-level filtering only partially works).
+    """
+    from collections import deque
+
+    import omni.usd
+    from pxr import Usd, UsdPhysics
+
+    stage = omni.usd.get_context().get_stage()
+    total_pairs = 0
+    for env_path in env.scene.env_prim_paths:
+        robot_root = stage.GetPrimAtPath(f"{env_path}/{robot_name}")
+        # Joint graph over rigid links (deactivated joints don't compose, so they
+        # are skipped automatically).
+        adjacency: dict[str, set[str]] = {}
+        for prim in Usd.PrimRange(robot_root):
+            joint = UsdPhysics.Joint(prim)
+            if not joint:
+                continue
+            body0 = joint.GetBody0Rel().GetTargets()
+            body1 = joint.GetBody1Rel().GetTargets()
+            if not body0 or not body1:
+                continue
+            a, b = str(body0[0]), str(body1[0])
+            adjacency.setdefault(a, set()).add(b)
+            adjacency.setdefault(b, set()).add(a)
+
+        # Collider prims per link (links without colliders can't jam anything).
+        colliders: dict[str, list] = {}
+        for body_path in adjacency:
+            body_prim = stage.GetPrimAtPath(body_path)
+            if body_prim.IsValid():
+                paths = [p.GetPath() for p in Usd.PrimRange(body_prim) if p.HasAPI(UsdPhysics.CollisionAPI)]
+                if paths:
+                    colliders[body_path] = paths
+
+        # All link pairs within max_joint_distance hops (distance 1 is already
+        # excluded by PhysX, but re-filtering it is harmless).
+        pairs: set[tuple[str, str]] = set()
+        for start in adjacency:
+            queue, seen = deque([(start, 0)]), {start}
+            while queue:
+                node, dist = queue.popleft()
+                if 0 < dist and start < node:
+                    pairs.add((start, node))
+                if dist < max_joint_distance:
+                    for nxt in adjacency[node]:
+                        if nxt not in seen:
+                            seen.add(nxt)
+                            queue.append((nxt, dist + 1))
+
+        for a, b in pairs:
+            if a not in colliders or b not in colliders:
+                continue
+            for source_path in colliders[a]:
+                api = UsdPhysics.FilteredPairsAPI.Apply(stage.GetPrimAtPath(source_path))
+                rel = api.CreateFilteredPairsRel()
+                for target_path in colliders[b]:
+                    rel.AddTarget(target_path)
+            total_pairs += 1
+    print(f"[INFO] Self-collision: filtered {total_pairs} link pairs within "
+          f"{max_joint_distance} joints (knuckle virtual-link overlaps etc.).")
+
+
 def strip_cameras_for_xr(env_cfg) -> list[str]:
     """Remove camera sensors and their observation terms from a RoboLab env cfg.
 

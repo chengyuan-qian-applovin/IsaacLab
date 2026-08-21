@@ -78,7 +78,7 @@ class TacoTeleopSceneCfg(TacoSceneCfg):
             ),
             "fingers": ImplicitActuatorCfg(
                 joint_names_expr=["(left|right)_(thumb|index|middle|ring|pinky)_.*"],
-                stiffness=None, damping=None,  # keep Sharpa's USD-calibrated gains
+                stiffness=200.0, damping=2.0,  # keep Sharpa's USD-calibrated gains
             ),
         },
     )
@@ -122,10 +122,10 @@ class TacoTeleopEnvCfg(ManagerBasedRLEnvCfg):
     rewards: RewardsCfg = RewardsCfg()
 
     def __post_init__(self):
-        self.episode_length_s = 120.0
-        self.decimation = 8
-        self.sim.dt = 1 / 480           # teleop timing, not sim_benchmark's 20 Hz clip timing
-        self.sim.render_interval = 16   # 16 = 30 Hz at dt=1/480; scripts override from CLI
+        self.episode_length_s = 300
+        self.decimation = 4
+        self.sim.dt = 1 / 240           # teleop timing, not sim_benchmark's 20 Hz clip timing
+        self.sim.render_interval = 8   # 8 = 30 Hz at dt=1/240; scripts override from CLI
         self.sim.physx.solver_type = 1  # TGS (sim_benchmark's solver_type=2 is invalid on this stack)
         self.sim.physx.max_position_iteration_count = 32
         self.sim.physx.bounce_threshold_velocity = 0.2
