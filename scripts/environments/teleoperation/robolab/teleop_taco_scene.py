@@ -132,7 +132,7 @@ from isaaclab.utils.math import subtract_frame_transforms
 
 from isaaclab.managers import EventTermCfg
 
-from robolab_teleop_common import LoopProfiler, filter_near_link_pairs
+from robolab_teleop_common import LoopProfiler, filter_self_collision_except_fingertips
 from sharpa_duo_retargeters import FrankaDuoSharpaRetargeterCfg
 from taco_scene_common import TacoTeleopEnvCfg
 from xr_session_tools import (
@@ -197,12 +197,13 @@ def main():
           f"{env_cfg.sim.render_interval} ({actual_hz:g} Hz actual at {physics_hz:g} Hz physics)")
     env_cfg.scene.robot.spawn.articulation_props.enabled_self_collisions = args_cli.self_collision
     if args_cli.self_collision:
-        print("[INFO] Self collisions ENABLED on the duo articulation (covers fingers, arm<->hand, arm<->torso, left<->right).")
-        # Without this, the knuckles jam: the Sharpa MCP gimbals route through
-        # zero-length virtual links with their own convex hulls, so palm<->proximal
-        # pairs (2 joints apart — not auto-excluded by PhysX) interpenetrate at rest
-        # and overpower the finger drives' tiny effort caps. See filter_near_link_pairs.
-        env_cfg.events.filter_near_links = EventTermCfg(func=filter_near_link_pairs, mode="startup")
+        print("[INFO] Self collision: fingertips-only (DP/elastomer/fingertip links of different "
+              "fingers collide; everything else within the robot is filtered).")
+        # Unfiltered self-collision jams the knuckles: the Sharpa MCP gimbals route
+        # through zero-length virtual links with their own convex hulls, and the
+        # resulting rest-pose contacts overpower the tiny finger drives. See
+        # filter_self_collision_except_fingertips.
+        env_cfg.events.filter_self_collision = EventTermCfg(func=filter_self_collision_except_fingertips, mode="startup")
     if args_cli.arm_visual == "transparent":
         # opacity needs translucency support in the renderer; must be set pre-sim-context
         env_cfg.sim.render.enable_translucency = True
