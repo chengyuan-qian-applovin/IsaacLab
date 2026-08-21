@@ -114,15 +114,16 @@ class TacoReplaySceneCfg(TacoTeleopSceneCfg):
     operator_cam = _camera("{ENV_REGEX_NS}/operator_cam")
     third_person_cam = _camera("{ENV_REGEX_NS}/third_person_cam")
     # Wrist cameras ride the hand flanges. ROS convention: +Z forward — identity
-    # looks along the flange axis (into the hand / at the fingers). First-guess
-    # extrinsics: tune pos/rot by eye after one replay.
+    # looks along the flange axis (into the hand / at the fingers). Mounted on the
+    # pinky side: the original thumb-side mount (pos y=-0.05, rot identity) had the
+    # thumb blocking the view, so both are rotated 180° about the flange z axis.
     wrist_cam_left = _camera(
         "{ENV_REGEX_NS}/robot/left_hand/left_hand_flange/wrist_cam",
-        CameraCfg.OffsetCfg(pos=(0.0, -0.05, 0.0), rot=(1.0, 0.0, 0.0, 0.0), convention="ros"),
+        CameraCfg.OffsetCfg(pos=(0.0, 0.05, 0.0), rot=(0.0, 0.0, 0.0, 1.0), convention="ros"),
     )
     wrist_cam_right = _camera(
         "{ENV_REGEX_NS}/robot/right_hand/right_hand_flange/wrist_cam",
-        CameraCfg.OffsetCfg(pos=(0.0, -0.05, 0.0), rot=(1.0, 0.0, 0.0, 0.0), convention="ros"),
+        CameraCfg.OffsetCfg(pos=(0.0, 0.05, 0.0), rot=(0.0, 0.0, 0.0, 1.0), convention="ros"),
     )
 
 
