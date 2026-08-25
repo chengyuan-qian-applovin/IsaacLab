@@ -22,6 +22,11 @@ See RECORD_REPLAY_GUIDE.md for the record→replay pipeline this script anchors:
 Run (sim_benchmark is expected at <IsaacLab>/sim_benchmark):
 
     ./isaaclab.sh -p scripts/environments/teleoperation/robolab/teleop_taco_scene.py --headless
+
+Other scenegen scenes (same table/rig, objects auto-discovered from the USDA):
+
+    ./isaaclab.sh -p scripts/environments/teleoperation/robolab/teleop_taco_scene.py --headless \
+        --scene_usda sim_benchmark/assets/oakink_example/04_episode_scenegen/runs/scenes/<scene>.usda
 """
 
 # isort: skip_file
@@ -100,6 +105,12 @@ parser.add_argument(
 parser.add_argument(
     "--client_msg_dispatch", action="store_true",
     help="Send server->client messages with dispatch() instead of push() (try this if the S/F dialog never appears).",
+)
+parser.add_argument(
+    "--scene_usda", type=str, default=None,
+    help="Teleoperate a sim_benchmark.scenegen scene USDA instead of the TACO scene: same duo "
+         "rig/IK/recording, objects auto-discovered from the file (see scenegen_scene_common.py). "
+         "Example: sim_benchmark/assets/oakink_example/04_episode_scenegen/runs/scenes/<scene>.usda",
 )
 AppLauncher.add_app_launcher_args(parser)
 # Keep AppLauncher's "balanced" rendering default, made explicit here (set_defaults is
@@ -182,7 +193,12 @@ class TacoRecorderManagerCfg(RecorderManagerBaseCfg):
 
 
 def main():
-    env_cfg = TacoTeleopEnvCfg()
+    if args_cli.scene_usda:
+        from scenegen_scene_common import load_scenegen_env_cfg
+
+        env_cfg = load_scenegen_env_cfg(args_cli.scene_usda)
+    else:
+        env_cfg = TacoTeleopEnvCfg()
     env_cfg.sim.device = args_cli.device  # honor --device (SimulationCfg defaults to cuda:0 otherwise)
     # Renders happen every N physics substeps; N follows from the requested rate.
     physics_hz = 1.0 / env_cfg.sim.dt
