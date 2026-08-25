@@ -8,6 +8,8 @@
 Contains the pieces that talk to the XR session beyond retargeting:
 
 - :class:`RawXrCapture` — zero-dim passthrough retargeter exposing raw hand/head data.
+- :class:`RawXrHandsRecorder` — recorder term persisting the raw 26-joint hand poses
+  per control step (``obs/xr_hands``), fed from a :class:`RawXrCapture`.
 - :class:`CrossHandStopGesture` — "all five fingertip pairs touching" stop gesture.
 - :class:`TeleopCommandBridge` — extra ``teleop_command`` handling (record result,
   align) plus server→client messages via the CloudXR outgoing relay.
@@ -24,7 +26,10 @@ import numpy as np
 import torch
 
 from isaaclab.devices.device_base import DeviceBase
+from isaaclab.devices.openxr.common import HAND_JOINT_NAMES
 from isaaclab.devices.retargeter_base import RetargeterBase, RetargeterCfg
+from isaaclab.managers.recorder_manager import RecorderTerm, RecorderTermCfg
+from isaaclab.utils import configclass
 
 # Fingertip joints, same-finger pair order: thumb, index, middle, ring, little.
 _TIP_JOINTS = ("thumb_tip", "index_tip", "middle_tip", "ring_tip", "little_tip")
@@ -69,6 +74,46 @@ class RawXrCapture(RetargeterBase):
         if head is None or np.linalg.norm(head[:3]) < 1e-6:
             return None
         return head
+
+
+class RawXrHandsRecorder(RecorderTerm):
+    """Recorder term: the raw 26-joint XR hand poses, once per control step.
+
+    Writes ``obs/xr_hands`` with shape (T, 2, 26, 7): [left, right] hand x
+    ``HAND_JOINT_NAMES`` order x [x, y, z, qw, qx, qy, qz], in the Isaac world
+    frame — the exact dict the retargeters consume, BEFORE any calibration or
+    retargeting. Recorded pre-step, so row t is the tracking frame that produced
+    ``actions[t]``.
+
+    The recorder manager is constructed with the env, before the teleop device
+    (and its :class:`RawXrCapture`) exists, so the script late-binds the source
+    after building the device: ``RawXrHandsRecorder.source = capture``. Steps
+    taken while the source is unset, or a hand is untracked, record zeros
+    (same convention as the device's untracked default pose).
+    """
+
+    source: RawXrCapture | None = None
+
+    def record_pre_step(self):
+        out = np.zeros((2, 26, 7), dtype=np.float32)
+        data = self.source.latest if self.source is not None else None
+        if data:
+            hands = (DeviceBase.TrackingTarget.HAND_LEFT, DeviceBase.TrackingTarget.HAND_RIGHT)
+            for row, target in enumerate(hands):
+                hand = data.get(target)
+                if hand:
+                    for j, name in enumerate(HAND_JOINT_NAMES):
+                        pose = hand.get(name)
+                        if pose is not None:
+                            out[row, j] = pose
+        return "obs/xr_hands", torch.from_numpy(out).unsqueeze(0).to(self._env.device)
+
+
+@configclass
+class RawXrHandsRecorderCfg(RecorderTermCfg):
+    """Configuration for :class:`RawXrHandsRecorder`."""
+
+    class_type: type[RecorderTerm] = RawXrHandsRecorder
 
 
 def current_head_pose() -> np.ndarray | None:

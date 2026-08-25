@@ -42,6 +42,10 @@ fi
 #    (h5py, psutil, tqdm, numpy, warp etc. already ship with Isaac Sim.)
 "${PYTHON}" -m pip install --quiet opencv-python-headless
 
+# 2b) Finger retargeting stack for the SharpaWave duo scripts (DexPilot + pinocchio).
+#     Versions matching the validated setup: dex_retargeting 0.4.6, pin 2.7.0.
+"${PYTHON}" -m pip install --quiet dex_retargeting
+
 # 3) RoboLab itself, editable, without its pinned simulator stack.
 "${PYTHON}" -m pip install --quiet --no-deps -e "${ROBOLAB_PATH}"
 

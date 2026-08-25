@@ -15,6 +15,8 @@ See RECORD_REPLAY_GUIDE.md for the record→replay pipeline this script anchors:
   the headset; Reset discards the in-flight episode.
 - ``--arm_visual`` renders the arms 5% transparent (or hides them) during teleop.
 - ``--self_collision`` enables the duo articulation's self collisions.
+- ``--show_collision_meshes`` renders the hand collider hulls in-scene (green = live
+  cross-finger tips, red = filtered links) for debugging self-collision behavior.
 - The AVP Align button re-anchors the session so the table is straight in front.
 
 Run (sim_benchmark is expected at <IsaacLab>/sim_benchmark):
@@ -77,6 +79,12 @@ parser.add_argument(
     help="Enable self collisions on the duo articulation (default off, matching sim_benchmark).",
 )
 parser.add_argument(
+    "--show_collision_meshes", action="store_true",
+    help="Render the hand collision shapes (cooked convex hulls) in-scene: green = fingertip "
+         "links whose cross-finger contacts stay live under --self_collision, red = links whose "
+         "self-contacts are filtered.",
+)
+parser.add_argument(
     "--gesture_touch_cm", type=float, default=2.0,
     help="Stop gesture: max same-finger tip distance (cm) counted as touching (default 2).",
 )
@@ -85,9 +93,9 @@ parser.add_argument(
     help="Stop gesture: seconds all five pairs must stay touching to trigger (default 0.5).",
 )
 parser.add_argument(
-    "--align_head_xy", type=float, nargs=2, default=(0.0, -1.0),
-    help="Align button: world xy the head is moved to. Default (0, -1.0) stands you "
-         "~40 cm from the table's near edge (tabletop spans y in [-0.6, 0.6]).",
+    "--align_head_xy", type=float, nargs=2, default=(0.0, -0.6),
+    help="Align button: world xy the head is moved to. Default (0, -0.6) stands you "
+         "at the table's near edge (tabletop spans y in [-0.6, 0.6]).",
 )
 parser.add_argument(
     "--client_msg_dispatch", action="store_true",
@@ -116,7 +124,6 @@ from robolab.robots.franka_duo_sharpa_wave import (  # noqa: E402
     RIGHT_HAND_JOINTS_ORDERED,
 )
 
-import isaaclab.sim as sim_utils
 from isaaclab.devices.device_base import DevicesCfg
 from isaaclab.devices.openxr import OpenXRDeviceCfg, XrCfg
 from isaaclab.devices.teleop_device_factory import create_teleop_device
@@ -132,7 +139,13 @@ from isaaclab.utils.math import subtract_frame_transforms
 
 from isaaclab.managers import EventTermCfg
 
-from robolab_teleop_common import LoopProfiler, filter_self_collision_except_fingertips
+from robolab_teleop_common import (
+    JointSetpointsRecorderCfg,
+    LoopProfiler,
+    apply_arm_visual,
+    filter_self_collision_except_fingertips,
+    visualize_hand_collision_meshes,
+)
 from sharpa_duo_retargeters import FrankaDuoSharpaRetargeterCfg
 from taco_scene_common import TacoTeleopEnvCfg
 from xr_session_tools import (
@@ -140,6 +153,8 @@ from xr_session_tools import (
     CrossHandStopGesture,
     RawXrCapture,
     RawXrCaptureCfg,
+    RawXrHandsRecorder,
+    RawXrHandsRecorderCfg,
     TeleopCommandBridge,
     current_head_pose,
 )
@@ -147,7 +162,9 @@ from xr_session_tools import (
 
 @configclass
 class TacoRecorderManagerCfg(RecorderManagerBaseCfg):
-    """initial_state + per-step states (joints + object poses) + raw actions.
+    """initial_state + per-step states (joints + object poses) + raw actions
+    + raw XR hand points (``obs/xr_hands``, (T, 2, 26, 7) world-frame poses)
+    + PD joint setpoints (``obs/joint_setpoints``, (T, 58), drive targets).
 
     All demos land in one file with a per-demo ``success`` attr (EXPORT_ALL);
     exports happen only through this script's explicit calls, never on env.reset
@@ -157,33 +174,11 @@ class TacoRecorderManagerCfg(RecorderManagerBaseCfg):
     record_initial_state = InitialStateRecorderCfg()
     record_post_step_states = PostStepStatesRecorderCfg()
     record_pre_step_actions = PreStepActionsRecorderCfg()
+    record_pre_step_xr_hands = RawXrHandsRecorderCfg()
+    record_post_step_joint_setpoints = JointSetpointsRecorderCfg()
 
     dataset_export_mode = DatasetExportMode.EXPORT_ALL
     export_in_record_pre_reset = False
-
-
-def apply_arm_visual(mode: str) -> None:
-    """Make the two arm subtrees 5% transparent or invisible (render-only)."""
-    arm_paths = sim_utils.find_matching_prim_paths("/World/envs/env_.*/robot/(left|right)_arm")
-    if not arm_paths:
-        print("[WARNING] --arm_visual: no arm prims matched; skipping.")
-        return
-    if mode == "hidden":
-        import isaacsim.core.utils.stage as stage_utils
-
-        stage = stage_utils.get_current_stage()
-        for path in arm_paths:
-            sim_utils.set_prim_visibility(stage.GetPrimAtPath(path), False)
-        print(f"[INFO] Arms hidden (render only): {arm_paths}")
-    elif mode == "transparent":
-        material_path = "/World/Looks/ArmGhostMaterial"
-        sim_utils.spawn_preview_surface(
-            material_path,
-            sim_utils.PreviewSurfaceCfg(diffuse_color=(0.75, 0.78, 0.85), opacity=0.05, roughness=0.0),
-        )
-        for path in arm_paths:
-            sim_utils.bind_visual_material(path, material_path, stronger_than_descendants=True)
-        print(f"[INFO] Arms 5% transparent: {arm_paths}")
 
 
 def main():
@@ -204,7 +199,7 @@ def main():
         # resulting rest-pose contacts overpower the tiny finger drives. See
         # filter_self_collision_except_fingertips.
         env_cfg.events.filter_self_collision = EventTermCfg(func=filter_self_collision_except_fingertips, mode="startup")
-    if args_cli.arm_visual == "transparent":
+    if args_cli.arm_visual == "transparent" or args_cli.show_collision_meshes:
         # opacity needs translucency support in the renderer; must be set pre-sim-context
         env_cfg.sim.render.enable_translucency = True
     recording = not args_cli.no_record
@@ -218,6 +213,8 @@ def main():
     env = ManagerBasedRLEnv(cfg=env_cfg)
     env.reset()
     apply_arm_visual(args_cli.arm_visual)
+    if args_cli.show_collision_meshes:
+        visualize_hand_collision_meshes(env)
 
     capture_cfg = RawXrCaptureCfg(retargeter_type=RawXrCapture)
     device_cfg = OpenXRDeviceCfg(
@@ -267,6 +264,10 @@ def main():
     callbacks = {"START": _start, "STOP": _stop, "RESET": _reset}
     teleop = create_teleop_device("handtracking", DevicesCfg(devices={"handtracking": device_cfg}).devices, callbacks)
     capture = next(r for r in teleop._retargeters if isinstance(r, RawXrCapture))
+    if recording:
+        # The recorder term was constructed with the env, before this capture
+        # existed — late-bind it so obs/xr_hands records real data.
+        RawXrHandsRecorder.source = capture
     bridge = TeleopCommandBridge(_on_record_result, _on_align, use_dispatch=args_cli.client_msg_dispatch)
     gesture = CrossHandStopGesture(touch_dist=args_cli.gesture_touch_cm / 100.0, hold_s=args_cli.gesture_hold_s)
     aligner = AnchorAligner(args_cli.anchor_pos, args_cli.anchor_rot, target_head_xy=tuple(args_cli.align_head_xy))

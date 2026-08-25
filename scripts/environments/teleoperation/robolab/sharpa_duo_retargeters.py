@@ -367,7 +367,7 @@ class FrankaDuoSharpaRetargeterCfg(RetargeterCfg):
     # Draw red spheres on the tracked OpenXR hand joints (GR1T2 teleop pattern).
     enable_visualization: bool = False
     retargeter_type: type[RetargeterBase] = FrankaDuoSharpaRetargeter
-    pinch_separation: float = -0.00  # meters; Overshoot pinch closure to generate grip force.
+    pinch_separation: float = -0.02  # meters; Overshoot pinch closure to generate grip force.
     # Hand-shape calibration yml (written by calibrate_hand_shape.py), resolved against
     # the sharpa_dex_retargeting data dir. Loaded automatically if the file exists;
     # set to "" to disable. Applied WRIST-side: the calibration rotation R is composed

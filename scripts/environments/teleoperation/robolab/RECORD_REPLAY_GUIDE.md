@@ -24,7 +24,7 @@ File map after implementation:
 ## Point 1 — Record arms, hands, and object poses
 
 **What is recorded.** Isaac Lab's `RecorderManager` is attached to the teleop env
-with three stock terms (`isaaclab.envs.mdp.recorders`):
+with three stock terms (`isaaclab.envs.mdp.recorders`) plus one custom term:
 
 - `initial_state` (`InitialStateRecorder`, on reset)
 - `states` (`PostStepStatesRecorder`, every control step) — this is
@@ -34,6 +34,17 @@ with three stock terms (`isaaclab.envs.mdp.recorders`):
   rigid objects `brush` (taco_178) and `bowl` (taco_023).
 - `actions` (`PreStepActionsRecorder`) — the 58-D root-frame teleop action, kept for
   provenance/debugging (replay does not need it).
+- `obs/xr_hands` (`RawXrHandsRecorder`, `xr_session_tools.py`) — the raw 26-joint XR
+  hand poses, shape (T, 2, 26, 7): [left, right] × `HAND_JOINT_NAMES` order ×
+  [x, y, z, qw, qx, qy, qz], Isaac world frame, exactly what the retargeters saw
+  BEFORE calibration/retargeting. Row t is the tracking frame that produced
+  `actions[t]`. Zeros while a hand is untracked.
+- `obs/joint_setpoints` (`JointSetpointsRecorder`, `robolab_teleop_common.py`) — the
+  PD joint-position targets sent to the drives, shape (T, 58), read post-step from
+  `robot.data.joint_pos_target`: the arms' DiffIK *output* (not in `actions`, which
+  only has the commanded wrist poses) plus the fingers' scaled targets. Same joint
+  order as `states/.../joint_position`, so tracking error = `joint_setpoints −
+  joint_position` directly.
 
 **Rate.** Recorder hooks fire inside `env.step()`, i.e. once per control step =
 1/60 s of sim time (dt 1/480 × decimation 8). While teleop is paused the loop never
