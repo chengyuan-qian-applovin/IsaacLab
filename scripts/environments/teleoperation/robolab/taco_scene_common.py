@@ -78,7 +78,7 @@ class TacoTeleopSceneCfg(TacoSceneCfg):
             ),
             "fingers": ImplicitActuatorCfg(
                 joint_names_expr=["(left|right)_(thumb|index|middle|ring|pinky)_.*"],
-                stiffness=200.0, damping=2.0,  # keep Sharpa's USD-calibrated gains
+                stiffness=400.0, damping=4.0,  # keep Sharpa's USD-calibrated gains
             ),
         },
     )
