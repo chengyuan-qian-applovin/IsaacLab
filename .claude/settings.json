@@ -1,0 +1,7 @@
+{
+  "env": {
+    "ISAAC_LAB_DIR": "/home/chengyuan-qian/IsaacLab",
+    "ISAAC_SIM_DIR": "/workspace/isaaclab/_isaac_sim",
+    "WORKSPACE_DIR": "/home/chengyuan-qian/isaac-workspace"
+  }
+}
