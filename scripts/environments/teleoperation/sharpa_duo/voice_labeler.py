@@ -144,7 +144,7 @@ class VoiceLabeler:
                 print("[VOICE] Microphone stream ended during calibration; voice labeling disabled.")
                 return
             ambient.append(np.sqrt(np.mean(chunk**2)))
-        threshold = max(5.0 * float(np.median(ambient)), 0.002)
+        threshold = max(3.0 * float(np.median(ambient)), 0.002)
         if threshold > 0.2:
             print(
                 f"[VOICE] WARNING: ambient level is very high (gate {threshold:.3f}); the microphone looks"
@@ -204,6 +204,7 @@ class VoiceLabeler:
                 continue
             text = result["text"].strip()
             if not text:
+                print(f"[VOICE] Heard a {len(clip) / _SAMPLE_RATE:.1f} s sound but no intelligible speech.")
                 continue
             label = parse_label(text)
             if label is None:
