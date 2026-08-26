@@ -160,7 +160,6 @@ def apply_arm_visual(mode: str) -> None:
     """
     if mode == "normal":
         return
-    import isaacsim.core.utils.stage as stage_utils
     from pxr import Usd, UsdGeom
 
     import isaaclab.sim as sim_utils
@@ -169,7 +168,7 @@ def apply_arm_visual(mode: str) -> None:
     if not arm_paths:
         print("[WARNING] --arm_visual: no arm prims matched; skipping.")
         return
-    stage = stage_utils.get_current_stage()
+    stage = sim_utils.get_current_stage()
     targets = []
     for arm_path in arm_paths:
         it = iter(Usd.PrimRange(stage.GetPrimAtPath(arm_path)))
