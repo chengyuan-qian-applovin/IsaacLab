@@ -74,9 +74,7 @@ parser.add_argument(
     default=(1.9, -2.0, 1.8),
     help="Camera position [m]. Default frames rig and tabletop from the operator's right.",
 )
-parser.add_argument(
-    "--cam_lookat", type=float, nargs=3, default=(0.0, -0.2, 0.8), help="Camera look-at point [m]."
-)
+parser.add_argument("--cam_lookat", type=float, nargs=3, default=(0.0, -0.2, 0.8), help="Camera look-at point [m].")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.enable_cameras = True  # camera sensors need offscreen rendering
@@ -246,8 +244,7 @@ def replay_episode(env: ManagerBasedRLEnv, episode: dict, writer) -> int:
 
     q = torch.tensor(episode["joint_position"], dtype=torch.float32, device=env.device)
     objs = {
-        name: torch.tensor(poses, dtype=torch.float32, device=env.device)
-        for name, poses in episode["objects"].items()
+        name: torch.tensor(poses, dtype=torch.float32, device=env.device) for name, poses in episode["objects"].items()
     }
     zeros_j = torch.zeros(1, q.shape[1], device=env.device)
     zeros_6 = torch.zeros(1, 6, device=env.device)

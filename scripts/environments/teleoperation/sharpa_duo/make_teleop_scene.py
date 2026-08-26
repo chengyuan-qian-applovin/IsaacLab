@@ -129,6 +129,15 @@ parser.add_argument(
     default=0.5,
     help="Stop gesture: seconds all five pairs must stay touching to trigger.",
 )
+parser.add_argument(
+    "--hand_calibration",
+    type=str,
+    default="hand_calibration.yml",
+    help=(
+        "Operator hand-shape calibration yml (resolved against assets/dex_retargeting)."
+        " Pass '' to retarget uncalibrated."
+    ),
+)
 parser.add_argument("--no_voice", action="store_true", help="Disable the Whisper success/failure voice labeling.")
 parser.add_argument(
     "--whisper_model", type=str, default="base.en", help="Whisper model for voice labels (e.g. base.en, small.en)."
@@ -442,7 +451,7 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
 
     flow = EpisodeFlow(env, gesture, labeler, recording)
 
-    pipeline, retargeters = build_duo_pipeline(include_xr_hands=True)
+    pipeline, retargeters = build_duo_pipeline(include_xr_hands=True, hand_calibration=args_cli.hand_calibration)
     teleop_cfg = IsaacTeleopCfg(
         xr_cfg=XrCfg(anchor_pos=tuple(args_cli.anchor_pos), anchor_rot=tuple(args_cli.anchor_rot)),
         pipeline_builder=lambda: pipeline,

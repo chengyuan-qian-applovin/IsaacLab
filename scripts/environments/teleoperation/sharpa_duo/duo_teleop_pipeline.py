@@ -10,10 +10,14 @@ Builds the hand-tracking → 58-D action pipeline consumed by
 GR1T2 pick-place pipeline that ships with ``isaaclab_tasks``:
 
     XR hand tracking (26 joints per hand, via CloudXR)
-      ├─ wrists → 2 × Se3AbsRetargeter   → absolute flange pose targets (world frame)
-      └─ fingers → 2 × DexHandRetargeter → 22 SharpaWave joints per hand (DexPilot QP
-                                            against the vendored URDFs)
+      ├─ wrists → 2 × Se3AbsRetargeter        → absolute flange pose targets (world frame)
+      └─ fingers → 2 × SharpaDexHandRetargeter → 22 SharpaWave joints per hand (DexPilot QP
+                                                 + operator calibration, sharpa_retargeting.py)
       └─ TensorReorderer → [L wrist 7 | R wrist 7 | L fingers 22 | R fingers 22]
+
+When the operator hand-shape calibration is loaded, its rotation additionally
+composes into each wrist offset (``q_flange = q_wrist ⊗ q_corr ⊗ q_offset``) so
+the arm tilts the robot hand until its fingers align with the operator's.
 
 Wrist rotation offsets map the OpenXR wrist frame onto the ``panda_link8``
 flange frame so that the rig's IK-solved ready pose (fingers forward, palms
@@ -33,23 +37,19 @@ pass through the reorderer unchanged.
 
 from __future__ import annotations
 
-import os
+from duo_robot import FINGER_JOINTS, sided
+from scipy.spatial.transform import Rotation as R
+from sharpa_retargeting import load_hand_calibration, make_sharpa_dex_node, wrist_correction
 
-from duo_robot import DEX_RETARGETING_DIR, FINGER_JOINTS, sided
-
-# OpenXR-wrist-frame → MANO-frame change of basis used by dex_retargeting
-# (row-major 3x3). Same constant as the GR1T2 pipeline and the original
-# SharpaWave retargeter.
-_OPERATOR2MANO = (0, -1, 0, -1, 0, 0, 0, 0, -1)
-
-# Calibrated wrist offsets (see module docstring), as intrinsic XYZ Euler degrees.
-_WRIST_OFFSET_RPY = {
-    "left": (-180.0, 0.0, 45.0),
-    "right": (180.0, 0.0, 135.0),
+# Calibrated wrist→flange offsets (see module docstring), as xyzw quaternions.
+# Equivalent to intrinsic XYZ Euler degrees left (-180, 0, 45) / right (180, 0, 135).
+_WRIST_OFFSET_XYZW = {
+    "left": (-0.9238795, 0.3826834, 0.0, 0.0),
+    "right": (0.3826834, -0.9238795, 0.0, 0.0),
 }
 
 
-def build_duo_pipeline(include_xr_hands: bool = False):
+def build_duo_pipeline(include_xr_hands: bool = False, hand_calibration: str | None = "hand_calibration.yml"):
     """Build the duo teleop retargeting pipeline.
 
     Args:
@@ -58,22 +58,32 @@ def build_duo_pipeline(include_xr_hands: bool = False):
             the 58 action elements. The teleop loop slices them off before
             ``env.step`` and uses them for the stop gesture, the hand markers,
             and the ``obs/xr_hands`` recording.
+        hand_calibration: Operator hand-shape calibration yml (see
+            :mod:`sharpa_retargeting`), resolved against the vendored
+            ``assets/dex_retargeting`` directory. None or "" disables it; a
+            missing file is announced and ignored.
 
     Returns:
         A tuple ``(pipeline, retargeters)``: the ``OutputCombiner`` with the
         single ``"action"`` output that :class:`~isaaclab_teleop.IsaacTeleopDevice`
         expects, and the list of retargeter nodes for the tuning UI.
     """
-    from isaacteleop.retargeters import (
-        DexHandRetargeter,
-        DexHandRetargeterConfig,
-        Se3AbsRetargeter,
-        Se3RetargeterConfig,
-        TensorReorderer,
-    )
+    from isaacteleop.retargeters import Se3AbsRetargeter, Se3RetargeterConfig, TensorReorderer
     from isaacteleop.retargeting_engine.deviceio_source_nodes import HandsSource
     from isaacteleop.retargeting_engine.interface import OutputCombiner, ValueInput
     from isaacteleop.retargeting_engine.tensor_types import TransformMatrix
+
+    calibration = load_hand_calibration(hand_calibration) if hand_calibration else None
+    if hand_calibration and calibration is None:
+        print(f"[WARNING] Hand calibration '{hand_calibration}' not found; retargeting uncalibrated.")
+    if calibration:
+        for side in sorted(calibration):
+            cal = calibration[side]
+            print(
+                f"[INFO] Hand calibration ({side}): scale {cal['scale']:.3f}, thumb ratio"
+                f" {cal['thumb_ratio']:.3f}, pinky ratio {cal['pinky_ratio']:.3f}; rotation folded"
+                " into the wrist offset."
+            )
 
     hands = HandsSource(name="hands")
 
@@ -88,32 +98,30 @@ def build_duo_pipeline(include_xr_hands: bool = False):
     dex_nodes = {}
     retargeters = []
     for side, source in sides.items():
-        roll, pitch, yaw = _WRIST_OFFSET_RPY[side]
+        # q_flange = q_wrist ⊗ q_corr ⊗ q_offset: the wrist-side calibration
+        # rotation composes into the constant wrist→flange offset, so the arm
+        # tilts the robot hand until its FINGERS align with the operator's.
+        offset = R.from_quat(_WRIST_OFFSET_XYZW[side])
+        cal = (calibration or {}).get(side)
+        if cal is not None:
+            offset = R.from_matrix(wrist_correction(cal["rotation"])) * offset
+        roll, pitch, yaw = offset.as_euler("XYZ", degrees=True)
         se3 = Se3AbsRetargeter(
             Se3RetargeterConfig(
                 input_device=source,
                 zero_out_xy_rotation=False,
                 use_wrist_rotation=True,
                 use_wrist_position=True,
-                target_offset_roll=roll,
-                target_offset_pitch=pitch,
-                target_offset_yaw=yaw,
+                target_offset_roll=float(roll),
+                target_offset_pitch=float(pitch),
+                target_offset_yaw=float(yaw),
             ),
             name=f"{side}_ee_pose",
         )
         se3_nodes[side] = se3.connect({source: transformed_hands.output(source)})
 
-        dex = DexHandRetargeter(
-            DexHandRetargeterConfig(
-                hand_retargeting_config=os.path.join(DEX_RETARGETING_DIR, f"sharpa_wave_{side}_dexpilot.yml"),
-                hand_urdf=os.path.join(DEX_RETARGETING_DIR, f"{side}_sharpa_wave_with_flange.urdf"),
-                hand_joint_names=sided(FINGER_JOINTS, side),
-                hand_side=side,
-                handtracking_to_baselink_frame_transform=_OPERATOR2MANO,
-            ),
-            name=f"{side}_hand",
-        )
-        dex_nodes[side] = dex.connect({source: hands.output(source)})
+        dex = make_sharpa_dex_node(side, sided(FINGER_JOINTS, side), cal)
+        dex_nodes[side] = dex.connect({f"hand_{side}": hands.output(source)})
         retargeters += [se3, dex]
 
     # Se3AbsRetargeter output element order is [x, y, z, qx, qy, qz, qw] — already

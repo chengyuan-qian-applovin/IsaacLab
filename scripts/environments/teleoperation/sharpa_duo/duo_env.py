@@ -16,6 +16,8 @@ Import only after AppLauncher.
 
 from __future__ import annotations
 
+from duo_robot import DuoIKActionsCfg
+
 import isaaclab.sim as sim_utils
 from isaaclab.assets import AssetBaseCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
@@ -23,8 +25,6 @@ from isaaclab.envs.mdp import joint_pos_rel, reset_scene_to_default, time_out
 from isaaclab.managers import EventTermCfg, ObservationGroupCfg, ObservationTermCfg, TerminationTermCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils.configclass import configclass
-
-from duo_robot import DuoIKActionsCfg
 
 
 @configclass

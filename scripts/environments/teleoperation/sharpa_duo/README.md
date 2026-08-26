@@ -133,6 +133,23 @@ calibrated on the original branch at the rig's ready pose; the clean ±45°
 structure is the rig's flange-mount rotations. If the hands ever track with a
 constant twist, these offsets in `duo_teleop_pipeline.py` are the knob.
 
+### Operator hand-shape calibration
+
+Finger retargeting uses the operator's hand-shape calibration from the source
+branch (`assets/dex_retargeting/hand_calibration.yml`, measured with flat
+hands; loaded by default, `--hand_calibration ''` disables). Per hand it holds
+a global rotation + scale (~1.18 — wrist-pinned Procrustes on
+index/middle/ring tips) and thumb/pinky length ratios + tip-direction
+rotations. Applied exactly as on the source branch (`sharpa_retargeting.py`):
+the rotation composes wrist-side into the flange offset (the arm tilts the
+robot hand until its fingers align with yours), the scale multiplies the
+DexPilot keypoints (the yml `scaling_factor` is overridden to 1.0), thumb and
+pinky get their per-finger corrections afterwards, and DexPilot's pinch
+project/escape hysteresis runs on your RAW fingertip distances so calibration
+never shifts pinch timing. Recalibrating for a new operator means re-running
+the source branch's `calibrate_hand_shape.py` (not ported yet) and replacing
+the yml.
+
 ## Files
 
 | File | Role |
@@ -142,6 +159,7 @@ constant twist, these offsets in `duo_teleop_pipeline.py` are the knob.
 | `duo_env.py` | Env config shared by teleop and replay (scene skeleton + managers). |
 | `duo_robot.py` | The rig: articulation config (actuators, ready pose) and the 58-D action space, including the once-per-step IK optimization. |
 | `duo_teleop_pipeline.py` | The IsaacTeleop retargeting pipeline (hand tracking → 58-D action). |
+| `sharpa_retargeting.py` | Calibrated DexPilot finger retargeting (hand-shape calibration, raw-distance pinch hysteresis). |
 | `usda_scene.py` | References the scene USDA into the env and registers its rigid bodies so resets restore their poses. |
 | `assets/robots/` | Vendored robot USD (torso + arms + hands + skin material). |
 | `assets/dex_retargeting/` | Vendored SharpaWave URDFs + DexPilot YAMLs for the finger retargeting. |
@@ -163,18 +181,18 @@ constant twist, these offsets in `duo_teleop_pipeline.py` are the knob.
 This is a port of the `teleop_taco_scene.py` pipeline from the
 `feature/robolab-xr-teleop` branch (which targets Isaac Lab 2.x) onto
 `release/3.0.0-beta2`, restructured to be scene-agnostic and self-contained.
-Deliberately **not** ported (yet): episode recording and the record-flow XR UX
-(stop gesture, Align button, Success/Failure dialog), per-operator hand-shape
-calibration, self-collision contact filtering, and the transparent-arm
-rendering option.
+Deliberately **not** ported (yet): the Align button and Success/Failure client
+dialog (voice labeling replaces them), the `calibrate_hand_shape.py` capture
+script (its output yml is vendored and used), self-collision contact
+filtering, and the domain-randomized four-camera replay.
 
 What changed in the port, beyond reorganization:
 
 - 2.x `OpenXRDevice` + custom `RetargeterBase` (deprecated on this branch) →
   the native IsaacTeleop pipeline + `IsaacTeleopDevice`, matching how the
-  GR1T2 teleop tasks work here. The custom SharpaWave DexPilot retargeter was
-  replaced by isaacteleop's generic `DexHandRetargeter` driving the same
-  vendored URDFs/configs.
+  GR1T2 teleop tasks work here. The SharpaWave DexPilot retargeter with the
+  operator calibration is ported as a custom pipeline node
+  (`sharpa_retargeting.py`) driving the same vendored URDFs/configs.
 - 2.x `sim.physx.*` settings → `sim.physics = PhysxCfg(...)` (multi-backend
   split); asset data reads go through `.torch` views; quaternions wxyz → xyzw.
 
