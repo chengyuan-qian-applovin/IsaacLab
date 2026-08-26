@@ -114,7 +114,7 @@ def duo_robot_cfg(pos: tuple[float, float, float], rot: tuple[float, float, floa
 
     Args:
         pos: Root position of the torso in the environment frame [m].
-        rot: Root orientation quaternion (w, x, y, z).
+        rot: Root orientation quaternion (x, y, z, w).
 
     Returns:
         The articulation config, ready to drop into an :class:`~isaaclab.scene.InteractiveSceneCfg`.

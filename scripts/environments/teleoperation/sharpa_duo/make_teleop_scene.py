@@ -60,8 +60,8 @@ parser.add_argument(
     "--robot_rot",
     type=float,
     nargs=4,
-    default=(0.7071068, 0.0, 0.0, 0.7071068),
-    help="Rig torso orientation quaternion (w x y z). Default: +90 deg yaw (facing +y).",
+    default=(0.0, 0.0, 0.7071068, 0.7071068),
+    help="Rig torso orientation quaternion (x y z w). Default: +90 deg yaw (facing +y).",
 )
 parser.add_argument(
     "--anchor_pos",
@@ -74,8 +74,8 @@ parser.add_argument(
     "--anchor_rot",
     type=float,
     nargs=4,
-    default=(0.7071068, 0.0, 0.0, 0.7071068),
-    help="XR anchor rotation (w x y z): should match the robot yaw so the arms line up with yours.",
+    default=(0.0, 0.0, 0.7071068, 0.7071068),
+    help="XR anchor rotation (x y z w): should match the robot yaw so the arms line up with yours.",
 )
 parser.add_argument(
     "--no_track_objects",
@@ -374,6 +374,7 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
     teleop_active = False
     reset_requested = False
     awaiting_label = False  # gesture ended the episode; waiting for the voice label
+    suppress_active_frames = 0  # ignore the client's stale "playing" state briefly after a host stop
     demo_count = 0
 
     def _start():
@@ -402,15 +403,37 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
     def episode_has_data() -> bool:
         return recording and not env.recorder_manager.get_episode(0).is_empty()
 
-    def close_episode() -> None:
-        """Freeze the episode buffer and start waiting for the voice label."""
-        nonlocal teleop_active, awaiting_label
+    def request_client_stop() -> None:
+        """Drive the teleop state machine to PAUSED, as if the operator pressed Stop.
+
+        Without this, the device keeps reporting the client's "playing" state and
+        teleop would resume by itself right after an episode export. There is no
+        public host-initiated stop (only ``inject_reset``), so this enqueues the
+        same run-toggle sequence a client "stop" message would produce.
+        """
+        try:
+            from isaaclab_teleop.teleop_message_processor import _STOP_TOGGLE_SEQUENCES
+
+            proc = teleop._session_lifecycle._message_processor
+            if proc is not None and not proc._run_toggle_queue:
+                proc._run_toggle_queue = proc._make_toggle_sequence(_STOP_TOGGLE_SEQUENCES[proc._shadow_state])
+        except Exception as exc:
+            print(f"[WARNING] Could not push Stop into the teleop state machine: {exc}")
+
+    def close_episode(prompt_label: bool = True) -> None:
+        """Stop teleop and freeze the episode buffer."""
+        nonlocal teleop_active, awaiting_label, suppress_active_frames
         teleop_active = False
+        request_client_stop()
+        suppress_active_frames = 5  # the injected Stop lands within a frame or two
         env.recorder_manager.record_pre_reset([0], force_export_or_skip=False)
         awaiting_label = True
         actions = env.recorder_manager.get_episode(0).data.get("actions")
         n_steps = len(actions) if actions is not None else 0
-        print(f"[INFO] Episode ended ({n_steps} steps). Say 'success' or 'failure' (Reset discards).")
+        if prompt_label:
+            print(f"[INFO] Episode ended ({n_steps} steps). Say 'success' or 'failure' (Reset discards).")
+        else:
+            print(f"[INFO] Episode ended ({n_steps} steps).")
 
     def export_episode(success: bool) -> None:
         nonlocal awaiting_label, demo_count, reset_requested
@@ -447,9 +470,7 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
                 if label is not None and recording:
                     if not awaiting_label and episode_has_data():
                         # Label spoken mid-episode: it ends AND labels in one utterance.
-                        teleop_active = False
-                        env.recorder_manager.record_pre_reset([0], force_export_or_skip=False)
-                        awaiting_label = True
+                        close_episode(prompt_label=False)
                     if awaiting_label:
                         export_episode(label == "success")
                     else:
@@ -470,8 +491,12 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
                 if ctrl.is_active is not None:
                     if ctrl.is_active and awaiting_label:
                         print("[INFO] Play ignored: say 'success' or 'failure' first (or press Reset to discard).")
+                    elif ctrl.is_active and suppress_active_frames > 0:
+                        pass  # stale "playing" state; the host-initiated Stop has not landed yet
                     else:
                         teleop_active = ctrl.is_active
+                if suppress_active_frames > 0:
+                    suppress_active_frames -= 1
                 if ctrl.should_reset:
                     reset_requested = True
 
@@ -491,6 +516,8 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
                         close_episode()
                     else:
                         teleop_active = False
+                        request_client_stop()
+                        suppress_active_frames = 5
                         print("[INFO] Stop gesture: no recorded steps, teleop paused.")
                     continue
                 if not teleop_active:

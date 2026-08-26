@@ -30,7 +30,8 @@ one demo in a timestamped robomimic-style HDF5 under `--record_dir`
    - **Just say the label** — speaking a label mid-episode ends AND labels it
      in one utterance.
 3. **Say "success" or "failure"** into the machine's microphone. The demo is
-   exported with that label and the scene resets for the next episode.
+   exported with that label, the scene resets, and teleop ends in the stopped
+   state — press Play to start the next episode.
 4. **Reset** (headset button) discards the in-flight episode instead; an
    episode timeout also discards.
 
