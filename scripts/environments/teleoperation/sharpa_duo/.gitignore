@@ -1,0 +1,4 @@
+# The repo-root .gitignore excludes all USD files; the robot assets under
+# assets/robots/ are deliberately vendored (see README.md), so re-include them.
+!assets/**/*.usd
+!assets/**/*.usda
