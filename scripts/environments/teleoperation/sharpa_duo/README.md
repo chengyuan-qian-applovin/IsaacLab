@@ -13,8 +13,57 @@ client, e.g. `https://nvidia.github.io/IsaacTeleop/client/release-1.3.x`; Apple
 Vision Pro: pass `--cloudxr_env avp` and use the Isaac XR Teleop Sample Client),
 connect, and press **Play**. Your wrists drive the two Panda arms through
 differential IK and all ten fingers are retargeted onto the SharpaWave hands.
-**Stop** pauses, **Reset** restores the scene. There is no data recording in
-this version.
+The arms render 5% transparent by default so they don't block your view
+(`--arm_visual normal|hidden` to change; `--visualize_hands` draws markers on
+the tracked joints).
+
+## Recording episodes, hands-free
+
+Recording is on by default (`--no_record` disables it). Every episode becomes
+one demo in a timestamped robomimic-style HDF5 under `--record_dir`
+(default `./datasets/duo_teleop`):
+
+1. **Play** starts teleop and the episode buffer.
+2. End the episode either way:
+   - **Cross-hand stop gesture** — touch all five fingertip pairs of the two
+     hands together for 0.5 s. The episode closes and waits for your label.
+   - **Just say the label** — speaking a label mid-episode ends AND labels it
+     in one utterance.
+3. **Say "success" or "failure"** into the machine's microphone. The demo is
+   exported with that label and the scene resets for the next episode.
+4. **Reset** (headset button) discards the in-flight episode instead; an
+   episode timeout also discards.
+
+Each demo carries per-step robot joint states, tracked object poses, the 58-D
+actions, the raw XR hand poses (`obs/xr_hands`, (T, 2, 26, 7), the retargeter
+input — enough to re-tune retargeting offline), the PD drive setpoints
+(`obs/joint_setpoints`, (T, 58), the differential-IK output), and a boolean
+`success` attribute.
+
+### Voice labels (OpenAI Whisper)
+
+Labels are transcribed locally by `openai-whisper` (`pip install openai-whisper`
+into the env; done via `--whisper_model`, default `base.en`, running on
+`--whisper_device`, default `cpu` so it never competes with the sim and CloudXR
+for the GPU). Audio comes from the machine's microphone via `arecord` — the
+headset mic is not streamed to the server by this stack, so stay within
+speaking range of the machine. Every transcription is printed to the console,
+labels and mis-hearings alike.
+
+Test the mic + Whisper chain without starting the simulator:
+
+```bash
+./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/make_teleop_scene.py \
+    --scene_usda unused --voice_test 20
+```
+
+Microphone notes for this machine (Legion, ALC287 codec): the capture channel
+carries near-full-scale infrasonic wander, so **do not max the input volume** —
+at 100% the wander clips and drowns speech. Keep the source around 10–25%
+(`wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.15`); the labeler high-passes the
+stream at 80 Hz and calibrates its energy gate on ambient noise at startup (do
+that in a quiet moment). If it warns about a saturated microphone, lower the
+capture volume. `--mic_device` selects another ALSA capture device.
 
 Sanity-check an installation or a new scene without a headset:
 

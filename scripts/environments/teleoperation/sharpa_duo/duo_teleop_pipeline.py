@@ -49,8 +49,15 @@ _WRIST_OFFSET_RPY = {
 }
 
 
-def build_duo_pipeline():
+def build_duo_pipeline(include_xr_hands: bool = False):
     """Build the duo teleop retargeting pipeline.
+
+    Args:
+        include_xr_hands: Append the raw 26-joint hand poses (see
+            :mod:`xr_extras`, ``XR_EXTRAS_DIM`` elements, sim world frame) after
+            the 58 action elements. The teleop loop slices them off before
+            ``env.step`` and uses them for the stop gesture, the hand markers,
+            and the ``obs/xr_hands`` recording.
 
     Returns:
         A tuple ``(pipeline, retargeters)``: the ``OutputCombiner`` with the
@@ -116,32 +123,52 @@ def build_duo_pipeline():
         for side in sides
     }
 
+    input_config = {
+        "left_ee_pose": ee_elements["left"],
+        "right_ee_pose": ee_elements["right"],
+        "left_hand_joints": sided(FINGER_JOINTS, "left"),
+        "right_hand_joints": sided(FINGER_JOINTS, "right"),
+    }
+    output_order = (
+        ee_elements["left"] + ee_elements["right"] + sided(FINGER_JOINTS, "left") + sided(FINGER_JOINTS, "right")
+    )
+    input_types = {
+        "left_ee_pose": "array",
+        "right_ee_pose": "array",
+        "left_hand_joints": "scalar",
+        "right_hand_joints": "scalar",
+    }
+    connections = {
+        "left_ee_pose": se3_nodes["left"].output("ee_pose"),
+        "right_ee_pose": se3_nodes["right"].output("ee_pose"),
+        "left_hand_joints": dex_nodes["left"].output("hand_joints"),
+        "right_hand_joints": dex_nodes["right"].output("hand_joints"),
+    }
+
+    if include_xr_hands:
+        from xr_extras import XR_HAND_ELEMENTS, make_hands_passthrough
+
+        # Raw hand poses ride along after the action elements, in the sim world
+        # frame (same transform as the wrists).
+        passthrough = make_hands_passthrough()
+        connected_passthrough = passthrough.connect(
+            {
+                "hand_left": transformed_hands.output(HandsSource.LEFT),
+                "hand_right": transformed_hands.output(HandsSource.RIGHT),
+            }
+        )
+        input_config["xr_hands"] = list(XR_HAND_ELEMENTS)
+        output_order = output_order + list(XR_HAND_ELEMENTS)
+        input_types["xr_hands"] = "scalar"
+        connections["xr_hands"] = connected_passthrough.output("xr_hands")
+
     reorderer = TensorReorderer(
-        input_config={
-            "left_ee_pose": ee_elements["left"],
-            "right_ee_pose": ee_elements["right"],
-            "left_hand_joints": sided(FINGER_JOINTS, "left"),
-            "right_hand_joints": sided(FINGER_JOINTS, "right"),
-        },
-        output_order=(
-            ee_elements["left"] + ee_elements["right"] + sided(FINGER_JOINTS, "left") + sided(FINGER_JOINTS, "right")
-        ),
+        input_config=input_config,
+        output_order=output_order,
         name="action_reorderer",
-        input_types={
-            "left_ee_pose": "array",
-            "right_ee_pose": "array",
-            "left_hand_joints": "scalar",
-            "right_hand_joints": "scalar",
-        },
+        input_types=input_types,
     )
-    connected_reorderer = reorderer.connect(
-        {
-            "left_ee_pose": se3_nodes["left"].output("ee_pose"),
-            "right_ee_pose": se3_nodes["right"].output("ee_pose"),
-            "left_hand_joints": dex_nodes["left"].output("hand_joints"),
-            "right_hand_joints": dex_nodes["right"].output("hand_joints"),
-        }
-    )
+    connected_reorderer = reorderer.connect(connections)
 
     pipeline = OutputCombiner({"action": connected_reorderer.output("output")})
     return pipeline, retargeters
