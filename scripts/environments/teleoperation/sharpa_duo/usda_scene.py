@@ -77,12 +77,13 @@ def add_usda_scene(scene_cfg: InteractiveSceneCfg, usda_path: str, track_objects
         xform = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         transform = Gf.Transform(xform)
         t = transform.GetTranslation()
-        q = transform.GetRotation().GetQuat()
+        q = transform.GetRotation().GetQuat()  # Gf quaternion: real part w + imaginary (x, y, z)
         imag = q.GetImaginary()
         name = prim.GetName()
         rel_path = str(prim.GetPath())[len(str(root.GetPath())) :]  # e.g. "/bowl"
         # init_state repeats the authored pose because reset_scene_to_default
-        # writes it back to the sim on every reset.
+        # writes it back to the sim on every reset. NOTE: InitialStateCfg.rot is
+        # (x, y, z, w) on this Isaac Lab release, while Gf stores w separately.
         setattr(
             scene_cfg,
             f"object_{name}",
@@ -91,7 +92,7 @@ def add_usda_scene(scene_cfg: InteractiveSceneCfg, usda_path: str, track_objects
                 spawn=None,
                 init_state=RigidObjectCfg.InitialStateCfg(
                     pos=(float(t[0]), float(t[1]), float(t[2])),
-                    rot=(float(q.GetReal()), float(imag[0]), float(imag[1]), float(imag[2])),
+                    rot=(float(imag[0]), float(imag[1]), float(imag[2]), float(q.GetReal())),
                 ),
             ),
         )
