@@ -198,18 +198,14 @@ import traceback
 
 import torch
 
-import isaaclab.sim as sim_utils
-from isaaclab.assets import AssetBaseCfg
 from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedRLEnvCfg
-from isaaclab.envs.mdp import joint_pos_rel, reset_scene_to_default, time_out
-from isaaclab.managers import EventTermCfg, ObservationGroupCfg, ObservationTermCfg, TerminationTermCfg
-from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms
 
 from isaaclab_physx.physics import PhysxCfg
 
-from duo_robot import DuoIKActionsCfg, duo_robot_cfg
+from duo_env import DuoEnvCfg
+from duo_robot import duo_robot_cfg
 from usda_scene import add_usda_scene
 
 
@@ -217,53 +213,7 @@ from usda_scene import add_usda_scene
 
 
 @configclass
-class DuoTeleopSceneCfg(InteractiveSceneCfg):
-    """The rig plus a dome light; the USDA scene and its objects are added at runtime."""
-
-    light = AssetBaseCfg(
-        prim_path="/World/light",
-        spawn=sim_utils.DomeLightCfg(intensity=2000.0, color=(0.95, 0.95, 0.92)),
-    )
-    robot = None  # placed from CLI args in main()
-
-
-@configclass
-class ObservationsCfg:
-    @configclass
-    class PolicyCfg(ObservationGroupCfg):
-        joint_pos = ObservationTermCfg(func=joint_pos_rel)
-
-        def __post_init__(self):
-            self.enable_corruption = False
-            self.concatenate_terms = True
-
-    policy: PolicyCfg = PolicyCfg()
-
-
-@configclass
-class EventsCfg:
-    reset = EventTermCfg(func=reset_scene_to_default, mode="reset")
-
-
-@configclass
-class TerminationsCfg:
-    time_out = TerminationTermCfg(func=time_out, time_out=True)
-
-
-@configclass
-class RewardsCfg:
-    pass
-
-
-@configclass
-class DuoTeleopEnvCfg(ManagerBasedRLEnvCfg):
-    scene: DuoTeleopSceneCfg = DuoTeleopSceneCfg(num_envs=1, env_spacing=3.0)
-    actions: DuoIKActionsCfg = DuoIKActionsCfg()
-    observations: ObservationsCfg = ObservationsCfg()
-    events: EventsCfg = EventsCfg()
-    terminations: TerminationsCfg = TerminationsCfg()
-    rewards: RewardsCfg = RewardsCfg()
-
+class DuoTeleopEnvCfg(DuoEnvCfg):
     def __post_init__(self):
         # Teleop timing: 240 Hz physics, 60 Hz control (decimation 4).
         self.decimation = 4

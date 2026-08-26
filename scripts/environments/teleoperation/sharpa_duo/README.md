@@ -41,6 +41,21 @@ input — enough to re-tune retargeting offline), the PD drive setpoints
 (`obs/joint_setpoints`, (T, 58), the differential-IK output), and a boolean
 `success` attribute.
 
+## Replaying episodes
+
+```bash
+./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/replay_teleop_scene.py \
+    --scene_usda ~/sim_benchmark/scene/taco_hoi_178_023.usda --headless
+```
+
+Loads the same USDA, replays the newest recorded dataset (or `--dataset
+<file-or-dir>`) **kinematically** — every frame is a prescribed recorded state
+pushed through forward kinematics; `env.step()` is never called and every PhysX
+solver knob is floored, so nothing is solved or collided. One third-person
+camera (`--cam_eye`/`--cam_lookat`) writes `<output_dir>/<demo>/video.mp4` at
+30 fps plus a `meta.json` with the success label. `--episodes
+all|success|failure|0,3,7` selects demos. No domain randomization.
+
 ### Voice labels (OpenAI Whisper)
 
 Labels are transcribed locally by `openai-whisper` (`pip install openai-whisper`
@@ -122,7 +137,9 @@ constant twist, these offsets in `duo_teleop_pipeline.py` are the knob.
 
 | File | Role |
 |---|---|
-| `make_teleop_scene.py` | CLI entrypoint: builds the env from a USDA + CLI args, runs the XR teleop loop (or `--smoke`). |
+| `make_teleop_scene.py` | CLI entrypoint: builds the env from a USDA + CLI args, runs the XR teleop loop (or `--smoke`/`--voice_test`). |
+| `replay_teleop_scene.py` | Kinematic replay of recorded demos in the same USDA scene, one camera to MP4. |
+| `duo_env.py` | Env config shared by teleop and replay (scene skeleton + managers). |
 | `duo_robot.py` | The rig: articulation config (actuators, ready pose) and the 58-D action space, including the once-per-step IK optimization. |
 | `duo_teleop_pipeline.py` | The IsaacTeleop retargeting pipeline (hand tracking → 58-D action). |
 | `usda_scene.py` | References the scene USDA into the env and registers its rigid bodies so resets restore their poses. |
