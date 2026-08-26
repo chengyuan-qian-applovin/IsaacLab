@@ -1,3 +1,8 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
 generated: '2026-08-18T19:40:07'
 note: 'Hand-shape calibration (calibrate_hand_shape.py; thumb/pinky rotations derived
   offline from the same capture). Wrist poses aligned first; scale + residual rotation

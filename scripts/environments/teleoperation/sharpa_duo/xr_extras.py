@@ -6,13 +6,13 @@
 """XR extras for the duo teleop: raw hand passthrough, stop gesture, visual helpers.
 
 The IsaacTeleop device returns exactly one flat action tensor per frame, so the
-raw hand-tracking data rides along INSIDE that tensor: :class:`HandsXrPassthrough`
-is a pipeline node that emits the two hands' 26 joint poses as
-``XR_EXTRAS_DIM = 364`` extra elements (2 hands x 26 joints x [x, y, z, qx, qy,
-qz, qw], sim world frame, xyzw quats), which the pipeline appends after the 58-D
-robot action. The teleop loop slices them off before ``env.step`` and feeds them
-to the stop gesture, the hand-joint markers, and the ``obs/xr_hands`` recorder.
-An untracked hand (or joint) reads as all zeros.
+raw tracking data rides along INSIDE that tensor: pipeline nodes append the two
+hands' 26 joint poses (``XR_HANDS_DIM`` = 364 elements: 2 hands x 26 joints x
+[x, y, z, qx, qy, qz, qw]) and the head pose (``XR_HEAD_DIM`` = 7 elements),
+all in the sim world frame with xyzw quats, after the 58-D robot action. The
+teleop loop slices them off before ``env.step`` and feeds them to the stop
+gesture, the hand-joint markers, the ``obs/xr_hands`` recorder, and the voice
+"align" command. Untracked hands/joints/head read as all zeros.
 
 Import only after AppLauncher.
 """
@@ -28,8 +28,14 @@ import torch
 _TIP_INDICES = (5, 10, 15, 20, 25)
 _WRIST_INDEX = 1
 
-XR_EXTRAS_DIM = 2 * 26 * 7
-"""Elements appended to the action tensor by :class:`HandsXrPassthrough`."""
+XR_HANDS_DIM = 2 * 26 * 7
+"""Raw-hand elements appended to the action tensor by the hands passthrough."""
+
+XR_HEAD_DIM = 7
+"""Head-pose elements ([x, y, z, qx, qy, qz, qw], zeros when untracked) appended after the hands."""
+
+XR_EXTRAS_DIM = XR_HANDS_DIM + XR_HEAD_DIM
+"""Total elements appended to the action tensor (hands block, then head block)."""
 
 XR_HAND_ELEMENTS = [
     f"xr_{hand}_j{j:02d}_{c}"
@@ -37,7 +43,10 @@ XR_HAND_ELEMENTS = [
     for j in range(26)
     for c in ("px", "py", "pz", "qx", "qy", "qz", "qw")
 ]
-"""Element names of the appended block, for the pipeline's TensorReorderer."""
+"""Element names of the appended hands block, for the pipeline's TensorReorderer."""
+
+XR_HEAD_ELEMENTS = [f"xr_head_{c}" for c in ("px", "py", "pz", "qx", "qy", "qz", "qw")]
+"""Element names of the appended head block."""
 
 
 def make_hands_passthrough(name: str = "xr_hands_passthrough"):
@@ -76,6 +85,88 @@ def make_hands_passthrough(name: str = "xr_hands_passthrough"):
                 out[i] = float(v)
 
     return HandsXrPassthrough(name=name)
+
+
+def make_head_passthrough(name: str = "xr_head_passthrough"):
+    """Build the head-pose passthrough pipeline node (7 named scalars; zeros when untracked)."""
+    from isaacteleop.retargeting_engine.interface import BaseRetargeter
+    from isaacteleop.retargeting_engine.interface.tensor_group_type import OptionalType, TensorGroupType
+    from isaacteleop.retargeting_engine.tensor_types import FloatType, HeadPose, HeadPoseIndex
+
+    class HeadXrPassthrough(BaseRetargeter):
+        """Emits the raw head pose as [x, y, z, qx, qy, qz, qw]."""
+
+        def input_spec(self):
+            return {"head": OptionalType(HeadPose())}
+
+        def output_spec(self):
+            return {"xr_head": TensorGroupType("xr_head", [FloatType(n) for n in XR_HEAD_ELEMENTS])}
+
+        def _compute_fn(self, inputs, outputs, context) -> None:
+            out = outputs["xr_head"]
+            flat = np.zeros(XR_HEAD_DIM)
+            group = inputs["head"]
+            if not group.is_none and bool(group[HeadPoseIndex.IS_VALID]):
+                flat[:3] = np.from_dlpack(group[HeadPoseIndex.POSITION])
+                flat[3:] = np.from_dlpack(group[HeadPoseIndex.ORIENTATION])  # xyzw
+            for i, v in enumerate(flat):
+                out[i] = float(v)
+
+    return HeadXrPassthrough(name=name)
+
+
+class AnchorAligner:
+    """Re-anchor the XR session so the workspace sits straight in front of the user.
+
+    Port of the feature branch's aligner to the IsaacTeleop stack. The correction
+    is the same world-frame rigid ΔT: rotate about the user's current head
+    position until the head's forward axis (OpenXR: −Z) points along the robot's
+    facing direction, then translate the head's xy onto ``target_head_xy``; z is
+    never touched, so the calibrated floor height holds. Because ΔT rigidly moves
+    the whole XR→world mapping, the wrist offsets — which live in the wrist's own
+    frame — are unaffected.
+
+    Mechanism difference vs the 2.x branch: there is no direct XRCore write here.
+    On this stack the :class:`~isaaclab_teleop.xr_anchor_utils.XrAnchorSynchronizer`
+    re-pushes the anchor from ``XrCfg.anchor_pos`` / ``anchor_rot`` on every
+    pre-sync update (a direct write would be clobbered a frame later), so the
+    aligner mutates that shared config instead — the synchronizer then propagates
+    the new anchor to both the renderer and the pipeline's ``world_T_anchor``.
+    """
+
+    def __init__(self, teleop, target_head_xy: tuple[float, float], robot_yaw: float):
+        self._xr_cfg = teleop._anchor_manager._xr_cfg
+        self._target_xy = np.asarray(target_head_xy, dtype=np.float64)
+        self._robot_yaw = float(robot_yaw)
+
+    def align(self, head_pose_w: np.ndarray) -> bool:
+        """Apply the correction for the given world-frame head pose [pos, quat xyzw]."""
+        from scipy.spatial.transform import Rotation as R
+
+        head_pos = head_pose_w[:3].astype(np.float64)
+        # Head forward axis: OpenXR head frames look along -Z.
+        fwd = R.from_quat(head_pose_w[3:].astype(np.float64)).apply([0.0, 0.0, -1.0])
+        if np.linalg.norm(fwd[:2]) < 1e-6:
+            print("[ALIGN] Looking straight up/down: yaw undefined, try again.")
+            return False
+        dyaw = self._robot_yaw - np.arctan2(fwd[1], fwd[0])
+        q_dyaw = R.from_euler("z", dyaw)
+
+        # ΔT: rotate the anchor about the head position (head stays put), then
+        # translate the head's xy onto the target.
+        anchor_pos = np.asarray(self._xr_cfg.anchor_pos, dtype=np.float64)
+        new_pos = q_dyaw.apply(anchor_pos - head_pos) + head_pos
+        new_pos[0] += self._target_xy[0] - head_pos[0]
+        new_pos[1] += self._target_xy[1] - head_pos[1]
+        new_quat = q_dyaw * R.from_quat(self._xr_cfg.anchor_rot)
+
+        self._xr_cfg.anchor_pos = tuple(float(v) for v in new_pos)
+        self._xr_cfg.anchor_rot = tuple(float(v) for v in new_quat.as_quat())
+        print(
+            f"[ALIGN] Re-anchored: yaw {np.degrees(dyaw):+.1f} deg, head xy ->"
+            f" ({self._target_xy[0]:.2f}, {self._target_xy[1]:.2f})"
+        )
+        return True
 
 
 class CrossHandStopGesture:

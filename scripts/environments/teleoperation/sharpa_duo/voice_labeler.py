@@ -16,8 +16,9 @@ utterance with a local Whisper model and turns keyword matches into events, and
 the teleop loop drains the events with :meth:`VoiceLabeler.poll`. Every
 transcription is printed, so mis-hearings are visible immediately.
 
-Recognized labels: any word starting with "success"/"succeed" → ``"success"``;
-any word starting with "fail" → ``"failure"``. An utterance containing both is
+Recognized commands: any word starting with "success"/"succeed" → ``"success"``;
+any word starting with "fail" → ``"failure"``; "align" (or Whisper's common
+mis-hearing "a line") → ``"align"``. An utterance matching more than one is
 ignored (announced on the console).
 """
 
@@ -37,16 +38,23 @@ _HIGHPASS_HZ = 80.0  # kill DC/infrasonic wander (laptop mics drift hugely below
 
 _SUCCESS_RE = re.compile(r"\b(success\w*|succeed\w*)\b")
 _FAILURE_RE = re.compile(r"\bfail\w*\b")
+# "a line" is Whisper's most common mis-hearing of a spoken "align".
+_ALIGN_RE = re.compile(r"\b(align\w*|a line)\b")
 
 
 def parse_label(text: str) -> str | None:
-    """Map a transcription to ``"success"`` / ``"failure"`` / ``None`` (no or ambiguous match)."""
+    """Map a transcription to ``"success"`` / ``"failure"`` / ``"align"`` / ``None``.
+
+    Returns None when nothing matches or the utterance is contradictory
+    (more than one command recognized at once).
+    """
     text = text.lower()
-    success = bool(_SUCCESS_RE.search(text))
-    failure = bool(_FAILURE_RE.search(text))
-    if success == failure:  # neither, or contradictory
-        return None
-    return "success" if success else "failure"
+    matches = [
+        name
+        for name, regex in (("success", _SUCCESS_RE), ("failure", _FAILURE_RE), ("align", _ALIGN_RE))
+        if regex.search(text)
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 class VoiceLabeler:
@@ -197,7 +205,7 @@ class VoiceLabeler:
                     fp16=self._fp16,
                     temperature=0.0,
                     condition_on_previous_text=False,
-                    initial_prompt="Label the robot trajectory: success or failure.",
+                    initial_prompt="Robot teleoperation commands: success, failure, align.",
                 )
             except Exception as exc:
                 print(f"[VOICE] Transcription failed: {exc}")

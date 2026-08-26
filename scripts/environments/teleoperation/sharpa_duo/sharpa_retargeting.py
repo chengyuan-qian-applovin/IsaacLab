@@ -42,9 +42,8 @@ import os
 
 import numpy as np
 import torch
-from scipy.spatial.transform import Rotation as R
-
 from duo_robot import DEX_RETARGETING_DIR
+from scipy.spatial.transform import Rotation as R
 
 # OpenXR 26-joint hand -> 21-joint MANO-style ordering used by dex_retargeting
 # (drops palm and the four non-thumb *_metacarpal joints).

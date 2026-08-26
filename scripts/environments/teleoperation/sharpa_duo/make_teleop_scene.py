@@ -138,6 +138,16 @@ parser.add_argument(
         " Pass '' to retarget uncalibrated."
     ),
 )
+parser.add_argument(
+    "--align_head_xy",
+    type=float,
+    nargs=2,
+    default=(0.0, -0.6),
+    help=(
+        "Voice 'align' command: world xy the head is moved to (facing the robot's forward axis)."
+        " Default (0, -0.6) stands you at the TACO table's near edge."
+    ),
+)
 parser.add_argument("--no_voice", action="store_true", help="Disable the Whisper success/failure voice labeling.")
 parser.add_argument(
     "--whisper_model", type=str, default="base.en", help="Whisper model for voice labels (e.g. base.en, small.en)."
@@ -307,6 +317,7 @@ class EpisodeFlow:
         self.teleop_active = False
         self.reset_requested = False
         self.awaiting_label = False  # gesture ended the episode; waiting for the voice label
+        self.align_requested = False  # voice "align" heard; served by the loop when head data is in
         self.suppress_active_frames = 0  # ignore the client's stale "playing" state after a host stop
         self.demo_count = 0
 
@@ -376,7 +387,12 @@ class EpisodeFlow:
     def handle_voice_label(self) -> None:
         """A spoken label ends (if needed), labels, and exports the current episode."""
         label = self.labeler.poll() if self.labeler is not None else None
-        if label is None or not self.recording:
+        if label is None:
+            return
+        if label == "align":
+            self.align_requested = True
+            return
+        if not self.recording:
             return
         if not self.awaiting_label and self.episode_has_data():
             # Label spoken mid-episode: it ends AND labels in one utterance.
@@ -431,9 +447,18 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
     from isaaclab_teleop.isaac_teleop_cfg import IsaacTeleopCfg
     from isaaclab_teleop.xr_cfg import XrCfg
 
+    from scipy.spatial.transform import Rotation as R
+
     from duo_teleop_pipeline import build_duo_pipeline
     from recording import XrHandsRecorder
-    from xr_extras import XR_EXTRAS_DIM, CrossHandStopGesture, HandJointMarkers, apply_arm_visual
+    from xr_extras import (
+        XR_EXTRAS_DIM,
+        XR_HANDS_DIM,
+        AnchorAligner,
+        CrossHandStopGesture,
+        HandJointMarkers,
+        apply_arm_visual,
+    )
 
     recording = not args_cli.no_record
 
@@ -468,6 +493,11 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
         cloudxr_env_file=cloudxr_env,
         auto_launch_cloudxr=cloudxr_env is not None,
     )
+    # Voice "align": re-anchor so the user faces along the robot's forward axis.
+    # The rig faces +x at identity, so the facing angle IS the root quat's yaw
+    # (the default +90 deg yaw faces +y, reproducing the source branch's target).
+    robot_yaw = float(R.from_quat(args_cli.robot_rot).as_euler("ZYX")[0])
+    aligner = AnchorAligner(teleop, tuple(args_cli.align_head_xy), robot_yaw)
 
     if recording:
         print(
@@ -498,11 +528,22 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
                     env.sim.render()
                     continue
 
-                xr_hands = action[-XR_EXTRAS_DIM:].reshape(2, 26, 7)
+                extras = action[-XR_EXTRAS_DIM:]
+                xr_hands = extras[:XR_HANDS_DIM].reshape(2, 26, 7)
+                xr_head = extras[XR_HANDS_DIM:]
                 action = action[:-XR_EXTRAS_DIM]
                 XrHandsRecorder.latest = xr_hands
                 if markers is not None:
                     markers.update(xr_hands)
+
+                if flow.align_requested:
+                    flow.align_requested = False
+                    if flow.teleop_active:
+                        print("[ALIGN] Ignored while teleop is running: press Stop (or use the gesture) first.")
+                    elif float(xr_head[:3].norm()) < 1e-6:
+                        print("[ALIGN] No head tracking yet (is the visor on?); say 'align' again in a moment.")
+                    else:
+                        aligner.align(xr_head.cpu().numpy())
 
                 if flow.handle_gesture(xr_hands):
                     continue

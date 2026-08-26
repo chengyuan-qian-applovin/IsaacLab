@@ -58,10 +58,14 @@ all|success|failure|0,3,7` selects demos. No domain randomization.
 
 ### Voice labels (OpenAI Whisper)
 
-Labels are transcribed locally by `openai-whisper` (`pip install openai-whisper`
-into the env; done via `--whisper_model`, default `base.en`, running on
-`--whisper_device`, default `cpu` so it never competes with the sim and CloudXR
-for the GPU). Audio comes from the machine's microphone via `arecord` — the
+Voice commands are transcribed locally by `openai-whisper` (`pip install
+openai-whisper` into the env; done via `--whisper_model`, default `base.en`,
+running on `--whisper_device`, default `cpu` so it never competes with the sim
+and CloudXR for the GPU). Besides the labels, saying **"align"** (while teleop
+is stopped) re-anchors the XR session: it rotates the world about your head
+until you face the robot's forward axis and moves you to `--align_head_xy`
+(default: the TACO table's near edge, z untouched) — the port of the source
+branch's AVP Align button, with voice replacing the button. Audio comes from the machine's microphone via `arecord` — the
 headset mic is not streamed to the server by this stack, so stay within
 speaking range of the machine. Every transcription is printed to the console,
 labels and mis-hearings alike.
@@ -181,10 +185,11 @@ the yml.
 This is a port of the `teleop_taco_scene.py` pipeline from the
 `feature/robolab-xr-teleop` branch (which targets Isaac Lab 2.x) onto
 `release/3.0.0-beta2`, restructured to be scene-agnostic and self-contained.
-Deliberately **not** ported (yet): the Align button and Success/Failure client
-dialog (voice labeling replaces them), the `calibrate_hand_shape.py` capture
-script (its output yml is vendored and used), self-collision contact
-filtering, and the domain-randomized four-camera replay.
+Deliberately **not** ported (yet): the Success/Failure client dialog and the
+client-side Align button (both replaced by voice commands), the
+`calibrate_hand_shape.py` capture script (its output yml is vendored and
+used), self-collision contact filtering, and the domain-randomized
+four-camera replay.
 
 What changed in the port, beyond reorganization:
 
