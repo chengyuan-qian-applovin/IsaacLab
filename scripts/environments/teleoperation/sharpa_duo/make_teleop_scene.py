@@ -328,15 +328,146 @@ def to_root_frame(env: ManagerBasedRLEnv, action: torch.Tensor) -> torch.Tensor:
     return out
 
 
-def run_teleop(env: ManagerBasedRLEnv) -> None:
-    """Drive the env from XR hand tracking until the app closes.
+class EpisodeFlow:
+    """Episode lifecycle state for the teleop loop.
 
-    Episode lifecycle: Play starts teleop (and, when recording, the episode
-    buffer). The cross-hand stop gesture ends an episode and waits for a voice
-    label; saying "success"/"failure" at any time labels AND ends the current
-    episode; either way the labeled demo is exported and the scene resets for
-    the next one. Reset (headset button) discards the in-flight episode.
+    Play starts teleop (and, when recording, the episode buffer). The
+    cross-hand stop gesture ends an episode and waits for a voice label;
+    saying "success"/"failure" at any time labels AND ends the current
+    episode; either way the labeled demo is exported, the scene resets, and
+    teleop ends stopped — the operator presses Play for the next episode.
+    Reset (headset button) discards the in-flight episode.
     """
+
+    def __init__(self, env: ManagerBasedRLEnv, gesture, labeler, recording: bool):
+        self.env = env
+        self.gesture = gesture
+        self.labeler = labeler
+        self.recording = recording
+        self.teleop = None  # bound after the device is created
+        self.teleop_active = False
+        self.reset_requested = False
+        self.awaiting_label = False  # gesture ended the episode; waiting for the voice label
+        self.suppress_active_frames = 0  # ignore the client's stale "playing" state after a host stop
+        self.demo_count = 0
+
+    # -- device callbacks ---------------------------------------------------
+
+    def on_start(self) -> None:
+        if self.awaiting_label:
+            print("[INFO] Play ignored: say 'success' or 'failure' first (or press Reset to discard).")
+            return
+        self.teleop_active = True
+
+    def on_stop(self) -> None:
+        self.teleop_active = False
+
+    def on_reset(self) -> None:
+        self.reset_requested = True
+
+    # -- episode bookkeeping ------------------------------------------------
+
+    def episode_has_data(self) -> bool:
+        return self.recording and not self.env.recorder_manager.get_episode(0).is_empty()
+
+    def request_client_stop(self) -> None:
+        """Drive the teleop state machine to PAUSED, as if the operator pressed Stop.
+
+        Without this, the device keeps reporting the client's "playing" state and
+        teleop would resume by itself right after an episode export. There is no
+        public host-initiated stop (only ``inject_reset``), so this enqueues the
+        same run-toggle sequence a client "stop" message would produce.
+        """
+        try:
+            from isaaclab_teleop.teleop_message_processor import _STOP_TOGGLE_SEQUENCES
+
+            proc = self.teleop._session_lifecycle._message_processor
+            if proc is not None and not proc._run_toggle_queue:
+                proc._run_toggle_queue = proc._make_toggle_sequence(_STOP_TOGGLE_SEQUENCES[proc._shadow_state])
+        except Exception as exc:
+            print(f"[WARNING] Could not push Stop into the teleop state machine: {exc}")
+
+    def stop_teleop(self) -> None:
+        self.teleop_active = False
+        self.request_client_stop()
+        self.suppress_active_frames = 5  # the injected Stop lands within a frame or two
+
+    def close_episode(self, prompt_label: bool = True) -> None:
+        """Stop teleop and freeze the episode buffer."""
+        self.stop_teleop()
+        self.env.recorder_manager.record_pre_reset([0], force_export_or_skip=False)
+        self.awaiting_label = True
+        actions = self.env.recorder_manager.get_episode(0).data.get("actions")
+        n_steps = len(actions) if actions is not None else 0
+        prompt = " Say 'success' or 'failure' (Reset discards)." if prompt_label else ""
+        print(f"[INFO] Episode ended ({n_steps} steps).{prompt}")
+
+    def export_episode(self, success: bool) -> None:
+        rm = self.env.recorder_manager
+        rm.set_success_to_episodes([0], torch.tensor([[success]], dtype=torch.bool, device=self.env.device))
+        rm.export_episodes([0])
+        rm.reset()
+        self.demo_count += 1
+        self.awaiting_label = False
+        self.reset_requested = True  # hands-free: fresh scene for the next episode
+        print(f"[INFO] Episode exported as demo_{self.demo_count - 1} (success={success}). Scene reset; press Play.")
+
+    # -- per-iteration handlers ----------------------------------------------
+
+    def handle_voice_label(self) -> None:
+        """A spoken label ends (if needed), labels, and exports the current episode."""
+        label = self.labeler.poll() if self.labeler is not None else None
+        if label is None or not self.recording:
+            return
+        if not self.awaiting_label and self.episode_has_data():
+            # Label spoken mid-episode: it ends AND labels in one utterance.
+            self.close_episode(prompt_label=False)
+        if self.awaiting_label:
+            self.export_episode(label == "success")
+        else:
+            print(f"[INFO] Voice label '{label}' ignored: no recorded steps yet.")
+
+    def handle_reset(self) -> None:
+        if not self.reset_requested:
+            return
+        if self.awaiting_label:
+            print("[INFO] Reset while awaiting the voice label: episode discarded.")
+        if self.recording:
+            self.env.recorder_manager.reset()
+        self.env.reset()
+        self.teleop.reset()
+        self.gesture.reset()
+        self.awaiting_label = False
+        self.reset_requested = False
+
+    def handle_control_events(self, poll_control_events) -> None:
+        ctrl = poll_control_events(self.teleop)
+        if ctrl.is_active is not None:
+            if ctrl.is_active and self.awaiting_label:
+                print("[INFO] Play ignored: say 'success' or 'failure' first (or press Reset to discard).")
+            elif ctrl.is_active and self.suppress_active_frames > 0:
+                pass  # stale "playing" state; the host-initiated Stop has not landed yet
+            else:
+                self.teleop_active = ctrl.is_active
+        if self.suppress_active_frames > 0:
+            self.suppress_active_frames -= 1
+        if ctrl.should_reset:
+            self.reset_requested = True
+
+    def handle_gesture(self, xr_hands: torch.Tensor) -> bool:
+        """Returns True if the stop gesture fired this frame."""
+        if not (self.teleop_active and self.gesture.update(xr_hands)):
+            return False
+        if self.episode_has_data():
+            self.close_episode()
+        else:
+            self.stop_teleop()
+            print("[INFO] Stop gesture: no recorded steps, teleop paused.")
+        return True
+
+
+def run_teleop(env: ManagerBasedRLEnv) -> None:
+    """Drive the env from XR hand tracking until the app closes (see :class:`EpisodeFlow`)."""
     from isaaclab_teleop import CLOUDXR_AVP_ENV, CLOUDXR_JS_ENV, create_isaac_teleop_device, poll_control_events
     from isaaclab_teleop.isaac_teleop_cfg import IsaacTeleopCfg
     from isaaclab_teleop.xr_cfg import XrCfg
@@ -359,6 +490,8 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
             model_name=args_cli.whisper_model, device=args_cli.whisper_device, mic_device=args_cli.mic_device
         )
 
+    flow = EpisodeFlow(env, gesture, labeler, recording)
+
     pipeline, retargeters = build_duo_pipeline(include_xr_hands=True)
     teleop_cfg = IsaacTeleopCfg(
         xr_cfg=XrCfg(anchor_pos=tuple(args_cli.anchor_pos), anchor_rot=tuple(args_cli.anchor_rot)),
@@ -366,86 +499,16 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
         retargeters_to_tune=lambda: retargeters,
         sim_device=env.device,
     )
-
     cloudxr_env = {"cloudxrjs": CLOUDXR_JS_ENV, "avp": CLOUDXR_AVP_ENV, "none": None}.get(
         args_cli.cloudxr_env, args_cli.cloudxr_env
     )
-
-    teleop_active = False
-    reset_requested = False
-    awaiting_label = False  # gesture ended the episode; waiting for the voice label
-    suppress_active_frames = 0  # ignore the client's stale "playing" state briefly after a host stop
-    demo_count = 0
-
-    def _start():
-        nonlocal teleop_active
-        if awaiting_label:
-            print("[INFO] Play ignored: say 'success' or 'failure' first (or press Reset to discard).")
-            return
-        teleop_active = True
-
-    def _stop():
-        nonlocal teleop_active
-        teleop_active = False
-
-    def _reset():
-        nonlocal reset_requested
-        reset_requested = True
-
-    teleop = create_isaac_teleop_device(
+    flow.teleop = teleop = create_isaac_teleop_device(
         teleop_cfg,
         sim_device=env.device,
-        callbacks={"START": _start, "STOP": _stop, "RESET": _reset},
+        callbacks={"START": flow.on_start, "STOP": flow.on_stop, "RESET": flow.on_reset},
         cloudxr_env_file=cloudxr_env,
         auto_launch_cloudxr=cloudxr_env is not None,
     )
-
-    def episode_has_data() -> bool:
-        return recording and not env.recorder_manager.get_episode(0).is_empty()
-
-    def request_client_stop() -> None:
-        """Drive the teleop state machine to PAUSED, as if the operator pressed Stop.
-
-        Without this, the device keeps reporting the client's "playing" state and
-        teleop would resume by itself right after an episode export. There is no
-        public host-initiated stop (only ``inject_reset``), so this enqueues the
-        same run-toggle sequence a client "stop" message would produce.
-        """
-        try:
-            from isaaclab_teleop.teleop_message_processor import _STOP_TOGGLE_SEQUENCES
-
-            proc = teleop._session_lifecycle._message_processor
-            if proc is not None and not proc._run_toggle_queue:
-                proc._run_toggle_queue = proc._make_toggle_sequence(_STOP_TOGGLE_SEQUENCES[proc._shadow_state])
-        except Exception as exc:
-            print(f"[WARNING] Could not push Stop into the teleop state machine: {exc}")
-
-    def close_episode(prompt_label: bool = True) -> None:
-        """Stop teleop and freeze the episode buffer."""
-        nonlocal teleop_active, awaiting_label, suppress_active_frames
-        teleop_active = False
-        request_client_stop()
-        suppress_active_frames = 5  # the injected Stop lands within a frame or two
-        env.recorder_manager.record_pre_reset([0], force_export_or_skip=False)
-        awaiting_label = True
-        actions = env.recorder_manager.get_episode(0).data.get("actions")
-        n_steps = len(actions) if actions is not None else 0
-        if prompt_label:
-            print(f"[INFO] Episode ended ({n_steps} steps). Say 'success' or 'failure' (Reset discards).")
-        else:
-            print(f"[INFO] Episode ended ({n_steps} steps).")
-
-    def export_episode(success: bool) -> None:
-        nonlocal awaiting_label, demo_count, reset_requested
-        env.recorder_manager.set_success_to_episodes(
-            [0], torch.tensor([[success]], dtype=torch.bool, device=env.device)
-        )
-        env.recorder_manager.export_episodes([0])
-        env.recorder_manager.reset()
-        demo_count += 1
-        awaiting_label = False
-        reset_requested = True  # hands-free: fresh scene for the next episode
-        print(f"[INFO] Episode exported as demo_{demo_count - 1} (success={success}). Scene resets; press Play.")
 
     if recording:
         print(
@@ -466,39 +529,10 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
             try:
                 # Voice labels first, and exports BEFORE any reset is processed,
                 # so a label + reset burst cannot discard the episode.
-                label = labeler.poll() if labeler is not None else None
-                if label is not None and recording:
-                    if not awaiting_label and episode_has_data():
-                        # Label spoken mid-episode: it ends AND labels in one utterance.
-                        close_episode(prompt_label=False)
-                    if awaiting_label:
-                        export_episode(label == "success")
-                    else:
-                        print(f"[INFO] Voice label '{label}' ignored: no recorded steps yet.")
-                if reset_requested:
-                    if awaiting_label:
-                        print("[INFO] Reset while awaiting the voice label: episode discarded.")
-                    if recording:
-                        env.recorder_manager.reset()
-                    env.reset()
-                    teleop.reset()
-                    gesture.reset()
-                    awaiting_label = False
-                    reset_requested = False
-
+                flow.handle_voice_label()
+                flow.handle_reset()
                 action = teleop.advance()
-                ctrl = poll_control_events(teleop)
-                if ctrl.is_active is not None:
-                    if ctrl.is_active and awaiting_label:
-                        print("[INFO] Play ignored: say 'success' or 'failure' first (or press Reset to discard).")
-                    elif ctrl.is_active and suppress_active_frames > 0:
-                        pass  # stale "playing" state; the host-initiated Stop has not landed yet
-                    else:
-                        teleop_active = ctrl.is_active
-                if suppress_active_frames > 0:
-                    suppress_active_frames -= 1
-                if ctrl.should_reset:
-                    reset_requested = True
+                flow.handle_control_events(poll_control_events)
 
                 # action is None until the XR session has started.
                 if action is None:
@@ -511,16 +545,9 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
                 if markers is not None:
                     markers.update(xr_hands)
 
-                if teleop_active and gesture.update(xr_hands):
-                    if episode_has_data():
-                        close_episode()
-                    else:
-                        teleop_active = False
-                        request_client_stop()
-                        suppress_active_frames = 5
-                        print("[INFO] Stop gesture: no recorded steps, teleop paused.")
+                if flow.handle_gesture(xr_hands):
                     continue
-                if not teleop_active:
+                if not flow.teleop_active:
                     env.sim.render()
                     continue
                 action = to_root_frame(env, action.to(env.device))
@@ -531,7 +558,7 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
                     "[ERROR] Teleop loop iteration failed (see traceback above). Teleop paused; "
                     "the XR session stays alive. Press Play to retry or Reset to reset."
                 )
-                teleop_active = False
+                flow.teleop_active = False
     if labeler is not None:
         labeler.close()
 
