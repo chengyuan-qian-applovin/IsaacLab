@@ -18,7 +18,8 @@ transcription is printed, so mis-hearings are visible immediately.
 
 Recognized commands: "success"/"succeed…" → ``"success"``; "fail…" →
 ``"failure"``; "align" (or Whisper's common mis-hearing "a line") →
-``"align"``; "play"/"start…" → ``"play"``; "reset" → ``"reset"``. An
+``"align"``; "play"/"start…" → ``"play"``; "reset" → ``"reset"``;
+"next"/"skip" → ``"next"`` (advance to the next scene in the list). An
 utterance matching more than one is ignored (announced on the console).
 """
 
@@ -43,6 +44,7 @@ _COMMAND_RES = (
     ("align", re.compile(r"\b(align\w*|a line)\b")),
     ("play", re.compile(r"\b(play\w*|start\w*)\b")),
     ("reset", re.compile(r"\breset\w*\b")),
+    ("next", re.compile(r"\b(next|skip)\b")),
 )
 
 
@@ -242,7 +244,7 @@ class VoiceLabeler:
                     fp16=self._fp16,
                     temperature=0.0,
                     condition_on_previous_text=False,
-                    initial_prompt="Robot teleoperation commands: success, failure, align, play, reset.",
+                    initial_prompt="Robot teleoperation commands: success, failure, align, play, reset, next.",
                 )
             except Exception as exc:
                 print(f"[VOICE] Transcription failed: {exc}")

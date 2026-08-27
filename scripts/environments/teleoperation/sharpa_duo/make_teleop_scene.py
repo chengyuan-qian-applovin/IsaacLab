@@ -88,9 +88,38 @@ parser.add_argument(
     help="XR anchor rotation (x y z w): should match the robot yaw so the arms line up with yours.",
 )
 parser.add_argument(
+    "--scene_list",
+    type=str,
+    default=None,
+    help=(
+        'JSON file with the scenes to teleop: a list of USDA paths (or {"scenes": [...]}), relative'
+        " paths resolved against the JSON's directory. Starts at the first; say 'next' to advance"
+        " (wraps around). Overrides --scene_usda. Example: scenes/scene_list.json."
+    ),
+)
+parser.add_argument(
     "--no_track_objects",
     action="store_true",
     help="Do not register the scene's rigid bodies with the env (their poses then survive resets).",
+)
+parser.add_argument("--no_dr", action="store_true", help="Disable domain randomization on episode resets.")
+parser.add_argument(
+    "--dr_arm_jitter",
+    type=float,
+    default=0.08,
+    help="DR: uniform per-joint offset range [rad] added to the arms' ready pose on each reset.",
+)
+parser.add_argument(
+    "--dr_object_xy",
+    type=float,
+    default=0.05,
+    help="DR: uniform xy offset range [m] around each tracked object's authored pose on each reset.",
+)
+parser.add_argument(
+    "--dr_object_yaw",
+    type=float,
+    default=180.0,
+    help="DR: uniform yaw offset range [deg] around each tracked object's authored orientation.",
 )
 parser.add_argument(
     "--render_frequency",
@@ -263,6 +292,7 @@ import traceback
 import torch
 
 from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedRLEnvCfg
+from isaaclab.managers import EventTermCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.math import subtract_frame_transforms
 
@@ -292,13 +322,13 @@ class DuoTeleopEnvCfg(DuoEnvCfg):
         )
 
 
-def build_env_cfg() -> ManagerBasedRLEnvCfg:
-    """Assemble the env config from the CLI arguments."""
+def build_env_cfg(scene_usda: str) -> ManagerBasedRLEnvCfg:
+    """Assemble the env config for one scene from the CLI arguments."""
     env_cfg = DuoTeleopEnvCfg()
     env_cfg.sim.device = args_cli.device
     env_cfg.episode_length_s = args_cli.episode_length_s
     env_cfg.scene.robot = duo_robot_cfg(pos=tuple(args_cli.robot_pos), rot=tuple(args_cli.robot_rot))
-    add_usda_scene(env_cfg.scene, args_cli.scene_usda, track_objects=not args_cli.no_track_objects)
+    add_usda_scene(env_cfg.scene, scene_usda, track_objects=not args_cli.no_track_objects)
     # Render every Nth physics substep, as close to the requested rate as the dt allows.
     interval = max(1, round(1.0 / (env_cfg.sim.dt * args_cli.render_frequency)))
     env_cfg.sim.render_interval = interval
@@ -306,14 +336,43 @@ def build_env_cfg() -> ManagerBasedRLEnvCfg:
     if args_cli.arm_visual == "transparent":
         # Opacity needs translucency support in the renderer; must be set pre-sim-context.
         env_cfg.sim.render.enable_translucency = True
+    if not args_cli.no_dr:
+        # Domain randomization on every episode reset: jitter the arms' start
+        # pose, and shuffle the tracked objects with a collision-checked draw
+        # (bounding circles from the USD footprints; see usda_scene).
+        from isaaclab.envs.mdp import reset_joints_by_offset
+        from isaaclab.managers import SceneEntityCfg
+
+        from usda_scene import randomize_tracked_objects
+
+        env_cfg.events.dr_arm = EventTermCfg(
+            func=reset_joints_by_offset,
+            mode="reset",
+            params={
+                "position_range": (-args_cli.dr_arm_jitter, args_cli.dr_arm_jitter),
+                "velocity_range": (0.0, 0.0),
+                "asset_cfg": SceneEntityCfg("robot", joint_names=["(left|right)_panda_joint[1-7]"]),
+            },
+        )
+        env_cfg.events.dr_objects = EventTermCfg(
+            func=randomize_tracked_objects,
+            mode="reset",
+            params={
+                "xy_range": args_cli.dr_object_xy,
+                "yaw_range": math.radians(args_cli.dr_object_yaw),
+                "margin": 0.01,
+            },
+        )
     if args_cli.smoke is None and not args_cli.no_record:
         from recording import DuoRecorderManagerCfg
 
         env_cfg.recorders = DuoRecorderManagerCfg()
         env_cfg.recorders.dataset_export_dir_path = os.path.abspath(args_cli.record_dir)
-        # Unique per session: the HDF5 handler opens its file in "w" (truncate) mode
-        # at env creation, so a fixed name would wipe earlier sessions on every start.
-        env_cfg.recorders.dataset_filename = time.strftime("dataset_%Y%m%d_%H%M%S")
+        # Unique per session AND per scene: the HDF5 handler opens its file in "w"
+        # (truncate) mode at env creation, so a fixed name would wipe earlier
+        # sessions on every start.
+        scene_stem = os.path.splitext(os.path.basename(scene_usda))[0][:60]
+        env_cfg.recorders.dataset_filename = time.strftime("dataset_%Y%m%d_%H%M%S") + f"_{scene_stem}"
     return env_cfg
 
 
@@ -478,10 +537,12 @@ class EpisodeFlow:
     Reset (headset button) discards the in-flight episode.
     """
 
-    def __init__(self, env: ManagerBasedRLEnv, gesture, labeler, recording: bool):
+    def __init__(self, env: ManagerBasedRLEnv, gesture, labeler, recording: bool, scene_name: str = ""):
         self.env = env
         self.gesture = gesture
         self.labeler = labeler
+        self.scene_name = scene_name
+        self.next_requested = False  # voice "next": advance to the next scene in the list
         self.recording = recording
         self.teleop = None  # bound after the device is created
         self.teleop_active = False
@@ -559,6 +620,15 @@ class EpisodeFlow:
         n_steps = len(actions) if actions is not None else 0
         rm.set_success_to_episodes([0], torch.tensor([[success]], dtype=torch.bool, device=self.env.device))
         rm.export_episodes([0])
+        # Tag the demo with the scene it was recorded in (the handler writes only
+        # its fixed attrs, so set ours on the freshly written HDF5 group).
+        if self.scene_name:
+            try:
+                handler = rm._dataset_file_handler
+                handler._hdf5_data_group[f"demo_{handler.get_num_episodes() - 1}"].attrs["scene"] = self.scene_name
+                handler.flush()
+            except Exception as exc:
+                print(f"[WARNING] Could not tag the demo with its scene name: {exc}")
         rm.reset()
         self.demo_count += 1
         self.awaiting_label = False
@@ -595,6 +665,14 @@ class EpisodeFlow:
             return
         if label == "reset":
             self.reset_requested = True  # same as the client button: discards the episode
+            return
+        if label == "next":
+            if self.awaiting_label:
+                print("[SCENE] 'next' ignored: say 'success' or 'failure' first (or press Reset to discard).")
+            else:
+                if self.recording and self.episode_has_data():
+                    print("[SCENE] Switching scenes: the unlabeled in-flight episode is discarded.")
+                self.next_requested = True
             return
         if not self.recording:
             return
@@ -645,9 +723,22 @@ class EpisodeFlow:
         return True
 
 
-def run_teleop(env: ManagerBasedRLEnv) -> None:
-    """Drive the env from XR hand tracking until the app closes (see :class:`EpisodeFlow`)."""
-    from isaaclab_teleop import CLOUDXR_AVP_ENV, CLOUDXR_JS_ENV, create_isaac_teleop_device, poll_control_events
+def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) -> tuple[str, tuple]:
+    """Drive the env from XR hand tracking for one scene (see :class:`EpisodeFlow`).
+
+    Args:
+        env: The environment (one scene of the list).
+        labeler: The shared :class:`~voice_labeler.VoiceLabeler` (or None).
+        scene_name: Stamped on every exported demo as its ``scene`` HDF5 attr.
+        anchor: ``(anchor_pos, anchor_rot)`` xyzw to start from, so "align"
+            adjustments carry across scene switches.
+
+    Returns:
+        ``(reason, anchor)`` where reason is ``"next"`` (voice command: advance
+        to the next scene) or ``"quit"`` (app closed), and anchor is the
+        possibly-realigned pose to seed the next scene with.
+    """
+    from isaaclab_teleop import create_isaac_teleop_device, poll_control_events
     from isaaclab_teleop.isaac_teleop_cfg import IsaacTeleopCfg
     from isaaclab_teleop.xr_cfg import XrCfg
 
@@ -685,32 +776,23 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
     markers = HandJointMarkers() if args_cli.visualize_hands else None
     gesture = CrossHandStopGesture(touch_dist=args_cli.gesture_touch_cm / 100.0, hold_s=args_cli.gesture_hold_s)
 
-    labeler = None
-    if not args_cli.no_voice:
-        from voice_labeler import VoiceLabeler
-
-        labeler = VoiceLabeler(
-            model_name=args_cli.whisper_model, device=args_cli.whisper_device, mic_device=args_cli.mic_device
-        )
-
-    flow = EpisodeFlow(env, gesture, labeler, recording)
+    flow = EpisodeFlow(env, gesture, labeler, recording, scene_name=scene_name)
 
     pipeline, retargeters = build_duo_pipeline(include_xr_hands=True, hand_calibration=args_cli.hand_calibration)
     teleop_cfg = IsaacTeleopCfg(
-        xr_cfg=XrCfg(anchor_pos=tuple(args_cli.anchor_pos), anchor_rot=tuple(args_cli.anchor_rot)),
+        xr_cfg=XrCfg(anchor_pos=tuple(anchor[0]), anchor_rot=tuple(anchor[1])),
         pipeline_builder=lambda: pipeline,
         retargeters_to_tune=lambda: retargeters,
         sim_device=env.device,
     )
-    cloudxr_env = {"cloudxrjs": CLOUDXR_JS_ENV, "avp": CLOUDXR_AVP_ENV, "none": None}.get(
-        args_cli.cloudxr_env, args_cli.cloudxr_env
-    )
+    # The CloudXR runtime is owned by main() and survives scene switches, so
+    # the device must not launch (or stop) a runtime of its own.
     flow.teleop = teleop = create_isaac_teleop_device(
         teleop_cfg,
         sim_device=env.device,
         callbacks={"START": flow.on_start, "STOP": flow.on_stop, "RESET": flow.on_reset},
-        cloudxr_env_file=cloudxr_env,
-        auto_launch_cloudxr=cloudxr_env is not None,
+        cloudxr_env_file=None,
+        auto_launch_cloudxr=False,
     )
     # Voice "align": re-anchor so the user faces along the robot's forward axis.
     # The rig faces +x at identity, so the facing angle IS the root quat's yaw
@@ -752,6 +834,9 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
                 # Voice labels first, and exports BEFORE any reset is processed,
                 # so a label + reset burst cannot discard the episode.
                 flow.handle_voice_label()
+                if flow.next_requested:
+                    flow.request_client_stop()
+                    break
                 flow.handle_reset()
                 action = teleop.advance()
                 flow.handle_control_events(poll_control_events)
@@ -794,8 +879,10 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
                     "the XR session stays alive. Press Play to retry or Reset to reset."
                 )
                 flow.teleop_active = False
-    if labeler is not None:
-        labeler.close()
+    # Carry any "align" adjustment into the next scene's device.
+    xr_cfg = teleop._anchor_manager._xr_cfg
+    anchor_out = (tuple(xr_cfg.anchor_pos), tuple(xr_cfg.anchor_rot))
+    return ("next" if flow.next_requested else "quit", anchor_out)
 
 
 def run_smoke(env: ManagerBasedRLEnv, num_steps: int) -> None:
@@ -856,15 +943,79 @@ def run_smoke(env: ManagerBasedRLEnv, num_steps: int) -> None:
         raise SystemExit(1)
 
 
+def load_scene_list() -> list[str]:
+    """Scenes to teleop: the --scene_list JSON if given, else just --scene_usda."""
+    if args_cli.scene_list is None:
+        return [args_cli.scene_usda]
+    import json
+
+    list_path = os.path.abspath(args_cli.scene_list)
+    with open(list_path) as f:
+        data = json.load(f)
+    entries = data["scenes"] if isinstance(data, dict) else data
+    base = os.path.dirname(list_path)
+    scenes = [entry if os.path.isabs(entry) else os.path.join(base, entry) for entry in entries]
+    missing = [scene for scene in scenes if not os.path.exists(scene)]
+    if not scenes or missing:
+        raise SystemExit(f"--scene_list {args_cli.scene_list}: empty or missing scenes {missing}")
+    return scenes
+
+
 def main():
-    env = ManagerBasedRLEnv(cfg=build_env_cfg())
-    try:
-        if args_cli.smoke is not None:
+    scenes = load_scene_list()
+    if args_cli.smoke is not None:
+        env = ManagerBasedRLEnv(cfg=build_env_cfg(scenes[0]))
+        try:
             run_smoke(env, args_cli.smoke)
-        else:
-            run_teleop(env)
+        finally:
+            env.close()
+        return
+
+    # Everything that must SURVIVE scene switches lives here: the voice labeler
+    # (Whisper model + microphone stream) and the CloudXR runtime (stopping it
+    # would disconnect the headset between scenes).
+    labeler = None
+    if not args_cli.no_voice:
+        from voice_labeler import VoiceLabeler
+
+        labeler = VoiceLabeler(
+            model_name=args_cli.whisper_model, device=args_cli.whisper_device, mic_device=args_cli.mic_device
+        )
+    launcher = None
+    from isaaclab_teleop import CLOUDXR_AVP_ENV, CLOUDXR_JS_ENV
+
+    cloudxr_env = {"cloudxrjs": CLOUDXR_JS_ENV, "avp": CLOUDXR_AVP_ENV, "none": None}.get(
+        args_cli.cloudxr_env, args_cli.cloudxr_env
+    )
+    if cloudxr_env is not None:
+        from pathlib import Path
+
+        from isaacteleop.cloudxr import CloudXRLauncher
+
+        launcher = CloudXRLauncher(install_dir=str(Path.home() / ".cloudxr"), env_config=cloudxr_env, accept_eula=False)
+        print("[INFO] CloudXR runtime launched (kept alive across scene switches).")
+
+    anchor = (tuple(args_cli.anchor_pos), tuple(args_cli.anchor_rot))
+    index = 0
+    try:
+        while True:
+            scene = scenes[index]
+            print(f"[SCENE] {index + 1}/{len(scenes)}: {scene}")
+            env = ManagerBasedRLEnv(cfg=build_env_cfg(scene))
+            try:
+                reason, anchor = run_teleop(env, labeler, os.path.basename(scene), anchor)
+            finally:
+                env.close()
+            if reason != "next":
+                break
+            index = (index + 1) % len(scenes)
+            if index == 0 and len(scenes) > 1:
+                print("[SCENE] End of the list; wrapping around to the first scene.")
     finally:
-        env.close()
+        if labeler is not None:
+            labeler.close()
+        if launcher is not None:
+            launcher.stop()
 
 
 if __name__ == "__main__":

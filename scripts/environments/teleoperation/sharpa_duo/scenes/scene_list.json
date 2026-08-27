@@ -1,0 +1,11 @@
+{
+  "scenes": [
+    "taco/scene/taco_hoi_178_023.usda",
+    "scenegen/04_episode_scenegen/runs/scenes/ARCTIC_s01_box_use_01.usda",
+    "scenegen/04_episode_scenegen/runs/scenes/HOI4D_ZY20210800001_H1_C14_N15_S158_s02_T1.usda",
+    "scenegen/04_episode_scenegen/runs/scenes/HOI4D_ZY20210800001_H1_C1_N19_S100_s02_T1.usda",
+    "scenegen/04_episode_scenegen/runs/scenes/OakInk_v2_scene_02_A001_seq_03142eab556e3f4d2c60_2023_04_15_18_42_27_seg000.usda",
+    "scenegen/04_episode_scenegen/runs/scenes/TACO_cut_knife_bowl_20231020_254.usda",
+    "scenegen/04_episode_scenegen/runs/scenes/TACO_pour_in_some_bowl_bowl_20230927_021.usda"
+  ]
+}

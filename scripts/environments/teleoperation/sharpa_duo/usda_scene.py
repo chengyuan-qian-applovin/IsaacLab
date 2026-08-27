@@ -26,9 +26,16 @@ from __future__ import annotations
 
 import os
 
+import torch
+
 from isaaclab.assets import AssetBaseCfg, RigidObjectCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import UsdFileCfg
+
+#: Bounding-circle footprint radius [m] per tracked object, filled by
+#: :func:`add_usda_scene` from the composed USD bounds; consumed by
+#: :func:`randomize_tracked_objects` for its collision check.
+FOOTPRINT_RADII: dict[str, float] = {}
 
 
 def add_usda_scene(scene_cfg: InteractiveSceneCfg, usda_path: str, track_objects: bool = True) -> list[str]:
@@ -65,6 +72,8 @@ def add_usda_scene(scene_cfg: InteractiveSceneCfg, usda_path: str, track_objects
         raise ValueError(f"{usda_path} has no default prim; UsdFileCfg cannot reference it")
 
     objects: list[str] = []
+    FOOTPRINT_RADII.clear()  # one scene is loaded at a time; drop the previous scene's entries
+    bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_], useExtentsHint=True)
     it = iter(Usd.PrimRange(root, Usd.PrimAllPrimsPredicate))
     for prim in it:
         if prim == root or not prim.HasAPI(UsdPhysics.RigidBodyAPI):
@@ -81,6 +90,12 @@ def add_usda_scene(scene_cfg: InteractiveSceneCfg, usda_path: str, track_objects
         imag = q.GetImaginary()
         name = prim.GetName()
         rel_path = str(prim.GetPath())[len(str(root.GetPath())) :]  # e.g. "/bowl"
+        # Bounding-circle footprint radius for the DR collision check, from the
+        # world AABB (the sim_benchmark scenegen convention: circle of the max
+        # horizontal half-extent).
+        aabb = bbox_cache.ComputeWorldBound(prim).ComputeAlignedBox()
+        size = aabb.GetMax() - aabb.GetMin()
+        FOOTPRINT_RADII[name] = max(float(size[0]), float(size[1])) / 2.0 if not aabb.IsEmpty() else 0.05
         # init_state repeats the authored pose because reset_scene_to_default
         # writes it back to the sim on every reset. NOTE: InitialStateCfg.rot is
         # (x, y, z, w) on this Isaac Lab release, while Gf stores w separately.
@@ -103,3 +118,89 @@ def add_usda_scene(scene_cfg: InteractiveSceneCfg, usda_path: str, track_objects
     else:
         print(f"[INFO] scene '{os.path.basename(usda_path)}': no rigid bodies found to track.")
     return objects
+
+
+def randomize_tracked_objects(
+    env,
+    env_ids: torch.Tensor,
+    xy_range: float = 0.05,
+    yaw_range: float = 3.14159265,
+    margin: float = 0.01,
+    max_tries: int = 50,
+) -> None:
+    """Reset event: perturb every tracked object's authored pose, rejecting collisions.
+
+    Each object gets a uniform xy offset in ``[-xy_range, xy_range]`` and a yaw
+    offset in ``[-yaw_range, yaw_range]`` about its AUTHORED pose (so objects
+    stay in their scene's workspace without needing table bounds). A draw is
+    rejected — and the whole set resampled, up to ``max_tries`` — while any two
+    objects' bounding circles overlap (radius from the USD footprint plus
+    ``margin``; the collision model used by sim_benchmark's scenegen solvers).
+    Runs after ``reset_scene_to_default``, overwriting the poses it restored.
+    Falls back to the authored poses if no collision-free draw is found.
+
+    Stacked arrangements (objects authored xy-coincident, e.g. a box lid on its
+    base) are moved as one: they share a single xy offset and receive no yaw
+    randomization, so the stack never gets knocked apart at reset.
+    """
+    from isaaclab.utils.math import quat_mul
+
+    names = [n for n in env.scene.rigid_objects.keys() if n.startswith("object_")]
+    if len(names) == 0:
+        return
+    device = env.device
+    base_pos = torch.stack(
+        [torch.tensor(env.scene[n].cfg.init_state.pos, dtype=torch.float32, device=device) for n in names]
+    )
+    base_rot = torch.stack(
+        [torch.tensor(env.scene[n].cfg.init_state.rot, dtype=torch.float32, device=device) for n in names]
+    )
+    radii = torch.tensor([FOOTPRINT_RADII.get(n.removeprefix("object_"), 0.05) + margin for n in names], device=device)
+
+    # Per-pair clearance requirement: the bounding-circle sum, but never MORE
+    # than the authored layout already provides (some scenes author objects
+    # closer than their conservative circles — e.g. a brush leaning on a bowl —
+    # and demanding extra clearance would make every draw fail).
+    authored_dists = (base_pos[:, None, :2] - base_pos[None, :, :2]).norm(dim=-1)
+    min_dists = torch.minimum(radii[:, None] + radii[None, :], authored_dists)
+
+    # Cluster stacked objects (authored xy-coincident): one offset per cluster,
+    # no yaw for stack members, so the stack moves as a rigid group.
+    cluster = list(range(len(names)))
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            if float(authored_dists[i, j]) < 0.03:
+                cluster[j] = cluster[i]
+    stacked = [cluster.count(cluster[i]) > 1 for i in range(len(names))]
+    cluster_t = torch.tensor(cluster, device=device)
+
+    positions = base_pos
+    yaws = torch.zeros(len(names), device=device)
+    for _ in range(max_tries):
+        cluster_offsets = (torch.rand(len(names), 2, device=device) * 2.0 - 1.0) * xy_range
+        offsets = cluster_offsets[cluster_t]  # members of a cluster share their root's draw
+        candidate = base_pos.clone()
+        candidate[:, :2] += offsets
+        dists = (candidate[:, None, :2] - candidate[None, :, :2]).norm(dim=-1)
+        collided = (dists < min_dists - 1e-6) & ~torch.eye(len(names), dtype=torch.bool, device=device)
+        if not bool(collided.any()):
+            positions = candidate
+            yaws = (torch.rand(len(names), device=device) * 2.0 - 1.0) * yaw_range
+            yaws[torch.tensor(stacked, device=device)] = 0.0
+            break
+    else:
+        print("[DR] No collision-free object placement found; keeping the authored poses.")
+
+    half = yaws / 2.0
+    yaw_quat = torch.zeros(len(names), 4, device=device)  # xyzw, rotation about world z
+    yaw_quat[:, 2] = torch.sin(half)
+    yaw_quat[:, 3] = torch.cos(half)
+    rots = quat_mul(yaw_quat, base_rot)
+
+    origin = env.scene.env_origins[env_ids[0]]
+    for i, name in enumerate(names):
+        pose = torch.cat([positions[i] + origin, rots[i]]).unsqueeze(0)
+        env.scene[name].write_root_pose_to_sim_index(root_pose=pose, env_ids=env_ids)
+        env.scene[name].write_root_velocity_to_sim_index(
+            root_velocity=torch.zeros(1, 6, device=device), env_ids=env_ids
+        )

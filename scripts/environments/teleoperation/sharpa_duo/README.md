@@ -77,8 +77,37 @@ Every transcription is printed to the console, labels and mis-hearings alike.
 The full voice vocabulary: **"success"** / **"failure"** (label + export the
 episode), **"align"** (re-anchor, teleop stopped only), **"play"** (or
 "start" — starts teleop, driven through the same state machine as the client
-button), and **"reset"** (discards the in-flight episode and resets the
-scene). An utterance matching more than one command is ignored.
+button), **"reset"** (discards the in-flight episode and resets the scene),
+and **"next"** (or "skip" — advance to the next scene in the `--scene_list`,
+wrapping at the end; an unlabeled in-flight episode is discarded, a
+label-pending one must be labeled first). An utterance matching more than one
+command is ignored.
+
+## Multi-scene sessions
+
+`--scene_list scenes/scene_list.json` teleops through a list of scenes (JSON:
+a list of USDA paths or `{"scenes": [...]}`, relative to the JSON's
+directory); the session starts at the first and **"next"** advances. Each
+scene switch rebuilds the environment (the CloudXR runtime, headset
+connection, Whisper model, and any "align" adjustment all survive it) and
+opens a fresh dataset file named `dataset_<time>_<scene>.hdf5`; every demo
+also carries a `scene` HDF5 attribute naming the scene it was recorded in.
+
+## Domain randomization
+
+On by default (`--no_dr` disables), applied at every episode reset:
+
+- **Arm start pose**: each arm joint gets a uniform offset within
+  `--dr_arm_jitter` (0.08 rad) around the ready pose. Auto-start adapts —
+  you match the robot wherever it actually is.
+- **Object placement**: each tracked object gets a uniform xy offset within
+  `--dr_object_xy` (5 cm) and a yaw within `--dr_object_yaw` (180°) around
+  its authored pose. Draws are rejection-sampled against bounding-circle
+  overlap (footprints from the USD bounds + 1 cm margin — the collision model
+  of sim_benchmark's scenegen solvers), never demanding more clearance than
+  the authored layout had; after 50 failed draws the authored poses are kept.
+  Stacked arrangements (xy-coincident objects, e.g. the ARCTIC box lid on its
+  base) move as one group and skip yaw so they are never knocked apart.
 
 Audio can come from two places:
 
