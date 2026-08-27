@@ -420,6 +420,7 @@ class EpisodeFlow:
         self.align_requested = False  # voice "align" heard; served by the loop
         self.suppress_active_frames = 0  # ignore the client's stale "playing" state after a host stop
         self.demo_count = 0
+        self.success_count = 0
 
     # -- device callbacks ---------------------------------------------------
 
@@ -484,13 +485,30 @@ class EpisodeFlow:
 
     def export_episode(self, success: bool) -> None:
         rm = self.env.recorder_manager
+        actions = rm.get_episode(0).data.get("actions")
+        n_steps = len(actions) if actions is not None else 0
         rm.set_success_to_episodes([0], torch.tensor([[success]], dtype=torch.bool, device=self.env.device))
         rm.export_episodes([0])
         rm.reset()
         self.demo_count += 1
         self.awaiting_label = False
         self.reset_requested = True  # hands-free: fresh scene for the next episode
-        print(f"[INFO] Episode exported as demo_{self.demo_count - 1} (success={success}). Scene reset; press Play.")
+        if success:
+            self.success_count += 1
+        cfg = self.env.cfg.recorders
+        dataset_path = os.path.join(cfg.dataset_export_dir_path, cfg.dataset_filename + ".hdf5")
+        try:
+            size_mb = os.path.getsize(dataset_path) / 1e6
+            size_str = f", {size_mb:.1f} MB on disk"
+        except OSError:
+            size_str = ""
+        print(
+            f"[SAVED] demo_{self.demo_count - 1}: success={success}, {n_steps} steps"
+            f" ({n_steps / 60.0:.1f} s) -> {dataset_path}\n"
+            f"[SAVED] Session total: {self.demo_count} demos"
+            f" ({self.success_count} success / {self.demo_count - self.success_count} failure){size_str}."
+            " Scene reset; press Play or match the start pose."
+        )
 
     # -- per-iteration handlers ----------------------------------------------
 
