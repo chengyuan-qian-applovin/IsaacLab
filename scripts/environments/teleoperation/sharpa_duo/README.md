@@ -68,10 +68,22 @@ until you face the robot's forward axis and moves you to `--align_head_xy`
 branch's AVP Align button, with voice replacing the button. The head pose is
 queried from XRCore on demand; do NOT put a head tracker in the retargeting
 pipeline (it makes every session step fail on this stack).
-Audio comes from the machine's microphone via `arecord` — the
-headset mic is not streamed to the server by this stack, so stay within
-speaking range of the machine. Every transcription is printed to the console,
-labels and mis-hearings alike.
+Every transcription is printed to the console, labels and mis-hearings alike.
+
+Audio can come from two places:
+
+- **Workstation microphone** (default): captured via `arecord`
+  (`--mic_device` selects the ALSA device); stay within speaking range.
+- **Headset microphone** (`--mic_device quest`): nothing in the CloudXR stack
+  streams the headset mic to the server, so `quest_mic.py` provides the path —
+  the script serves a small HTTPS page and prints its URL; open it in the
+  Quest browser *before* connecting the CloudXR client, accept the certificate
+  (it reuses the CloudXR proxy's), tap **Start microphone**, grant the mic
+  permission, then connect the CloudXR client as usual. The page streams
+  16 kHz PCM over WSS from the background tab, putting the mic at your mouth
+  instead of across the room. Open the port first
+  (`sudo ufw allow 8444/tcp`; `quest:<port>` changes it). Stay quiet for the
+  first ~2 s after tapping Start — the energy gate calibrates on that ambient.
 
 Test the mic + Whisper chain without starting the simulator:
 

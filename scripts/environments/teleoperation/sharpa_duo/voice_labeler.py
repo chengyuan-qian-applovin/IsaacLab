@@ -64,7 +64,12 @@ class VoiceLabeler:
         model_name: Whisper model to load (e.g. ``base.en``, ``small.en``).
         device: torch device for Whisper. Default ``cpu`` so transcription never
             competes with the simulation and CloudXR encode for the GPU.
-        mic_device: ALSA capture device passed to ``arecord -D``.
+        mic_device: ALSA capture device passed to ``arecord -D``, or
+            ``"quest"`` (optionally ``"quest:<port>"``, default port 8444) to
+            receive audio from the headset's browser instead — see
+            :mod:`quest_mic`. With the quest source, calibration waits until
+            the headset page connects and measures ambient from its first
+            1.5 s, so stay quiet right after tapping "Start microphone".
         min_utterance_s: Shortest speech burst considered an utterance.
         silence_s: Trailing silence that closes an utterance.
         max_utterance_s: Utterances are clipped to this length.
@@ -88,11 +93,19 @@ class VoiceLabeler:
         self._silence_chunks = max(1, round(silence_s / _CHUNK_S))
         self._max_chunks = max(self._min_chunks, round(max_utterance_s / _CHUNK_S))
 
-        self._proc = subprocess.Popen(
-            ["arecord", "-q", "-D", mic_device, "-f", "S16_LE", "-r", str(_SAMPLE_RATE), "-c", "1", "-t", "raw"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
+        self._proc = None
+        self._quest = None
+        if mic_device == "quest" or mic_device.startswith("quest:"):
+            from quest_mic import QuestMicServer
+
+            port = int(mic_device.split(":", 1)[1]) if ":" in mic_device else 8444
+            self._quest = QuestMicServer(port=port)
+        else:
+            self._proc = subprocess.Popen(
+                ["arecord", "-q", "-D", mic_device, "-f", "S16_LE", "-r", str(_SAMPLE_RATE), "-c", "1", "-t", "raw"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
         self._events: queue.Queue[str] = queue.Queue()
         self._clips: queue.Queue[np.ndarray] = queue.Queue()
         self._stop = threading.Event()
@@ -124,15 +137,23 @@ class VoiceLabeler:
 
     def close(self) -> None:
         self._stop.set()
-        self._proc.terminate()
+        if self._proc is not None:
+            self._proc.terminate()
+        if self._quest is not None:
+            self._quest.close()
 
     # -- internals -----------------------------------------------------------
 
     def _read_chunk(self) -> np.ndarray | None:
-        data = self._proc.stdout.read(_CHUNK_BYTES)
-        if not data or len(data) < _CHUNK_BYTES:
-            return None
-        raw = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+        if self._quest is not None:
+            raw = self._quest.read_chunk()  # blocks until the headset page streams
+            if raw is None:
+                return None
+        else:
+            data = self._proc.stdout.read(_CHUNK_BYTES)
+            if not data or len(data) < _CHUNK_BYTES:
+                return None
+            raw = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
         return self._highpass(raw)
 
     def _highpass(self, x: np.ndarray) -> np.ndarray:

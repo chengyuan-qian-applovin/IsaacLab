@@ -158,7 +158,16 @@ parser.add_argument(
     default="cpu",
     help="Torch device for Whisper. Default cpu so transcription never competes with the sim for the GPU.",
 )
-parser.add_argument("--mic_device", type=str, default="default", help="ALSA capture device (arecord -D).")
+parser.add_argument(
+    "--mic_device",
+    type=str,
+    default="default",
+    help=(
+        "Voice-command audio source: an ALSA capture device (arecord -D), or 'quest' (optionally"
+        " 'quest:<port>', default 8444) to stream the headset microphone from a page opened in the"
+        " Quest browser — see quest_mic.py. Open the printed URL on the headset before teleoperating."
+    ),
+)
 parser.add_argument(
     "--voice_test",
     type=int,
