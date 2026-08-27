@@ -193,6 +193,22 @@ the yml.
 | `assets/robots/` | Vendored robot USD (torso + arms + hands + skin material). |
 | `assets/dex_retargeting/` | Vendored SharpaWave URDFs + DexPilot YAMLs for the finger retargeting. |
 
+## Vendored example scenes
+
+`scenes/` ships ready-to-use scenes (~13 MB, git-lfs), so nothing outside the
+repo is needed:
+
+- `scenes/taco/scene/taco_hoi_178_023.usda` — the TACO brush-and-bowl tabletop
+  (the default `--scene_usda`), with its object USDs alongside.
+- `scenes/scenegen/04_episode_scenegen/runs/scenes/*.usda` — six scenegen
+  scenes (ARCTIC box, HOI4D toy car / trash can, OakInk USB hub + stick, two
+  more TACO tasks) copied from
+  `gs://foundational-research/yjw/example_usda/`, with only the eleven object
+  payloads they reference mirrored under
+  `scenes/scenegen/02_mesh/06_usd_conversion/runs/usd/`. The GCS directory
+  layout is preserved because the scene files reference their payloads by
+  relative path — keep it intact when adding more scenes.
+
 ## Scene requirements and placement
 
 - The USDA must have a **default prim**; everything it authors (geometry,

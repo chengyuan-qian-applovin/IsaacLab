@@ -48,7 +48,17 @@ print = functools.partial(print, flush=True)  # noqa: A001
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="Teleoperate the FR3 Duo + SharpaWave rig in a USDA scene.")
-parser.add_argument("--scene_usda", type=str, required=True, help="Path to the scene USD/USDA file to load.")
+parser.add_argument(
+    "--scene_usda",
+    type=str,
+    default=os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "scenes", "taco", "scene", "taco_hoi_178_023.usda"
+    ),
+    help=(
+        "Path to the scene USD/USDA file to load. Defaults to the vendored TACO brush-and-bowl scene;"
+        " more examples live under scenes/ (scenegen scenes in scenes/scenegen/04_episode_scenegen/runs/scenes)."
+    ),
+)
 parser.add_argument(
     "--robot_pos",
     type=float,

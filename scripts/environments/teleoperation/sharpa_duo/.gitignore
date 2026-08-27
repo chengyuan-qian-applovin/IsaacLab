@@ -1,4 +1,11 @@
 # The repo-root .gitignore excludes all USD files; the robot assets under
-# assets/robots/ are deliberately vendored (see README.md), so re-include them.
+# assets/robots/ and the example scenes under scenes/ are deliberately
+# vendored (see README.md), so re-include them.
 !assets/**/*.usd
 !assets/**/*.usda
+!scenes/**/*.usd
+!scenes/**/*.usda
+# The vendored scenegen tree mirrors the GCS layout, which contains "runs/"
+# directories; the repo-root "**/runs/*" rule would exclude those parent dirs
+# (making the file re-includes above dead letters), so un-ignore the tree.
+!scenes/**/runs/**
