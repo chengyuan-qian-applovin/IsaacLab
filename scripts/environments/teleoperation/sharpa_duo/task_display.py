@@ -105,9 +105,7 @@ def _render_text_png(text: str, width_px: int = 1024) -> tuple[str, float]:
     return png_path, height_px / width_px
 
 
-def spawn_task_display(
-    text: str, position: tuple[float, float, float], yaw_deg: float, width: float = 1.2
-) -> None:
+def spawn_task_display(text: str, position: tuple[float, float, float], yaw_deg: float, width: float = 1.2) -> None:
     """Spawn the task text as an emissive billboard at ``position``.
 
     Args:
@@ -117,9 +115,9 @@ def spawn_task_display(
             operator north-facing along +y reads it head-on).
         width: Panel width [m]; the height follows the wrapped text.
     """
-    import isaaclab.sim as sim_utils
-
     from pxr import Gf, Sdf, UsdGeom, UsdShade
+
+    import isaaclab.sim as sim_utils
 
     stage = sim_utils.get_current_stage()
     prim_path = "/World/TaskDisplay"
