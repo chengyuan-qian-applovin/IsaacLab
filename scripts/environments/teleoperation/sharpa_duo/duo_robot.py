@@ -88,24 +88,24 @@ def sided(names: list[str], side: str) -> list[str]:
     return [f"{side}_{name}" for name in names]
 
 
-# IK-solved ready pose: fingers forward, palms down, each arm on its own side of
-# the workspace without crossing the wrists. Left/right are near-mirrored but not
-# exactly, so both sides are spelled out.
+# Ready pose: the standard Franka home configuration, applied identically to
+# both arms (the mirrored arm mounts make the resulting postures mirror each
+# other in the workspace).
 ARM_READY_POSE = {
-    "left_panda_joint1": 1.145,
-    "left_panda_joint2": 1.048,
-    "left_panda_joint3": -0.464,
-    "left_panda_joint4": -1.516,
-    "left_panda_joint5": -2.540,
-    "left_panda_joint6": 2.045,
-    "left_panda_joint7": 0.108,
-    "right_panda_joint1": -1.144,
-    "right_panda_joint2": 1.047,
-    "right_panda_joint3": 0.462,
-    "right_panda_joint4": -1.517,
-    "right_panda_joint5": 2.541,
-    "right_panda_joint6": 2.044,
-    "right_panda_joint7": -0.107,
+    "left_panda_joint1": 0.0,
+    "left_panda_joint2": -0.785,
+    "left_panda_joint3": 0.0,
+    "left_panda_joint4": -2.356,
+    "left_panda_joint5": 0.0,
+    "left_panda_joint6": 1.571,
+    "left_panda_joint7": 0.785,
+    "right_panda_joint1": 0.0,
+    "right_panda_joint2": -0.785,
+    "right_panda_joint3": 0.0,
+    "right_panda_joint4": -2.356,
+    "right_panda_joint5": 0.0,
+    "right_panda_joint6": 1.571,
+    "right_panda_joint7": 0.785,
 }
 
 

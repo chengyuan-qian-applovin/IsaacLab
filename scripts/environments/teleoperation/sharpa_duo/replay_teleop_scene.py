@@ -39,7 +39,7 @@ parser.add_argument(
     "--robot_pos",
     type=float,
     nargs=3,
-    default=(0.0, -0.7, 1.0),
+    default=(0.0, -0.7, 0.8),
     help="Rig torso position in the scene frame [m]; must match the recording session.",
 )
 parser.add_argument(

@@ -63,8 +63,8 @@ parser.add_argument(
     "--robot_pos",
     type=float,
     nargs=3,
-    default=(0.0, -0.7, 1.0),
-    help="Rig torso position in the scene frame [m]. Default matches the TACO tabletop placement.",
+    default=(0.0, -0.7, 0.8),
+    help="Rig torso position in the scene frame [m]. Default matches the raised (1 m) TACO tabletop.",
 )
 parser.add_argument(
     "--robot_rot",
@@ -78,7 +78,7 @@ parser.add_argument(
     type=float,
     nargs=3,
     default=(0.0, -0.7, -0.21),
-    help="XR anchor position: default stands you at the rig torso with the TACO tabletop at ~0.75 m.",
+    help="XR anchor position: default stands you at the rig torso; the raised TACO tabletop lands at ~1.21 m.",
 )
 parser.add_argument(
     "--anchor_rot",
