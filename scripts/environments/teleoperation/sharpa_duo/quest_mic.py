@@ -38,6 +38,7 @@ import socket
 import ssl
 import subprocess
 import threading
+import time
 
 import numpy as np
 
@@ -72,6 +73,8 @@ function connect() {
   ws.onerror = () => ws.close();
 }
 
+let lastAudioMs = 0;
+
 async function start() {
   if (started) return;
   started = true;
@@ -80,6 +83,19 @@ async function start() {
     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
   });
   const ctx = new AudioContext();
+  // Keep-alive: a tab that is PLAYING audio is exempt from Chromium's
+  // background-tab freezing/throttling, which otherwise stops the capture a
+  // few minutes into an immersive CloudXR session. Emit an inaudible tone.
+  const keepAlive = ctx.createOscillator();
+  const keepAliveGain = ctx.createGain();
+  keepAliveGain.gain.value = 0.001;
+  keepAlive.frequency.value = 30;
+  keepAlive.connect(keepAliveGain).connect(ctx.destination);
+  keepAlive.start();
+  // Self-heal: resume whenever the OS suspends/interrupts the context.
+  ctx.onstatechange = () => { if (ctx.state !== "running") ctx.resume(); };
+  // Self-heal: restart capture if the OS reclaims the microphone track.
+  stream.getTracks()[0].onended = () => { status("mic lost - restarting"); started = false; start(); };
   const workletCode = `
     registerProcessor("grab", class extends AudioWorkletProcessor {
       process(inputs) {
@@ -90,10 +106,18 @@ async function start() {
   await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([workletCode], { type: "text/javascript" })));
   const node = new AudioWorkletNode(ctx, "grab");
   ctx.createMediaStreamSource(stream).connect(node);
+  // Watchdog: if no audio flowed for 3 s, poke the context and report.
+  setInterval(() => {
+    if (lastAudioMs && Date.now() - lastAudioMs > 3000) {
+      status("audio stalled - resuming (" + ctx.state + ")");
+      ctx.resume();
+    }
+  }, 2000);
 
   const ratio = ctx.sampleRate / RATE;
   let buf = [], acc = 0, out = new Int16Array(CHUNK), oi = 0, peak = 0, frames = 0;
   node.port.onmessage = (e) => {
+    lastAudioMs = Date.now();
     const x = e.data;
     for (let i = 0; i < x.length; i++) buf.push(x[i]);
     // Linear resample ctx.sampleRate -> 16 kHz.
@@ -167,9 +191,12 @@ class QuestMicServer:
         self._port = port
         self._chunks: queue.Queue[np.ndarray] = queue.Queue(maxsize=100)
         self._connected = False
+        self._last_rx = 0.0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._serve, daemon=True, name="quest-mic-server")
         self._thread.start()
+        self._watchdog = threading.Thread(target=self._watch, daemon=True, name="quest-mic-watchdog")
+        self._watchdog.start()
         urls = " or ".join(f"https://{ip}:{port}/" for ip in _lan_ips())
         print(
             f"[VOICE] Quest microphone: open {urls} (the LAN address) in the headset browser,"
@@ -189,6 +216,25 @@ class QuestMicServer:
         self._stop.set()
 
     # -- internals -----------------------------------------------------------
+
+    def _watch(self) -> None:
+        """Announce audio stalls: a frozen headset tab keeps the socket open but stops sending."""
+        stalled = False
+        while not self._stop.is_set():
+            time.sleep(2.0)
+            if not self._connected or self._last_rx == 0.0:
+                continue
+            silent_s = time.monotonic() - self._last_rx
+            if silent_s > 4.0 and not stalled:
+                stalled = True
+                print(
+                    f"[VOICE] WARNING: Quest microphone stalled ({silent_s:.0f} s without audio, socket still"
+                    " open) — the headset browser tab was likely frozen. Bring the mic page to the"
+                    " foreground once, or reload it."
+                )
+            elif silent_s < 1.0 and stalled:
+                stalled = False
+                print("[VOICE] Quest microphone audio resumed.")
 
     def _serve(self) -> None:
         asyncio.run(self._serve_async())
@@ -212,6 +258,7 @@ class QuestMicServer:
                 async for message in connection:
                     if not isinstance(message, bytes):
                         continue
+                    self._last_rx = time.monotonic()
                     pcm = np.frombuffer(message, dtype=np.int16).astype(np.float32) / 32768.0
                     data = np.concatenate([leftover, pcm])
                     while len(data) >= _CHUNK_SAMPLES:

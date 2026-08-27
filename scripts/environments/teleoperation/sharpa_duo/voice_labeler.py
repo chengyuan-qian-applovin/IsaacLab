@@ -118,8 +118,10 @@ class VoiceLabeler:
         a = float(np.exp(-2.0 * np.pi * _HIGHPASS_HZ / _SAMPLE_RATE))
         self._hp_b, self._hp_a = np.array([a, -a]), np.array([1.0, -a])
         self._hp_zi = np.zeros(1)
-        self._reader = threading.Thread(target=self._read_loop, daemon=True, name="voice-reader")
-        self._worker = threading.Thread(target=self._transcribe_loop, daemon=True, name="voice-transcriber")
+        self._reader = threading.Thread(target=self._guarded(self._read_loop), daemon=True, name="voice-reader")
+        self._worker = threading.Thread(
+            target=self._guarded(self._transcribe_loop), daemon=True, name="voice-transcriber"
+        )
         self._reader.start()
         self._worker.start()
 
@@ -129,6 +131,20 @@ class VoiceLabeler:
             return self._events.get_nowait()
         except queue.Empty:
             return None
+
+    def _guarded(self, fn):
+        """A voice thread dying would silently kill voice commands — report it loudly."""
+
+        def run():
+            try:
+                fn()
+            except Exception:
+                import traceback
+
+                traceback.print_exc()
+                print(f"[VOICE] ERROR: {fn.__name__} crashed (see traceback above); voice commands are DEAD.")
+
+        return run
 
     def take_peak(self) -> float:
         """Return the loudest chunk RMS since the last call and reset the meter."""
