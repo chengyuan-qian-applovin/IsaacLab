@@ -77,6 +77,12 @@ def scan_dataset(dataset_path: str) -> dict[str, tuple[int, int]]:
 
 # Parameter schema: (flag, label, default, kind, group). Kind: str|float|bool|choice:<a,b,c>.
 # Defaults mirror make_teleop_scene.py's argparse defaults.
+# Launcher-side starting values that deliberately differ from the teleop
+# script's own CLI defaults. The schema `default` below stays the CLI default —
+# _collect_args compares against IT, so an untouched override is still passed
+# on the command line (leaving --mic_device at "quest" must emit it).
+_UI_DEFAULTS = {"--mic_device": "quest"}
+
 _PARAMS = [
     ("--user", "User name (hand calibration)", "", "str", "Operator & voice"),
     ("--mic_device", "Microphone (default / quest / ALSA name)", "default", "str", "Operator & voice"),
@@ -149,19 +155,20 @@ class TeleopLauncher(tk.Tk):
         columns.columnconfigure((0, 1), weight=1)
 
         for flag, label, default, kind, group in _PARAMS:
+            initial = _UI_DEFAULTS.get(flag, default)
             row = ttk.Frame(groups[group])
             row.pack(fill="x", pady=1)
             if kind == "bool":
-                var = tk.BooleanVar(value=default)
+                var = tk.BooleanVar(value=initial)
                 ttk.Checkbutton(row, text=label, variable=var).pack(anchor="w")
             elif kind.startswith("choice:"):
-                var = tk.StringVar(value=default)
+                var = tk.StringVar(value=initial)
                 ttk.Label(row, text=label).pack(side="left")
                 ttk.Combobox(
                     row, textvariable=var, values=kind.split(":", 1)[1].split(","), width=12, state="readonly"
                 ).pack(side="right")
             else:
-                var = tk.StringVar(value=str(default))
+                var = tk.StringVar(value=str(initial))
                 ttk.Label(row, text=label).pack(side="left")
                 ttk.Entry(row, textvariable=var, width=14).pack(side="right")
             self._param_vars[flag] = (var, default, kind)
