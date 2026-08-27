@@ -139,6 +139,23 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
+    "--no_auto_start",
+    action="store_true",
+    help="Disable auto-start (teleop engaging by itself when your wrists match the robot's hand poses).",
+)
+parser.add_argument(
+    "--auto_start_pos_tol",
+    type=float,
+    default=0.05,
+    help="Auto-start: max wrist-to-flange position error [m] counted as matching (both hands).",
+)
+parser.add_argument(
+    "--auto_start_rot_tol",
+    type=float,
+    default=20.0,
+    help="Auto-start: max wrist-to-flange orientation error [deg] counted as matching (both hands).",
+)
+parser.add_argument(
     "--align_head_xy",
     type=float,
     nargs=2,
@@ -221,6 +238,7 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
+import math
 import time
 import traceback
 
@@ -304,6 +322,79 @@ def to_root_frame(env: ManagerBasedRLEnv, action: torch.Tensor) -> torch.Tensor:
         out[base : base + 3] = pos.squeeze(0)
         out[base + 3 : base + 7] = quat.squeeze(0)
     return out
+
+
+class AutoStartMatcher:
+    """Start teleop automatically when the operator's wrists match the robot's hands.
+
+    While teleop is stopped, compares the pipeline's wrist TARGETS (world frame,
+    calibration and flange offsets already applied — i.e. where the flanges
+    would be commanded to go) against the robot flanges' actual poses. When both
+    hands are within ``pos_tol`` [m] and ``rot_tol`` [rad] for ``hold_s``
+    seconds, a host-initiated Play fires — so teleop always engages with zero
+    initial IK error instead of the robot snapping to wherever the hands are.
+
+    Hysteresis: after any active period (or a failed match), re-arming requires
+    the match to be clearly broken once (any hand beyond 1.5x tolerance).
+    Without this, stopping via the cross-hand gesture — hands still at the pose
+    the robot holds — would instantly restart teleop.
+    """
+
+    def __init__(self, env: ManagerBasedRLEnv, flow: "EpisodeFlow", pos_tol: float, rot_tol: float, hold_s: float):
+        from isaaclab.utils.math import quat_error_magnitude
+
+        self._quat_err = quat_error_magnitude
+        self._env = env
+        self._flow = flow
+        self._pos_tol = pos_tol
+        self._rot_tol = rot_tol
+        self._hold_s = hold_s
+        self._flange_ids = [env.scene["robot"].body_names.index(f"{s}_panda_link8") for s in ("left", "right")]
+        self._armed = True
+        self._match_since: float | None = None
+
+    def update(self, action_world: torch.Tensor) -> None:
+        """Feed the 58-D world-frame action of one frame; may fire Play."""
+        flow = self._flow
+        if flow.teleop_active or flow.awaiting_label:
+            self._armed = False
+            self._match_since = None
+            return
+        targets = action_world[:14].view(2, 7)
+        if float(targets[:, :3].norm(dim=-1).min()) < 1e-6:
+            self._match_since = None
+            return  # a hand is untracked
+        robot = self._env.scene["robot"]
+        origin = self._env.scene.env_origins[0]
+        pos_err = torch.empty(2)
+        rot_err = torch.empty(2)
+        for i, body_id in enumerate(self._flange_ids):
+            flange_pos = robot.data.body_pos_w.torch[0, body_id] - origin
+            flange_quat = robot.data.body_quat_w.torch[0, body_id]
+            pos_err[i] = (targets[i, :3].to(flange_pos.device) - flange_pos).norm()
+            rot_err[i] = self._quat_err(targets[i, 3:7].to(flange_quat.device).unsqueeze(0), flange_quat.unsqueeze(0))[
+                0
+            ]
+
+        matched = bool((pos_err < self._pos_tol).all() and (rot_err < self._rot_tol).all())
+        far = bool((pos_err > 1.5 * self._pos_tol).any() or (rot_err > 1.5 * self._rot_tol).any())
+        if not self._armed:
+            if far:
+                self._armed = True
+            return
+        if not matched:
+            self._match_since = None
+            return
+        now = time.monotonic()
+        if self._match_since is None:
+            self._match_since = now
+        elif now - self._match_since >= self._hold_s:
+            self._match_since = None
+            print(
+                f"[AUTO-START] Wrists matched the robot hands (pos {100 * pos_err.max():.1f} cm,"
+                f" rot {torch.rad2deg(rot_err.max()):.0f} deg) — starting teleop."
+            )
+            flow.request_client_start()
 
 
 class EpisodeFlow:
@@ -538,6 +629,19 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
     # (the default +90 deg yaw faces +y, reproducing the source branch's target).
     robot_yaw = float(R.from_quat(args_cli.robot_rot).as_euler("ZYX")[0])
     aligner = AnchorAligner(teleop, tuple(args_cli.align_head_xy), robot_yaw)
+    auto_start = None
+    if not args_cli.no_auto_start:
+        auto_start = AutoStartMatcher(
+            env, flow,
+            pos_tol=args_cli.auto_start_pos_tol,
+            rot_tol=math.radians(args_cli.auto_start_rot_tol),
+            hold_s=0.5,
+        )  # fmt: skip
+        print(
+            "[INFO] Auto-start armed: hold your wrists at the robot's hand poses"
+            f" (< {100 * args_cli.auto_start_pos_tol:.0f} cm, < {args_cli.auto_start_rot_tol:.0f} deg,"
+            " both hands, 0.5 s) to start teleop without saying 'play'."
+        )
 
     if recording:
         print(
@@ -587,6 +691,8 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
 
                 if flow.handle_gesture(xr_hands):
                     continue
+                if auto_start is not None:
+                    auto_start.update(action)
                 if not flow.teleop_active:
                     env.sim.render()
                     continue
