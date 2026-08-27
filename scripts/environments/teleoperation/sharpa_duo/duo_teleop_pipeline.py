@@ -154,11 +154,14 @@ def build_duo_pipeline(include_xr_hands: bool = False, hand_calibration: str | N
     }
 
     if include_xr_hands:
-        from isaacteleop.retargeting_engine.deviceio_source_nodes import HeadSource
-        from xr_extras import XR_HAND_ELEMENTS, XR_HEAD_ELEMENTS, make_hands_passthrough, make_head_passthrough
+        from xr_extras import XR_HAND_ELEMENTS, make_hands_passthrough
 
-        # Raw hand + head poses ride along after the action elements, in the sim
-        # world frame (same transform as the wrists).
+        # Raw hand poses ride along after the action elements, in the sim world
+        # frame (same transform as the wrists). NOTE: deliberately no HeadSource
+        # here — a head tracker in the pipeline made every DeviceIO session step
+        # fail on the Quest/Kit-bridge stack (teardown/recreate loop, robot never
+        # moved); the align command queries the head via XRCore on demand instead
+        # (xr_extras.current_head_pose).
         passthrough = make_hands_passthrough()
         connected_passthrough = passthrough.connect(
             {
@@ -166,17 +169,10 @@ def build_duo_pipeline(include_xr_hands: bool = False, hand_calibration: str | N
                 "hand_right": transformed_hands.output(HandsSource.RIGHT),
             }
         )
-        head = HeadSource(name="head")
-        transformed_head = head.transformed(transform_input.output(ValueInput.VALUE))
-        head_passthrough = make_head_passthrough()
-        connected_head = head_passthrough.connect({"head": transformed_head.output("head")})
         input_config["xr_hands"] = list(XR_HAND_ELEMENTS)
-        input_config["xr_head"] = list(XR_HEAD_ELEMENTS)
-        output_order = output_order + list(XR_HAND_ELEMENTS) + list(XR_HEAD_ELEMENTS)
+        output_order = output_order + list(XR_HAND_ELEMENTS)
         input_types["xr_hands"] = "scalar"
-        input_types["xr_head"] = "scalar"
         connections["xr_hands"] = connected_passthrough.output("xr_hands")
-        connections["xr_head"] = connected_head.output("xr_head")
 
     reorderer = TensorReorderer(
         input_config=input_config,

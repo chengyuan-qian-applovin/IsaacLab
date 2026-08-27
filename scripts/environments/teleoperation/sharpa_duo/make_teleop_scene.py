@@ -317,7 +317,7 @@ class EpisodeFlow:
         self.teleop_active = False
         self.reset_requested = False
         self.awaiting_label = False  # gesture ended the episode; waiting for the voice label
-        self.align_requested = False  # voice "align" heard; served by the loop when head data is in
+        self.align_requested = False  # voice "align" heard; served by the loop
         self.suppress_active_frames = 0  # ignore the client's stale "playing" state after a host stop
         self.demo_count = 0
 
@@ -453,12 +453,27 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
     from recording import XrHandsRecorder
     from xr_extras import (
         XR_EXTRAS_DIM,
-        XR_HANDS_DIM,
         AnchorAligner,
         CrossHandStopGesture,
         HandJointMarkers,
         apply_arm_visual,
+        current_head_pose,
     )
+
+    # Debugging aid: the session lifecycle reports step failures with only
+    # str(exception); surface the full traceback so failures are diagnosable.
+    import isaaclab_teleop.session_lifecycle as _session_lifecycle_mod
+
+    if not getattr(_session_lifecycle_mod, "_traceback_shim", False):
+        _session_lifecycle_mod._traceback_shim = True
+        _orig_warning = _session_lifecycle_mod.logger.warning
+
+        def _warning_with_traceback(msg, *w_args, **w_kwargs):
+            _orig_warning(msg, *w_args, **w_kwargs)
+            if "session step failed" in str(msg):
+                traceback.print_exc()
+
+        _session_lifecycle_mod.logger.warning = _warning_with_traceback
 
     recording = not args_cli.no_record
 
@@ -523,27 +538,27 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
                 action = teleop.advance()
                 flow.handle_control_events(poll_control_events)
 
+                if flow.align_requested:
+                    flow.align_requested = False
+                    if flow.teleop_active:
+                        print("[ALIGN] Ignored while teleop is running: press Stop (or use the gesture) first.")
+                    else:
+                        head = current_head_pose()
+                        if head is None:
+                            print("[ALIGN] No head pose available (is the visor on?); say 'align' again in a moment.")
+                        else:
+                            aligner.align(head)
+
                 # action is None until the XR session has started.
                 if action is None:
                     env.sim.render()
                     continue
 
-                extras = action[-XR_EXTRAS_DIM:]
-                xr_hands = extras[:XR_HANDS_DIM].reshape(2, 26, 7)
-                xr_head = extras[XR_HANDS_DIM:]
+                xr_hands = action[-XR_EXTRAS_DIM:].reshape(2, 26, 7)
                 action = action[:-XR_EXTRAS_DIM]
                 XrHandsRecorder.latest = xr_hands
                 if markers is not None:
                     markers.update(xr_hands)
-
-                if flow.align_requested:
-                    flow.align_requested = False
-                    if flow.teleop_active:
-                        print("[ALIGN] Ignored while teleop is running: press Stop (or use the gesture) first.")
-                    elif float(xr_head[:3].norm()) < 1e-6:
-                        print("[ALIGN] No head tracking yet (is the visor on?); say 'align' again in a moment.")
-                    else:
-                        aligner.align(xr_head.cpu().numpy())
 
                 if flow.handle_gesture(xr_hands):
                     continue
