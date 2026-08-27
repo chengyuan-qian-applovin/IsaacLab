@@ -169,6 +169,15 @@ parser.add_argument(
     help="Stop gesture: seconds all five pairs must stay touching to trigger.",
 )
 parser.add_argument(
+    "--user",
+    type=str,
+    default=None,
+    help=(
+        "User name: loads the per-user hand calibration written by calibrate_hand_shape.py"
+        " (assets/dex_retargeting/hand_calibration_<user>.yml). An explicit --hand_calibration wins."
+    ),
+)
+parser.add_argument(
     "--hand_calibration",
     type=str,
     default="hand_calibration.yml",
@@ -778,7 +787,13 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
 
     flow = EpisodeFlow(env, gesture, labeler, recording, scene_name=scene_name)
 
-    pipeline, retargeters = build_duo_pipeline(include_xr_hands=True, hand_calibration=args_cli.hand_calibration)
+    # --user selects the per-user calibration from calibrate_hand_shape.py; an
+    # explicitly overridden --hand_calibration wins over it.
+    hand_calibration = args_cli.hand_calibration
+    if args_cli.user and hand_calibration == parser.get_default("hand_calibration"):
+        hand_calibration = f"hand_calibration_{args_cli.user}.yml"
+        print(f"[INFO] Using user '{args_cli.user}' hand calibration: {hand_calibration}")
+    pipeline, retargeters = build_duo_pipeline(include_xr_hands=True, hand_calibration=hand_calibration)
     teleop_cfg = IsaacTeleopCfg(
         xr_cfg=XrCfg(anchor_pos=tuple(anchor[0]), anchor_rot=tuple(anchor[1])),
         pipeline_builder=lambda: pipeline,

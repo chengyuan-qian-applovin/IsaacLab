@@ -198,15 +198,35 @@ branch (`assets/dex_retargeting/hand_calibration.yml`, measured with flat
 hands; loaded by default, `--hand_calibration ''` disables). Per hand it holds
 a global rotation + scale (~1.18 — wrist-pinned Procrustes on
 index/middle/ring tips) and thumb/pinky length ratios + tip-direction
-rotations. Applied exactly as on the source branch (`sharpa_retargeting.py`):
+rotations. Recalibrate per operator with the ported calibration scene:
+
+```bash
+./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/calibrate_hand_shape.py \
+    --user alice --headless
+```
+
+Connect the headset, press Play, hold both hands flat with fingers straight;
+5 s later the frame is captured, solved, and written to
+`assets/dex_retargeting/hand_calibration_alice.yml`. Teleop then loads it with
+`--user alice` (an explicit `--hand_calibration` wins over `--user`).
+
+**Fingertip convention**: Quest/OpenXR `*_TIP` joints sit at the center of the
+fingertip capsule — about one tip-radius inside the skin — while the MANO
+keypoints the DexPilot configs expect are on the skin surface, so raw Quest
+fingers read ~1 cm short and touching fingertips still read ~2 cm apart. New
+calibrations therefore extend each tip along its distal-bone direction by the
+runtime-reported joint radius (`--no_tip_extension` opts out); the choice is
+stamped into the yml and the teleop retargeter mirrors it automatically, so
+calibration and runtime always use the same convention. Old calibration files
+without the stamp keep the original center-tip behavior.
+
+Applied exactly as on the source branch (`sharpa_retargeting.py`):
 the rotation composes wrist-side into the flange offset (the arm tilts the
 robot hand until its fingers align with yours), the scale multiplies the
 DexPilot keypoints (the yml `scaling_factor` is overridden to 1.0), thumb and
 pinky get their per-finger corrections afterwards, and DexPilot's pinch
 project/escape hysteresis runs on your RAW fingertip distances so calibration
-never shifts pinch timing. Recalibrating for a new operator means re-running
-the source branch's `calibrate_hand_shape.py` (not ported yet) and replacing
-the yml.
+never shifts pinch timing.
 
 ## Files
 

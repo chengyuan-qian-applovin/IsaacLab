@@ -85,6 +85,9 @@ def load_hand_calibration(path: str) -> dict[str, dict] | None:
                 entry[f"{finger}_rotation"] = np.asarray(
                     data[side].get(f"{finger}_rotation", np.eye(3).tolist()), dtype=np.float64
                 )
+            # File-level flag: whether the calibration was captured with the tips
+            # extended to the skin surface (see extend_fingertips); runtime must match.
+            entry["tip_extension"] = bool(data.get("tip_extension", False))
             out[side] = entry
     return out or None
 
@@ -145,6 +148,7 @@ class SharpaWaveDexPilot:
         opt.projected_dist[:4] = pinch_separation
 
         self._cal = calibration
+        self._tip_extension = bool(calibration.get("tip_extension", False)) if calibration else False
         self._wrist_corr: np.ndarray | None = None
         self._finger_corrections: list[tuple[slice, float, np.ndarray]] = []
         self._pinch_state: np.ndarray | None = None
@@ -176,8 +180,12 @@ class SharpaWaveDexPilot:
         if self._pinch_state is not None:
             self._pinch_state[:] = False
 
-    def compute(self, positions: np.ndarray, wrist_quat_xyzw: np.ndarray) -> np.ndarray:
+    def compute(
+        self, positions: np.ndarray, wrist_quat_xyzw: np.ndarray, radii: np.ndarray | None = None
+    ) -> np.ndarray:
         """26 OpenXR joint positions + wrist quat -> joint angles in ``dof_joint_names`` order."""
+        if self._tip_extension:
+            positions = extend_fingertips(positions, radii)
         pts = convert_hand_joints(positions, wrist_quat_xyzw, self._wrist_corr)
         if self._cal is not None:
             pts = self._cal["scale"] * pts
@@ -243,12 +251,43 @@ def make_sharpa_dex_node(
             else:
                 positions = np.from_dlpack(group[HandInputIndex.JOINT_POSITIONS])  # (26, 3)
                 orientations = np.from_dlpack(group[HandInputIndex.JOINT_ORIENTATIONS])  # (26, 4) xyzw
+                radii = np.from_dlpack(group[HandInputIndex.JOINT_RADII])  # (26,)
                 valid = np.from_dlpack(group[HandInputIndex.JOINT_VALID]).astype(bool)  # (26,)
                 if valid[needed].all():
-                    values[scatter] = dex.compute(positions, orientations[_WRIST_INDEX])
+                    values[scatter] = dex.compute(positions, orientations[_WRIST_INDEX], radii)
                 else:
                     dex.reset()
             for i, v in enumerate(values):
                 out[i] = float(v)
 
     return SharpaDexHandRetargeter(name=f"{side}_hand")
+
+
+# OpenXR tip joint -> its distal joint, for the fingertip extension direction.
+_TIP_TO_DISTAL = {5: 4, 10: 9, 15: 14, 20: 19, 25: 24}
+
+
+def extend_fingertips(positions: np.ndarray, radii: np.ndarray | None) -> np.ndarray:
+    """Move the five tip joints from the capsule center to the skin surface.
+
+    OpenXR (and Meta's runtime) place each ``*_TIP`` joint at the center of the
+    fingertip capsule — about one tip-radius INSIDE the skin — while MANO
+    fingertip keypoints (which the DexPilot configs were built against) sit on
+    the skin surface, so Quest fingers read ~1 cm short and touching fingertips
+    still read ~2 cm apart. Extend each tip along its distal-bone direction by
+    the runtime-reported joint radius: ``tip' = tip + r * dir(tip - distal)``.
+
+    Returns a copy; the input is untouched. No-op when ``radii`` is None.
+    """
+    if radii is None:
+        return positions
+    out = positions.astype(np.float64, copy=True)
+    for tip, distal in _TIP_TO_DISTAL.items():
+        r = float(radii[tip])
+        if r <= 0.0:
+            continue
+        direction = out[tip] - out[distal]
+        norm = float(np.linalg.norm(direction))
+        if norm > 1e-6:
+            out[tip] = out[tip] + (r / norm) * direction
+    return out
