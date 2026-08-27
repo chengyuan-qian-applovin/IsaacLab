@@ -146,13 +146,13 @@ parser.add_argument(
 parser.add_argument(
     "--auto_start_pos_tol",
     type=float,
-    default=0.30,
+    default=0.10,
     help="Auto-start: max wrist-to-flange position error [m] counted as matching (both hands).",
 )
 parser.add_argument(
     "--auto_start_rot_tol",
     type=float,
-    default=50.0,
+    default=25.0,
     help="Auto-start: max wrist-to-flange orientation error [deg] counted as matching (both hands).",
 )
 parser.add_argument(
