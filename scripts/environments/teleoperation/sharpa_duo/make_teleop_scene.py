@@ -146,14 +146,22 @@ parser.add_argument(
 parser.add_argument(
     "--auto_start_pos_tol",
     type=float,
-    default=0.05,
+    default=0.30,
     help="Auto-start: max wrist-to-flange position error [m] counted as matching (both hands).",
 )
 parser.add_argument(
     "--auto_start_rot_tol",
     type=float,
-    default=20.0,
+    default=50.0,
     help="Auto-start: max wrist-to-flange orientation error [deg] counted as matching (both hands).",
+)
+parser.add_argument(
+    "--debug_auto_start",
+    action="store_true",
+    help=(
+        "Auto-start debugging: draw coordinate frames on both panda_link8 flanges (large) and on both"
+        " calibrated wrist targets (small), and print the per-hand position/rotation errors once per second."
+    ),
 )
 parser.add_argument(
     "--align_head_xy",
@@ -340,7 +348,15 @@ class AutoStartMatcher:
     the robot holds — would instantly restart teleop.
     """
 
-    def __init__(self, env: ManagerBasedRLEnv, flow: "EpisodeFlow", pos_tol: float, rot_tol: float, hold_s: float):
+    def __init__(
+        self,
+        env: ManagerBasedRLEnv,
+        flow: "EpisodeFlow",
+        pos_tol: float,
+        rot_tol: float,
+        hold_s: float,
+        debug: bool = False,
+    ):
         from isaaclab.utils.math import quat_error_magnitude
 
         self._quat_err = quat_error_magnitude
@@ -352,11 +368,46 @@ class AutoStartMatcher:
         self._flange_ids = [env.scene["robot"].body_names.index(f"{s}_panda_link8") for s in ("left", "right")]
         self._armed = True
         self._match_since: float | None = None
+        self._debug_markers = None
+        self._last_debug_print = 0.0
+        if debug:
+            import isaaclab.sim as sim_utils
+            from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+            from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+
+            frame_usd = f"{ISAAC_NUCLEUS_DIR}/Props/UIElements/frame_prim.usd"
+            self._debug_markers = VisualizationMarkers(
+                VisualizationMarkersCfg(
+                    prim_path="/Visuals/auto_start_frames",
+                    markers={
+                        "flange": sim_utils.UsdFileCfg(usd_path=frame_usd, scale=(0.15, 0.15, 0.15)),
+                        "target": sim_utils.UsdFileCfg(usd_path=frame_usd, scale=(0.08, 0.08, 0.08)),
+                    },
+                )
+            )
+
+    def _debug_show(self, targets: torch.Tensor, flange_poses: torch.Tensor, pos_err, rot_err) -> None:
+        """Frames on the flanges (large) and the wrist targets (small); errors once per second."""
+        device = flange_poses.device
+        poses = torch.cat([flange_poses, targets.to(device)], dim=0)  # (4, 7): L/R flange, L/R target
+        self._debug_markers.visualize(
+            translations=poses[:, :3], orientations=poses[:, 3:7], marker_indices=[0, 0, 1, 1]
+        )
+        now = time.monotonic()
+        if now - self._last_debug_print >= 1.0:
+            self._last_debug_print = now
+            state = "ACTIVE" if self._flow.teleop_active else ("armed" if self._armed else "disarmed")
+            print(
+                f"[AUTO-START] L {100 * pos_err[0]:.1f} cm / {torch.rad2deg(rot_err[0]):.0f} deg,"
+                f" R {100 * pos_err[1]:.1f} cm / {torch.rad2deg(rot_err[1]):.0f} deg"
+                f" (tol {100 * self._pos_tol:.0f} cm / {math.degrees(self._rot_tol):.0f} deg, {state})"
+            )
 
     def update(self, action_world: torch.Tensor) -> None:
         """Feed the 58-D world-frame action of one frame; may fire Play."""
         flow = self._flow
-        if flow.teleop_active or flow.awaiting_label:
+        if (flow.teleop_active or flow.awaiting_label) and self._debug_markers is None:
+            # No error computation (two pose readbacks) during teleop unless debugging.
             self._armed = False
             self._match_since = None
             return
@@ -368,14 +419,23 @@ class AutoStartMatcher:
         origin = self._env.scene.env_origins[0]
         pos_err = torch.empty(2)
         rot_err = torch.empty(2)
+        flange_poses = torch.empty(2, 7, device=origin.device)
         for i, body_id in enumerate(self._flange_ids):
             flange_pos = robot.data.body_pos_w.torch[0, body_id] - origin
             flange_quat = robot.data.body_quat_w.torch[0, body_id]
+            flange_poses[i, :3] = flange_pos
+            flange_poses[i, 3:7] = flange_quat
             pos_err[i] = (targets[i, :3].to(flange_pos.device) - flange_pos).norm()
             rot_err[i] = self._quat_err(targets[i, 3:7].to(flange_quat.device).unsqueeze(0), flange_quat.unsqueeze(0))[
                 0
             ]
+        if self._debug_markers is not None:
+            self._debug_show(targets, flange_poses, pos_err, rot_err)
 
+        if flow.teleop_active or flow.awaiting_label:
+            self._armed = False
+            self._match_since = None
+            return
         matched = bool((pos_err < self._pos_tol).all() and (rot_err < self._rot_tol).all())
         far = bool((pos_err > 1.5 * self._pos_tol).any() or (rot_err > 1.5 * self._rot_tol).any())
         if not self._armed:
@@ -654,6 +714,7 @@ def run_teleop(env: ManagerBasedRLEnv) -> None:
             pos_tol=args_cli.auto_start_pos_tol,
             rot_tol=math.radians(args_cli.auto_start_rot_tol),
             hold_s=0.5,
+            debug=args_cli.debug_auto_start,
         )  # fmt: skip
         print(
             "[INFO] Auto-start armed: hold your wrists at the robot's hand poses"
