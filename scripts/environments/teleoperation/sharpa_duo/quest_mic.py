@@ -31,6 +31,7 @@ place of ``arecord`` when ``--mic_device quest`` is selected.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import http
 import os
 import queue
@@ -262,10 +263,9 @@ class QuestMicServer:
                     pcm = np.frombuffer(message, dtype=np.int16).astype(np.float32) / 32768.0
                     data = np.concatenate([leftover, pcm])
                     while len(data) >= _CHUNK_SAMPLES:
-                        try:
+                        # A stalled consumer drops audio rather than lagging.
+                        with contextlib.suppress(queue.Full):
                             self._chunks.put_nowait(data[:_CHUNK_SAMPLES].copy())
-                        except queue.Full:
-                            pass  # consumer stalled; drop rather than lag
                         data = data[_CHUNK_SAMPLES:]
                     leftover = data
             finally:
