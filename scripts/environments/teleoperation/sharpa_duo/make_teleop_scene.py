@@ -148,6 +148,16 @@ parser.add_argument(
     default="./datasets/duo_teleop",
     help="Directory for the recorded HDF5 dataset (one timestamped file per session, one demo per episode).",
 )
+parser.add_argument(
+    "--dataset_file",
+    type=str,
+    default=None,
+    help=(
+        "Append every demo (across all scenes and sessions) to this one HDF5 file instead of creating"
+        " a timestamped file per scene; created if missing. Demos carry a 'scene' attribute, so one"
+        " shared file stays scene-attributable. Used by the teleop launcher UI."
+    ),
+)
 parser.add_argument("--no_record", action="store_true", help="Disable episode recording entirely.")
 parser.add_argument(
     "--arm_visual",
@@ -373,15 +383,22 @@ def build_env_cfg(scene_usda: str) -> ManagerBasedRLEnvCfg:
             },
         )
     if args_cli.smoke is None and not args_cli.no_record:
-        from recording import DuoRecorderManagerCfg
+        from recording import AppendableHDF5DatasetFileHandler, DuoRecorderManagerCfg
 
         env_cfg.recorders = DuoRecorderManagerCfg()
-        env_cfg.recorders.dataset_export_dir_path = os.path.abspath(args_cli.record_dir)
-        # Unique per session AND per scene: the HDF5 handler opens its file in "w"
-        # (truncate) mode at env creation, so a fixed name would wipe earlier
-        # sessions on every start.
-        scene_stem = os.path.splitext(os.path.basename(scene_usda))[0][:60]
-        env_cfg.recorders.dataset_filename = time.strftime("dataset_%Y%m%d_%H%M%S") + f"_{scene_stem}"
+        if args_cli.dataset_file:
+            # One shared file for all scenes/sessions, opened in append mode.
+            dataset_file = os.path.abspath(args_cli.dataset_file)
+            env_cfg.recorders.dataset_file_handler_class_type = AppendableHDF5DatasetFileHandler
+            env_cfg.recorders.dataset_export_dir_path = os.path.dirname(dataset_file)
+            env_cfg.recorders.dataset_filename = os.path.splitext(os.path.basename(dataset_file))[0]
+        else:
+            env_cfg.recorders.dataset_export_dir_path = os.path.abspath(args_cli.record_dir)
+            # Unique per session AND per scene: the stock HDF5 handler opens its file
+            # in "w" (truncate) mode at env creation, so a fixed name would wipe
+            # earlier sessions on every start.
+            scene_stem = os.path.splitext(os.path.basename(scene_usda))[0][:60]
+            env_cfg.recorders.dataset_filename = time.strftime("dataset_%Y%m%d_%H%M%S") + f"_{scene_stem}"
     return env_cfg
 
 
@@ -629,15 +646,18 @@ class EpisodeFlow:
         n_steps = len(actions) if actions is not None else 0
         rm.set_success_to_episodes([0], torch.tensor([[success]], dtype=torch.bool, device=self.env.device))
         rm.export_episodes([0])
-        # Tag the demo with the scene it was recorded in (the handler writes only
-        # its fixed attrs, so set ours on the freshly written HDF5 group).
-        if self.scene_name:
-            try:
-                handler = rm._dataset_file_handler
-                handler._hdf5_data_group[f"demo_{handler.get_num_episodes() - 1}"].attrs["scene"] = self.scene_name
+        # File-level demo id (differs from the session count when appending to a
+        # shared dataset); also tag the demo with the scene it was recorded in
+        # (the handler writes only its fixed attrs, so set ours on the group).
+        try:
+            handler = rm._dataset_file_handler
+            demo_id = handler.get_num_episodes() - 1
+            if self.scene_name:
+                handler._hdf5_data_group[f"demo_{demo_id}"].attrs["scene"] = self.scene_name
                 handler.flush()
-            except Exception as exc:
-                print(f"[WARNING] Could not tag the demo with its scene name: {exc}")
+        except Exception as exc:
+            demo_id = self.demo_count
+            print(f"[WARNING] Could not tag the demo with its scene name: {exc}")
         rm.reset()
         self.demo_count += 1
         self.awaiting_label = False
@@ -652,7 +672,7 @@ class EpisodeFlow:
         except OSError:
             size_str = ""
         print(
-            f"[SAVED] demo_{self.demo_count - 1}: success={success}, {n_steps} steps"
+            f"[SAVED] demo_{demo_id}: success={success}, {n_steps} steps"
             f" ({n_steps / 60.0:.1f} s) -> {dataset_path}\n"
             f"[SAVED] Session total: {self.demo_count} demos"
             f" ({self.success_count} success / {self.demo_count - self.success_count} failure){size_str}."

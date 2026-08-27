@@ -256,7 +256,9 @@ def build_capture_pipeline():
 
     hands = HandsSource(name="hands")
     node = CaptureNode(name="capture")
-    connected = node.connect({"hand_left": hands.output(HandsSource.LEFT), "hand_right": hands.output(HandsSource.RIGHT)})
+    connected = node.connect(
+        {"hand_left": hands.output(HandsSource.LEFT), "hand_right": hands.output(HandsSource.RIGHT)}
+    )
     reorderer = TensorReorderer(
         input_config={"joints": elements}, output_order=elements, name="reorder", input_types={"joints": "scalar"}
     )

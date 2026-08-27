@@ -83,6 +83,24 @@ wrapping at the end; an unlabeled in-flight episode is discarded, a
 label-pending one must be labeled first). An utterance matching more than one
 command is ignored.
 
+## Launcher UI
+
+```bash
+./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/teleop_launcher.py
+```
+
+A two-page launcher (plain tkinter; Isaac Sim only starts when you press
+Start): page 1 groups the teleop parameters by concern (operator & voice,
+session start, domain randomization, stop gesture, visuals, advanced); page 2
+picks a scene directory and a dataset HDF5 file and shows a table of every
+scene with the success/failure trajectory counts already collected for it in
+that dataset — tick the scenes to collect this session. Start writes the
+selection to a scene-list JSON and runs the teleop with `--dataset_file`:
+demos from **all** scenes and sessions append into the chosen file (each
+tagged with its scene), so the table's counts accumulate across sessions.
+Cycle the selected scenes with the "next" voice command; when the run exits,
+the launcher returns to the table with refreshed counts.
+
 ## Multi-scene sessions
 
 `--scene_list scenes/scene_list.json` teleops through a list of scenes (JSON:

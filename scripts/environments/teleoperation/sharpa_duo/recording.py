@@ -27,6 +27,8 @@ Import only after AppLauncher.
 
 from __future__ import annotations
 
+import os
+
 import torch
 
 from isaaclab.envs.mdp.recorders.recorders_cfg import (
@@ -36,6 +38,25 @@ from isaaclab.envs.mdp.recorders.recorders_cfg import (
 )
 from isaaclab.managers.recorder_manager import DatasetExportMode, RecorderManagerBaseCfg, RecorderTerm, RecorderTermCfg
 from isaaclab.utils.configclass import configclass
+from isaaclab.utils.datasets import HDF5DatasetFileHandler
+
+
+class AppendableHDF5DatasetFileHandler(HDF5DatasetFileHandler):
+    """HDF5 handler that APPENDS to an existing dataset file instead of truncating.
+
+    The stock handler opens its file in "w" mode at env creation, wiping earlier
+    demos — fine for one file per session, wrong for a shared dataset accumulated
+    across sessions and scene switches. When the file already exists, open it in
+    append mode; demo numbering continues from the episodes already present.
+    """
+
+    def create(self, file_path: str, env_name: str | None = None):
+        if not file_path.endswith(".hdf5"):
+            file_path += ".hdf5"
+        if os.path.exists(file_path):
+            self.open(file_path, mode="a")
+        else:
+            super().create(file_path, env_name=env_name)
 
 
 class XrHandsRecorder(RecorderTerm):
