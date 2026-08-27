@@ -122,6 +122,27 @@ parser.add_argument(
     help="DR: uniform yaw offset range [deg] around each tracked object's authored orientation.",
 )
 parser.add_argument(
+    "--settle_time",
+    type=float,
+    default=1.0,
+    help=(
+        "Seconds of physics run after every scene reset (robot held still) so the randomized objects"
+        " settle onto the table before teleop; 0 disables."
+    ),
+)
+parser.add_argument(
+    "--no_task_display",
+    action="store_true",
+    help="Do not show the scene's task description (from the instructions JSON next to it) in the headset.",
+)
+parser.add_argument(
+    "--task_display_pos",
+    type=float,
+    nargs=3,
+    default=(0.0, 0.9, 1.6),
+    help="World position [m] of the floating task-description panel (default: beyond the table, head height).",
+)
+parser.add_argument(
     "--render_frequency",
     type=float,
     default=30.0,
@@ -403,6 +424,37 @@ def build_env_cfg(scene_usda: str) -> ManagerBasedRLEnvCfg:
 
 
 # -- Teleop -----------------------------------------------------------------------
+
+
+def settle_scene(env: ManagerBasedRLEnv) -> None:
+    """Run physics for ``--settle_time`` seconds right after a reset.
+
+    Domain randomization can leave objects hovering a hair above (or leaning
+    into) the table; this lets them drop and come to rest before the operator
+    sees the scene. The robot is pinned by targeting its just-reset joint
+    positions — reset writes joint STATE, but the PD targets may still hold
+    stale values that would drag the arms away while the sim steps. When
+    recording, the episode buffer is restarted afterwards so the demo's
+    ``initial_state`` is the settled scene, not the mid-air draw.
+
+    The env's own episode-timeout auto-reset (inside ``env.step``) bypasses
+    this; timeouts discard the episode anyway.
+    """
+    if args_cli.settle_time <= 0.0:
+        return
+    robot = env.scene["robot"]
+    robot.set_joint_position_target_index(target=robot.data.joint_pos.torch.clone())
+    steps = max(1, round(args_cli.settle_time / env.physics_dt))
+    render_interval = max(1, int(env.cfg.sim.render_interval))
+    for i in range(steps):
+        env.scene.write_data_to_sim()
+        env.sim.step(render=False)
+        if (i + 1) % render_interval == 0:
+            env.sim.render()
+        env.scene.update(env.physics_dt)
+    if env.cfg.recorders is not None:
+        env.recorder_manager.reset()
+        env.recorder_manager.record_post_reset([0])
 
 
 def to_root_frame(env: ManagerBasedRLEnv, action: torch.Tensor) -> torch.Tensor:
@@ -721,6 +773,7 @@ class EpisodeFlow:
         if self.recording:
             self.env.recorder_manager.reset()
         self.env.reset()
+        settle_scene(self.env)
         self.teleop.reset()
         self.gesture.reset()
         self.awaiting_label = False
@@ -860,6 +913,7 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
     )
     with teleop, torch.inference_mode():
         env.reset()
+        settle_scene(env)
         teleop.reset()
         while simulation_app.is_running():
             # An exception escaping this loop means simulation_app.close() under a
@@ -925,6 +979,7 @@ def run_smoke(env: ManagerBasedRLEnv, num_steps: int) -> None:
     from isaaclab.utils.math import quat_error_magnitude
 
     env.reset()
+    settle_scene(env)
     robot = env.scene["robot"]
     flange_ids = [robot.body_names.index(f"{side}_panda_link8") for side in ("left", "right")]
 
@@ -978,10 +1033,21 @@ def run_smoke(env: ManagerBasedRLEnv, num_steps: int) -> None:
         raise SystemExit(1)
 
 
-def load_scene_list() -> list[str]:
-    """Scenes to teleop: the --scene_list JSON if given, else just --scene_usda."""
+def load_scene_list() -> list[tuple[str, str | None]]:
+    """The ``(usda_path, task_description)`` pairs to teleop.
+
+    From the --scene_list JSON if given (else just --scene_usda). Entries may be
+    plain paths or scene-generation dicts (``{"scene": ..., "task_description":
+    ...}``, as in a run's instructions JSON — so that file doubles as a scene
+    list). Relative paths resolve against the JSON's directory; absolute paths
+    that don't exist locally (authored on another machine) fall back to their
+    basename next to the JSON. Descriptions not in the list itself are looked up
+    in any instructions JSON sitting next to the scene file.
+    """
+    from task_display import find_task_description
+
     if args_cli.scene_list is None:
-        return [args_cli.scene_usda]
+        return [(args_cli.scene_usda, find_task_description(args_cli.scene_usda))]
     import json
 
     list_path = os.path.abspath(args_cli.scene_list)
@@ -989,8 +1055,22 @@ def load_scene_list() -> list[str]:
         data = json.load(f)
     entries = data["scenes"] if isinstance(data, dict) else data
     base = os.path.dirname(list_path)
-    scenes = [entry if os.path.isabs(entry) else os.path.join(base, entry) for entry in entries]
-    missing = [scene for scene in scenes if not os.path.exists(scene)]
+    scenes: list[tuple[str, str | None]] = []
+    missing: list[str] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            path, description = entry.get("scene", ""), entry.get("task_description")
+            description = str(description).strip().strip("'\"") if description else None
+        else:
+            path, description = entry, None
+        if not os.path.isabs(path):
+            path = os.path.join(base, path)
+        elif not os.path.exists(path):
+            path = os.path.join(base, os.path.basename(path))
+        if not os.path.exists(path):
+            missing.append(path)
+            continue
+        scenes.append((path, description if description is not None else find_task_description(path)))
     if not scenes or missing:
         raise SystemExit(f"--scene_list {args_cli.scene_list}: empty or missing scenes {missing}")
     return scenes
@@ -999,7 +1079,7 @@ def load_scene_list() -> list[str]:
 def main():
     scenes = load_scene_list()
     if args_cli.smoke is not None:
-        env = ManagerBasedRLEnv(cfg=build_env_cfg(scenes[0]))
+        env = ManagerBasedRLEnv(cfg=build_env_cfg(scenes[0][0]))
         try:
             run_smoke(env, args_cli.smoke)
         finally:
@@ -1034,9 +1114,20 @@ def main():
     index = 0
     try:
         while True:
-            scene = scenes[index]
+            scene, task_description = scenes[index]
             print(f"[SCENE] {index + 1}/{len(scenes)}: {scene}")
+            if task_description:
+                print(f"[TASK] {task_description}")
             env = ManagerBasedRLEnv(cfg=build_env_cfg(scene))
+            if task_description and not args_cli.no_task_display:
+                from scipy.spatial.transform import Rotation as R
+
+                from task_display import spawn_task_display
+
+                # At yaw 0 the panel faces -y; the rig faces +y at its default
+                # +90 deg yaw, so the panel counter-rotates with the robot.
+                panel_yaw = float(R.from_quat(args_cli.robot_rot).as_euler("ZYX", degrees=True)[0]) - 90.0
+                spawn_task_display(task_description, tuple(args_cli.task_display_pos), panel_yaw)
             try:
                 reason, anchor = run_teleop(env, labeler, os.path.basename(scene), anchor)
             finally:

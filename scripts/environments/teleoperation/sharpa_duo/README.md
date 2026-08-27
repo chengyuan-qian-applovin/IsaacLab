@@ -111,6 +111,29 @@ connection, Whisper model, and any "align" adjustment all survive it) and
 opens a fresh dataset file named `dataset_<time>_<scene>.hdf5`; every demo
 also carries a `scene` HDF5 attribute naming the scene it was recorded in.
 
+Scene-list entries may also be scene-generation dicts (`{"scene": ...,
+"task_description": ...}`), so a run's instructions JSON — e.g.
+`scenes/scenegen/04_episode_scenegen/runs/test_scenes_50/scenes_first50.json`
+— works directly as a `--scene_list`. Absolute scene paths authored on
+another machine are resolved by basename next to the JSON.
+
+## Task description in the headset
+
+When a scene has a task description — from the scene-list entry, or looked up
+in any instructions JSON sitting next to the scene file — it is shown as a
+floating emissive panel in the world (`task_display.py`), so the operator
+reads the task in XR. `--task_display_pos` moves it (default: past the table
+at head height, facing the operator); `--no_task_display` hides it. The text
+is also printed to the console at every scene start.
+
+## Settling period
+
+After every scene reset (including the domain-randomized ones), physics runs
+for `--settle_time` seconds (default 1.0) with the robot held still so the
+objects drop and come to rest on the table before the episode starts. The
+recorded `initial_state` is taken after settling, so demos start from the
+scene the operator actually saw. `--settle_time 0` disables it.
+
 ## Domain randomization
 
 On by default (`--no_dr` disables), applied at every episode reset:
@@ -275,6 +298,13 @@ repo is needed:
   `scenes/scenegen/02_mesh/06_usd_conversion/runs/usd/`. The GCS directory
   layout is preserved because the scene files reference their payloads by
   relative path — keep it intact when adding more scenes.
+- `scenes/scenegen/04_episode_scenegen/runs/test_scenes_50/` — the 50-scene
+  benchmark set (TACO / GigaHands / OakInk-v2) with its instructions JSON
+  `scenes_first50.json` (per-scene task descriptions; use it directly as
+  `--scene_list`) and all payloads mirrored alongside the six above. Note:
+  a few GigaHands scenes author tall objects (e.g. a pan on a stand) inside
+  the arms' ready-pose workspace at the default robot placement — adjust
+  `--robot_pos` for those.
 
 ## Scene requirements and placement
 

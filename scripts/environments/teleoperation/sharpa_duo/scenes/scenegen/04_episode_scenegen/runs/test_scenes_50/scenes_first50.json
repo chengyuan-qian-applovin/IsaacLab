@@ -1,0 +1,588 @@
+{
+ "scenes": [
+  {
+   "episode_id": "GigaHands::p013-fastfood-sandwich/087#seg000",
+   "dataset": "GigaHands",
+   "action": "put",
+   "task_description": "Add the sliced butter to the pan on the stove",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p013_fastfood_sandwich_087_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p032-sandwich/028#seg000",
+   "dataset": "GigaHands",
+   "action": "put",
+   "task_description": "Add the sliced piece of butter to the pan on the stove",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p032_sandwich_028_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p034-sandwich/028#seg000",
+   "dataset": "GigaHands",
+   "action": "put",
+   "task_description": "'Add the sliced piece of butter to the pan on the stove'",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p034_sandwich_028_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p036-sandwich/023#seg000",
+   "dataset": "GigaHands",
+   "action": "put",
+   "task_description": "Add the sliced butter to the pan on the stove",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p036_sandwich_023_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p039-sandwich/027#seg000",
+   "dataset": "GigaHands",
+   "action": "put",
+   "task_description": "Add the sliced piece of butter to the pan on the stove",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p039_sandwich_027_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p048-sandwich/027#seg000",
+   "dataset": "GigaHands",
+   "action": "put",
+   "task_description": "Add the sliced butter to the pan on the stove",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p048_sandwich_027_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p053-salad/027#seg000",
+   "dataset": "GigaHands",
+   "action": "put",
+   "task_description": "Add the sliced piece of butter to the pan on the stove",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p053_salad_027_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p005-laptop/007#seg000",
+   "dataset": "GigaHands",
+   "action": "rearrange",
+   "task_description": "Adjust the angle of the laptop screen for better viewing",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p005_laptop_007_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p007-laptop/007#seg000",
+   "dataset": "GigaHands",
+   "action": "rearrange",
+   "task_description": "Adjust the angle of the laptop screen for better viewing",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p007_laptop_007_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p011-laptop/007#seg000",
+   "dataset": "GigaHands",
+   "action": "rearrange",
+   "task_description": "Adjust the angle of the laptop screen for better viewing",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p011_laptop_007_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p017-laptop/007#seg000",
+   "dataset": "GigaHands",
+   "action": "rearrange",
+   "task_description": "Adjust the angle of the laptop screen for better viewing",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p017_laptop_007_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p022-laptop/007#seg000",
+   "dataset": "GigaHands",
+   "action": "rearrange",
+   "task_description": "Adjust the angle of the laptop screen for better viewing",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p022_laptop_007_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p030-laptop/007#seg000",
+   "dataset": "GigaHands",
+   "action": "rearrange",
+   "task_description": "Adjust the angle of the laptop screen for better viewing",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p030_laptop_007_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p034-laptop/007#seg000",
+   "dataset": "GigaHands",
+   "action": "rearrange",
+   "task_description": "Adjust the angle of the laptop screen for better viewing",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p034_laptop_007_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p042-laptop/007#seg000",
+   "dataset": "GigaHands",
+   "action": "rearrange",
+   "task_description": "Adjust the angle of the laptop screen for better viewing",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p042_laptop_007_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p047-laptop-2/007#seg000",
+   "dataset": "GigaHands",
+   "action": "rearrange",
+   "task_description": "Adjust the angle of the laptop screen for better viewing",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p047_laptop_2_007_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p053-laptop/007#seg000",
+   "dataset": "GigaHands",
+   "action": "rearrange",
+   "task_description": "Adjust the angle of the laptop screen for better viewing",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p053_laptop_007_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p012-tablet/037#seg000",
+   "dataset": "GigaHands",
+   "action": "rotate",
+   "task_description": "Face the phone screen towards you for Face ID recognition",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p012_tablet_037_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p007-tablet-gopro/156#seg000",
+   "dataset": "GigaHands",
+   "action": "point",
+   "task_description": "Aim the GoPro at the tree marker while viewing through the GoPro screen",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p007_tablet_gopro_156_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p008-boxing/006#seg000",
+   "dataset": "GigaHands",
+   "action": "adjust",
+   "task_description": "Align the stand with the base, ensuring the connector holes on both the stand and base are properly positioned",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p008_boxing_006_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p023-boxing/006#seg000",
+   "dataset": "GigaHands",
+   "action": "adjust",
+   "task_description": "Align the stand with the base, ensuring the connector holes on the stand and base are properly positioned",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p023_boxing_006_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p028-boxing/006#seg001",
+   "dataset": "GigaHands",
+   "action": "adjust",
+   "task_description": "Align the stand with the base, ensuring the holes for the connectors are properly positioned at the base",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p028_boxing_006_seg001.usda"
+  },
+  {
+   "episode_id": "GigaHands::p034-mindmap-boxing/071#seg000",
+   "dataset": "GigaHands",
+   "action": "adjust",
+   "task_description": "Align the stand with the base, ensuring the holes for the connectors on both the stand and base are properly positioned",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p034_mindmap_boxing_071_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p041-boxing/006#seg000",
+   "dataset": "GigaHands",
+   "action": "adjust",
+   "task_description": "Align the stand with the base of the boxing bag setup, ensuring the holes for connectors are properly positioned",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p041_boxing_006_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p042-boxing/006#seg000",
+   "dataset": "GigaHands",
+   "action": "adjust",
+   "task_description": "Align the stand with the base, ensuring the holes for connectors on both the stand and base are properly positioned",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p042_boxing_006_seg000.usda"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A003++seq__590d0923c75785cbfb33__2023-04-21-20-39-42#seg008",
+   "dataset": "OakInk-v2",
+   "action": "assemble",
+   "task_description": "Assemble the apple into the product in the plate.",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/OakInk_v2_scene_01_A003_seq_590d0923c75785cbfb33_2023_04_21_20_39_42_seg008.usda"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__O001++seq__7415df221fded77cf598__2023-04-13-20-38-59#seg000",
+   "dataset": "OakInk-v2",
+   "action": "assemble",
+   "task_description": "Assemble the apple together.",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/OakInk_v2_scene_01_O001_seq_7415df221fded77cf598_2023_04_13_20_38_59_seg000.usda"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A003++seq__263ad4d9bbcceec34ac5__2023-04-15-11-11-40#seg003",
+   "dataset": "OakInk-v2",
+   "action": "assemble",
+   "task_description": "Assemble the bread into the product in the plate.",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/OakInk_v2_scene_01_A003_seq_263ad4d9bbcceec34ac5_2023_04_15_11_11_40_seg003.usda"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__O001++seq__7415df221fded77cf598__2023-04-13-20-38-59#seg001",
+   "dataset": "OakInk-v2",
+   "action": "assemble",
+   "task_description": "Assemble the bread together.",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/OakInk_v2_scene_01_O001_seq_7415df221fded77cf598_2023_04_13_20_38_59_seg001.usda"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A003++seq__d05b4bb16d00b45e48d9__2023-04-21-20-49-34#seg004",
+   "dataset": "OakInk-v2",
+   "action": "assemble",
+   "task_description": "Assemble the donut into the product in the plate.",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/OakInk_v2_scene_01_A003_seq_d05b4bb16d00b45e48d9_2023_04_21_20_49_34_seg004.usda"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A004++seq__d570c3d83771037b2600__2023-04-28-18-53-19#seg000",
+   "dataset": "OakInk-v2",
+   "action": "assemble",
+   "task_description": "Assemble the donut into the product in the plate.",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/OakInk_v2_scene_01_A004_seq_d570c3d83771037b2600_2023_04_28_18_53_19_seg000.usda"
+  },
+  {
+   "episode_id": "GigaHands::p005-knitting-tablet/123#seg000",
+   "dataset": "GigaHands",
+   "action": "assemble",
+   "task_description": "Reattach the phone case securely to the phone",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p005_knitting_tablet_123_seg000.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__bowl__20230927_027",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush bowl",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_bowl_20230927_027.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__bowl__20231005_186",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush bowl",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_bowl_20231005_186.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__bowl__20231005_188",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush bowl",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_bowl_20231005_188.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__bowl__20231005_190",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush bowl",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_bowl_20231005_190.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__bowl__20231005_194",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush bowl",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_bowl_20231005_194.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__bowl__20231005_196",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush bowl",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_bowl_20231005_196.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__bowl__20231006_145",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush bowl",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_bowl_20231006_145.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__box__20230927_029",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush box",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_box_20230927_029.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__box__20230928_046",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush box",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_box_20230928_046.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__box__20230930_034",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush box",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_box_20230930_034.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__box__20230930_038",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush box",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_box_20230930_038.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__box__20231005_200",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush box",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_box_20231005_200.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__box__20231006_155",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush box",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_box_20231006_155.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__box__20231006_157",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush box",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_box_20231006_157.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__box__20231006_163",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush box",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_box_20231006_163.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__cup__20231026_001",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush cup",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_cup_20231026_001.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__cup__20231026_002",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush cup",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_cup_20231026_002.usda"
+  },
+  {
+   "episode_id": "TACO::brush__brush__cup__20231026_003",
+   "dataset": "TACO",
+   "action": "brush",
+   "task_description": "use brush to brush cup",
+   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_cup_20231026_003.usda"
+  }
+ ],
+ "failures": [
+  {
+   "episode_id": "OakInk-v2::scene_01__A003++seq__590d0923c75785cbfb33__2023-04-21-20-39-42#seg021",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/005_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A003++seq__590d0923c75785cbfb33__2023-04-21-20-39-42#seg022",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/019_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A003++seq__590d0923c75785cbfb33__2023-04-21-20-39-42#seg023",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/020_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A003++seq__590d0923c75785cbfb33__2023-04-21-20-39-42#seg024",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/021_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A003++seq__920f6ba03fbe28cd4d64__2023-04-21-20-34-37#seg009",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/049_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A003++seq__d05b4bb16d00b45e48d9__2023-04-21-20-49-34#seg012",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/052_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A001++seq__c635c44e3da5012988e8__2023-04-27-18-55-00#seg000",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/125_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A003++seq__073013b056465055373f__2023-04-18-09-53-09#seg000",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/135_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A003++seq__263ad4d9bbcceec34ac5__2023-04-15-11-11-40#seg001",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/158_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A003++seq__2f774a18a128dafb628a__2023-04-18-09-48-37#seg003",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/161_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A003++seq__888432237275999c9f7d__2023-04-18-10-32-34#seg009",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/165_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A003++seq__c85fb5a67560826f32ad__2023-04-18-09-32-52#seg002",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/166_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A005++seq__5f15e8d4dc00a4617cf9__2023-04-17-09-25-38#seg000",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/005_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_01__A008++seq__147fe54c0f342a438cce__2023-05-09-18-48-36#seg000",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/019_cm.obj'\")"
+  },
+  {
+   "episode_id": "GigaHands::p005-noodle-fastfood/058#seg000",
+   "error": "UnsupportedEpisode(\"GigaHands::p005-noodle-fastfood/058#seg000: obj_2 (food item) has no mesh_path -- it is a placeholder object, not a real one (role_source='gpt_completed')\")"
+  },
+  {
+   "episode_id": "GigaHands::p013-fastfood-sandwich/004#seg000",
+   "error": "UnsupportedEpisode(\"GigaHands::p013-fastfood-sandwich/004#seg000: obj_2 (food item) has no mesh_path -- it is a placeholder object, not a real one (role_source='gpt_completed')\")"
+  },
+  {
+   "episode_id": "GigaHands::p039-fastfood/003#seg000",
+   "error": "UnsupportedEpisode(\"GigaHands::p039-fastfood/003#seg000: obj_2 (food item) has no mesh_path -- it is a placeholder object, not a real one (role_source='gpt_completed')\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A001++seq__1c29fc5cfe3b18c6b6ea__2023-04-22-16-25-53#seg011",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/arctic/downloads/data/meta.zip::unpack/arctic_data/data/meta/object_vtemplates/box/bottom.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A001++seq__4330d8d30c1293560d96__2023-04-15-19-04-36#seg002",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/GigaHands/_archives/scans_publish.zip::publish/16_monopoly/monopoly-box/monopoly-box.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A001++seq__9a05b3d7644ba1a5d470__2023-04-18-14-49-54#seg003",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/GigaHands/_archives/scans_publish.zip::publish/1_noodle/noodle-tissue-box/noodle-tissue-box.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A001++seq__a3323f998334c09c8f2f__2023-04-22-15-48-41#seg008",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/GigaHands/_archives/scans_publish.zip::publish/2_fastfood/fastfood-bigmac-box-closed/fastfood-bigmac-box-closed.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A001++seq__b5736ef0a80eed1a965b__2023-04-22-16-02-02#seg007",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/087_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A001++seq__f639df32f29fdc405c2a__2023-04-18-14-51-24#seg003",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/093_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A002++seq__592b80dc7af63ce7ae6e__2023-04-17-14-59-25#seg002",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/103_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A002++seq__73d28bc9b0c2cf63b829__2023-04-17-15-00-12#seg002",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/104_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A004++seq__486fccbc8bd722e4d8df__2023-05-07-18-53-42#seg004",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/105_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A004++seq__988f47650371f35d6001__2023-04-26-20-39-46#seg002",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/121_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A004++seq__9cf448429878c58036ef__2023-05-07-18-47-31#seg012",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/136_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A004++seq__b4b28ce5e8b2ee9ca061__2023-05-07-18-38-10#seg005",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/137_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A004++seq__b9b4c5f90793072b9d41__2023-04-26-20-40-40#seg002",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/143_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A004++seq__c52c712037787f909609__2023-05-07-18-57-36#seg004",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/arctic/downloads/data/meta.zip::unpack/arctic_data/data/meta/object_vtemplates/box/bottom.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A004++seq__c8fd4cf964f09bc29f0f__2023-05-07-19-30-16#seg004",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/GigaHands/_archives/scans_publish.zip::publish/16_monopoly/monopoly-box/monopoly-box.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A005++seq__1b9e60c37a3a7fcacbd4__2023-04-25-20-39-59#seg004",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/GigaHands/_archives/scans_publish.zip::publish/1_noodle/noodle-tissue-box/noodle-tissue-box.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A005++seq__5ced9ba4d054b4039ecb__2023-04-25-20-36-43#seg007",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/GigaHands/_archives/scans_publish.zip::publish/2_fastfood/fastfood-bigmac-box-closed/fastfood-bigmac-box-closed.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A005++seq__5e99cda328f2ad6eb66f__2023-04-25-18-52-10#seg004",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/087_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A005++seq__e04db873d94e3ad37cbe__2023-04-25-19-12-10#seg012",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/093_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A007++seq__0308b11a48fa1bc03f78__2023-05-15-18-33-56#seg010",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/103_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A007++seq__06d2f1c8ee39209ea62a__2023-05-15-19-37-06#seg009",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/104_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A007++seq__47e95cffd68d298d0676__2023-05-15-18-41-34#seg007",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/105_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A007++seq__4b10d3a130f5f8ecea3e__2023-04-19-09-49-17#seg002",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/121_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A007++seq__59796d68e1187324f398__2023-05-15-18-51-04#seg005",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/136_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A007++seq__63ca89a316cb80143b92__2023-05-15-18-29-19#seg011",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/137_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A007++seq__662b07567133f2490efc__2023-05-15-19-42-12#seg003",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/143_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A007++seq__79e821de8b915a202231__2023-04-19-09-48-20#seg002",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/arctic/downloads/data/meta.zip::unpack/arctic_data/data/meta/object_vtemplates/box/bottom.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A007++seq__82851505eab82005b6e2__2023-05-15-18-55-06#seg006",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/GigaHands/_archives/scans_publish.zip::publish/16_monopoly/monopoly-box/monopoly-box.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A007++seq__82851505eab82005b6e2__2023-05-15-18-55-06#seg017",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/GigaHands/_archives/scans_publish.zip::publish/1_noodle/noodle-tissue-box/noodle-tissue-box.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A007++seq__87c3c230a6020d994fe6__2023-05-15-18-59-33#seg008",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/GigaHands/_archives/scans_publish.zip::publish/2_fastfood/fastfood-bigmac-box-closed/fastfood-bigmac-box-closed.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A007++seq__95c93c4a703875a021a3__2023-05-15-19-50-37#seg004",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/087_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A007++seq__9a028b2d4dc8ce4955bf__2023-05-15-18-47-33#seg006",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/093_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A007++seq__9bb1738583a36e74130e__2023-05-15-19-05-51#seg004",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/103_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A007++seq__ad1415514c0aa0d3c778__2023-05-15-18-38-37#seg015",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/104_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A007++seq__f9b2fc1b7c558a45a301__2023-05-15-19-47-02#seg003",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/105_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A008++seq__3f8ff5acad0ca31e833f__2023-04-23-09-53-48#seg004",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/121_cm.obj'\")"
+  },
+  {
+   "episode_id": "OakInk-v2::scene_02__A008++seq__7b2d7bd572bd2613b581__2023-04-23-09-56-24#seg005",
+   "error": "UnsupportedEpisode(\"cannot read an OakInk-v2 object id out of 'gs://foundational-research/hoi-dataset/TACO_Dataset_Overall/Object_Models.zip::object_models_released/136_cm.obj'\")"
+  },
+  {
+   "episode_id": "GigaHands::p012-tablet/002#seg000",
+   "error": "UnsupportedEpisode(\"GigaHands::p012-tablet/002#seg000: obj_1 (type-c charging cable) has no mesh_path -- it is a placeholder object, not a real one (role_source='gpt_completed')\")"
+  },
+  {
+   "episode_id": "GigaHands::p022-tablet/002#seg000",
+   "error": "UnsupportedEpisode(\"GigaHands::p022-tablet/002#seg000: obj_1 (type-c charging cable) has no mesh_path -- it is a placeholder object, not a real one (role_source='gpt_completed')\")"
+  },
+  {
+   "episode_id": "GigaHands::p034-tablet/002#seg000",
+   "error": "UnsupportedEpisode(\"GigaHands::p034-tablet/002#seg000: obj_1 (type-c charging cable) has no mesh_path -- it is a placeholder object, not a real one (role_source='gpt_completed')\")"
+  },
+  {
+   "episode_id": "GigaHands::p042-tablet/002#seg000",
+   "error": "UnsupportedEpisode(\"GigaHands::p042-tablet/002#seg000: obj_1 (type-c charging cable) has no mesh_path -- it is a placeholder object, not a real one (role_source='gpt_completed')\")"
+  }
+ ]
+}
