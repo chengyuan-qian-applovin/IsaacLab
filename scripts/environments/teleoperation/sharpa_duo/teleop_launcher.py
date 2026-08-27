@@ -77,15 +77,9 @@ def scan_dataset(dataset_path: str) -> dict[str, tuple[int, int]]:
 
 # Parameter schema: (flag, label, default, kind, group). Kind: str|float|bool|choice:<a,b,c>.
 # Defaults mirror make_teleop_scene.py's argparse defaults.
-# Launcher-side starting values that deliberately differ from the teleop
-# script's own CLI defaults. The schema `default` below stays the CLI default —
-# _collect_args compares against IT, so an untouched override is still passed
-# on the command line (leaving --mic_device at "quest" must emit it).
-_UI_DEFAULTS = {"--mic_device": "quest"}
-
 _PARAMS = [
     ("--user", "User name (hand calibration)", "", "str", "Operator & voice"),
-    ("--mic_device", "Microphone (default / quest / ALSA name)", "default", "str", "Operator & voice"),
+    ("--mic_device", "Microphone (quest / default / ALSA name)", "default", "str", "Operator & voice"),
     ("--whisper_model", "Whisper model", "base.en", "str", "Operator & voice"),
     ("--no_voice", "Disable voice commands", False, "bool", "Operator & voice"),
     ("--cloudxr_env", "Headset client", "cloudxrjs", "choice:cloudxrjs,avp,none", "Operator & voice"),
@@ -107,6 +101,12 @@ _PARAMS = [
     ("--render_frequency", "Render frequency [Hz]", 30.0, "float", "Advanced"),
     ("--no_record", "Disable recording", False, "bool", "Advanced"),
 ]
+
+# UI prefills that intentionally differ from the teleop script's argparse
+# defaults. The schema default above stays the argparse default so
+# ``_collect_args`` recognizes these as changed and passes them on the
+# command line.
+_INITIAL_OVERRIDES = {"--mic_device": "quest"}
 
 
 class TeleopLauncher(tk.Tk):
@@ -155,7 +155,7 @@ class TeleopLauncher(tk.Tk):
         columns.columnconfigure((0, 1), weight=1)
 
         for flag, label, default, kind, group in _PARAMS:
-            initial = _UI_DEFAULTS.get(flag, default)
+            initial = _INITIAL_OVERRIDES.get(flag, default)
             row = ttk.Frame(groups[group])
             row.pack(fill="x", pady=1)
             if kind == "bool":
