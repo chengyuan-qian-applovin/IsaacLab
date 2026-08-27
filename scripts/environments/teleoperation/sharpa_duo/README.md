@@ -69,6 +69,11 @@ branch's AVP Align button, with voice replacing the button. The head pose is
 queried from XRCore on demand; do NOT put a head tracker in the retargeting
 pipeline (it makes every session step fail on this stack).
 Every transcription is printed to the console, labels and mis-hearings alike.
+The full voice vocabulary: **"success"** / **"failure"** (label + export the
+episode), **"align"** (re-anchor, teleop stopped only), **"play"** (or
+"start" — starts teleop, driven through the same state machine as the client
+button), and **"reset"** (discards the in-flight episode and resets the
+scene). An utterance matching more than one command is ignored.
 
 Audio can come from two places:
 

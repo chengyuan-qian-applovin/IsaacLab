@@ -349,22 +349,32 @@ class EpisodeFlow:
     def episode_has_data(self) -> bool:
         return self.recording and not self.env.recorder_manager.get_episode(0).is_empty()
 
-    def request_client_stop(self) -> None:
-        """Drive the teleop state machine to PAUSED, as if the operator pressed Stop.
+    def _request_client_toggle(self, action: str) -> None:
+        """Drive the teleop state machine, as if the operator pressed Play/Stop.
 
-        Without this, the device keeps reporting the client's "playing" state and
-        teleop would resume by itself right after an episode export. There is no
-        public host-initiated stop (only ``inject_reset``), so this enqueues the
-        same run-toggle sequence a client "stop" message would produce.
+        The device reports the client's CURRENT play state each poll, so a local
+        flag alone would be overwritten a frame later. There is no public
+        host-initiated start/stop (only ``inject_reset``), so this enqueues the
+        same run-toggle sequence a client "start"/"stop" message would produce.
         """
         try:
-            from isaaclab_teleop.teleop_message_processor import _STOP_TOGGLE_SEQUENCES
+            from isaaclab_teleop.teleop_message_processor import _START_TOGGLE_SEQUENCES, _STOP_TOGGLE_SEQUENCES
 
+            sequences = _START_TOGGLE_SEQUENCES if action == "start" else _STOP_TOGGLE_SEQUENCES
             proc = self.teleop._session_lifecycle._message_processor
             if proc is not None and not proc._run_toggle_queue:
-                proc._run_toggle_queue = proc._make_toggle_sequence(_STOP_TOGGLE_SEQUENCES[proc._shadow_state])
+                proc._run_toggle_queue = proc._make_toggle_sequence(sequences[proc._shadow_state])
         except Exception as exc:
-            print(f"[WARNING] Could not push Stop into the teleop state machine: {exc}")
+            print(f"[WARNING] Could not push {action} into the teleop state machine: {exc}")
+
+    def request_client_stop(self) -> None:
+        self._request_client_toggle("stop")
+
+    def request_client_start(self) -> None:
+        if self.awaiting_label:
+            print("[INFO] Play ignored: say 'success' or 'failure' first (or press Reset to discard).")
+            return
+        self._request_client_toggle("start")
 
     def stop_teleop(self) -> None:
         self.teleop_active = False
@@ -394,12 +404,18 @@ class EpisodeFlow:
     # -- per-iteration handlers ----------------------------------------------
 
     def handle_voice_label(self) -> None:
-        """A spoken label ends (if needed), labels, and exports the current episode."""
+        """Route a voice command; labels end (if needed) and export the current episode."""
         label = self.labeler.poll() if self.labeler is not None else None
         if label is None:
             return
         if label == "align":
             self.align_requested = True
+            return
+        if label == "play":
+            self.request_client_start()  # teleop_active follows via the state poll
+            return
+        if label == "reset":
+            self.reset_requested = True  # same as the client button: discards the episode
             return
         if not self.recording:
             return

@@ -16,10 +16,10 @@ utterance with a local Whisper model and turns keyword matches into events, and
 the teleop loop drains the events with :meth:`VoiceLabeler.poll`. Every
 transcription is printed, so mis-hearings are visible immediately.
 
-Recognized commands: any word starting with "success"/"succeed" → ``"success"``;
-any word starting with "fail" → ``"failure"``; "align" (or Whisper's common
-mis-hearing "a line") → ``"align"``. An utterance matching more than one is
-ignored (announced on the console).
+Recognized commands: "success"/"succeed…" → ``"success"``; "fail…" →
+``"failure"``; "align" (or Whisper's common mis-hearing "a line") →
+``"align"``; "play"/"start…" → ``"play"``; "reset" → ``"reset"``. An
+utterance matching more than one is ignored (announced on the console).
 """
 
 from __future__ import annotations
@@ -36,24 +36,24 @@ _CHUNK_S = 0.1  # reader granularity
 _CHUNK_BYTES = int(_SAMPLE_RATE * _CHUNK_S) * 2  # S16LE mono
 _HIGHPASS_HZ = 80.0  # kill DC/infrasonic wander (laptop mics drift hugely below ~20 Hz)
 
-_SUCCESS_RE = re.compile(r"\b(success\w*|succeed\w*)\b")
-_FAILURE_RE = re.compile(r"\bfail\w*\b")
-# "a line" is Whisper's most common mis-hearing of a spoken "align".
-_ALIGN_RE = re.compile(r"\b(align\w*|a line)\b")
+_COMMAND_RES = (
+    ("success", re.compile(r"\b(success\w*|succeed\w*)\b")),
+    ("failure", re.compile(r"\bfail\w*\b")),
+    # "a line" is Whisper's most common mis-hearing of a spoken "align".
+    ("align", re.compile(r"\b(align\w*|a line)\b")),
+    ("play", re.compile(r"\b(play\w*|start\w*)\b")),
+    ("reset", re.compile(r"\breset\w*\b")),
+)
 
 
 def parse_label(text: str) -> str | None:
-    """Map a transcription to ``"success"`` / ``"failure"`` / ``"align"`` / ``None``.
+    """Map a transcription to a command: success / failure / align / play / reset, or None.
 
     Returns None when nothing matches or the utterance is contradictory
     (more than one command recognized at once).
     """
     text = text.lower()
-    matches = [
-        name
-        for name, regex in (("success", _SUCCESS_RE), ("failure", _FAILURE_RE), ("align", _ALIGN_RE))
-        if regex.search(text)
-    ]
+    matches = [name for name, regex in _COMMAND_RES if regex.search(text)]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -242,7 +242,7 @@ class VoiceLabeler:
                     fp16=self._fp16,
                     temperature=0.0,
                     condition_on_previous_text=False,
-                    initial_prompt="Robot teleoperation commands: success, failure, align.",
+                    initial_prompt="Robot teleoperation commands: success, failure, align, play, reset.",
                 )
             except Exception as exc:
                 print(f"[VOICE] Transcription failed: {exc}")
