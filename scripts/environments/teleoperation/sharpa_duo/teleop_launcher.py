@@ -284,8 +284,8 @@ class TeleopLauncher(tk.Tk):
         ttk.Label(
             page,
             text=(
-                "Click a row to toggle whether that scene is collected this session;"
-                " drag to toggle a whole run of rows, or Shift+Click to extend the last toggle up to a row."
+                "Click a row to toggle whether that scene is collected this session;\n"
+                "drag to toggle a whole run of rows, or Shift+Click to extend the last toggle up to a row."
             ),
             style="Muted.TLabel",
         ).pack(anchor="w", pady=(0, self._px(6)))
