@@ -161,7 +161,8 @@ class TeleopLauncher(tk.Tk):
         font sizes) scaled from the screen height, so the layout looks the same
         on a 1080p and a 4K/HiDPI panel.
         """
-        self._scale = min(2.0, max(1.0, self.winfo_screenheight() / 1080))
+        # The 0.8 keeps the UI comfortably compact (full HiDPI scaling felt big).
+        self._scale = 0.8 * min(2.0, max(1.0, self.winfo_screenheight() / 1080))
         base = self._px(16)  # body text height in pixels
 
         # Best available proportional family. Conda's Tk is often built without
