@@ -109,7 +109,14 @@ ARM_READY_POSE = {
 }
 
 
-def duo_robot_cfg(pos: tuple[float, float, float], rot: tuple[float, float, float, float]) -> ArticulationCfg:
+def duo_robot_cfg(
+    pos: tuple[float, float, float],
+    rot: tuple[float, float, float, float],
+    arm_stiffness: float = 400.0,
+    arm_damping: float = 80.0,
+    hand_stiffness: float = 400.0,
+    hand_damping: float = 4.0,
+) -> ArticulationCfg:
     """Build the duo rig's articulation config at the given root pose.
 
     Args:
@@ -118,6 +125,11 @@ def duo_robot_cfg(pos: tuple[float, float, float], rot: tuple[float, float, floa
 
     Returns:
         The articulation config, ready to drop into an :class:`~isaaclab.scene.InteractiveSceneCfg`.
+        arm_stiffness: Joint drive stiffness kp [N·m/rad] for all 14 Panda arm joints.
+        arm_damping: Joint drive damping kd [N·m·s/rad] for all 14 Panda arm joints.
+        hand_stiffness: Joint drive stiffness kp [N·m/rad] for all 44 SharpaWave finger joints.
+        hand_damping: Joint drive damping kd [N·m·s/rad] for all 44 SharpaWave finger joints
+            (the 4.0 default keeps Sharpa's USD-calibrated gain).
     """
     return ArticulationCfg(
         prim_path="{ENV_REGEX_NS}/robot",
@@ -145,19 +157,19 @@ def duo_robot_cfg(pos: tuple[float, float, float], rot: tuple[float, float, floa
             "shoulders": ImplicitActuatorCfg(
                 joint_names_expr=["(left|right)_panda_joint[1-4]"],
                 effort_limit_sim=87.0,
-                stiffness=400.0,
-                damping=80.0,
+                stiffness=arm_stiffness,
+                damping=arm_damping,
             ),
             "forearms": ImplicitActuatorCfg(
                 joint_names_expr=["(left|right)_panda_joint[5-7]"],
                 effort_limit_sim=12.0,
-                stiffness=400.0,
-                damping=80.0,
+                stiffness=arm_stiffness,
+                damping=arm_damping,
             ),
             "fingers": ImplicitActuatorCfg(
                 joint_names_expr=["(left|right)_(thumb|index|middle|ring|pinky)_.*"],
-                stiffness=400.0,
-                damping=4.0,  # keep Sharpa's USD-calibrated gains
+                stiffness=hand_stiffness,
+                damping=hand_damping,
             ),
         },
     )

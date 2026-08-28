@@ -15,7 +15,7 @@ Built on Isaac Lab's recorder manager. Each demo carries:
   any retargeting, so retargeters can be re-tuned offline,
 - ``obs/joint_setpoints`` — the PD drive targets, shape (T, 58): the control
   signal after all action terms, i.e. the differential-IK *output* for the arms,
-- a boolean ``success`` attribute (the voice/gesture label).
+- a boolean ``success`` attribute (the voice label).
 
 All demos of a session land in one timestamped file (the HDF5 handler truncates
 its file at env creation, so a fixed name would wipe earlier sessions). Exports

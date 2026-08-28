@@ -56,8 +56,8 @@ def build_duo_pipeline(include_xr_hands: bool = False, hand_calibration: str | N
         include_xr_hands: Append the raw 26-joint hand poses (see
             :mod:`xr_extras`, ``XR_EXTRAS_DIM`` elements, sim world frame) after
             the 58 action elements. The teleop loop slices them off before
-            ``env.step`` and uses them for the stop gesture, the hand markers,
-            and the ``obs/xr_hands`` recording.
+            ``env.step`` and uses them for the hand markers and the
+            ``obs/xr_hands`` recording.
         hand_calibration: Operator hand-shape calibration yml (see
             :mod:`sharpa_retargeting`), resolved against the vendored
             ``assets/dex_retargeting`` directory. None or "" disables it; a

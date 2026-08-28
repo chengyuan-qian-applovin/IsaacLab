@@ -8,7 +8,7 @@
 A plain-tkinter launcher (no Isaac Sim involved until Start is pressed):
 
 - **Page 1 — Parameters**: the teleop knobs, grouped by concern (operator &
-  voice, session start, domain randomization, stop gesture, visuals, advanced).
+  voice, session start, domain randomization, control gains, visuals, advanced).
 - **Page 2 — Scenes & dataset**: pick a scene directory (scanned recursively
   for ``*.usda``) and a dataset HDF5 file; a table lists every scene with the
   number of success/failure trajectories already collected for it in that
@@ -94,8 +94,10 @@ _PARAMS = [
     ("--dr_object_yaw", "Object yaw range [deg]", 180.0, "float", "Domain randomization"),
     ("--dr_object_bias", "Shift objects toward the robot [m]", 0.3, "float", "Domain randomization"),
     ("--settle_time", "Object settling time after reset [s]", 1.0, "float", "Domain randomization"),
-    ("--gesture_touch_cm", "Stop gesture touch distance [cm]", 2.0, "float", "Stop gesture"),
-    ("--gesture_hold_s", "Stop gesture hold time [s]", 0.5, "float", "Stop gesture"),
+    ("--arm_kp", "Arm kp (stiffness) [N·m/rad]", 400.0, "float", "Control gains"),
+    ("--arm_kd", "Arm kd (damping) [N·m·s/rad]", 80.0, "float", "Control gains"),
+    ("--hand_kp", "Hand kp (stiffness) [N·m/rad]", 400.0, "float", "Control gains"),
+    ("--hand_kd", "Hand kd (damping) [N·m·s/rad]", 4.0, "float", "Control gains"),
     ("--arm_visual", "Arm rendering", "transparent", "choice:transparent,hidden,normal", "Visuals"),
     ("--visualize_hands", "Show tracked hand joints", False, "bool", "Visuals"),
     ("--no_task_display", "Hide the task-description panel", False, "bool", "Visuals"),

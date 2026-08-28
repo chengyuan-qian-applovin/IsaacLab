@@ -9,9 +9,9 @@ The pipeline in one line: your USDA becomes the environment, the duo rig is
 placed into it at ``--robot_pos``/``--robot_rot``, and your tracked hands drive
 it — wrists through per-arm differential IK, all fingers through DexPilot
 retargeting. Episodes are recorded to a robomimic-style HDF5 by default and
-labeled hands-free: the cross-hand stop gesture ends an episode, and saying
-"success" or "failure" (transcribed locally with OpenAI Whisper) labels and
-exports it — see README.md for the full flow.
+labeled hands-free: saying "success" or "failure" (transcribed locally with
+OpenAI Whisper) ends, labels, and exports the episode — see README.md for the
+full flow.
 
 Example (headless is required for XR without a desktop display):
 
@@ -197,16 +197,28 @@ parser.add_argument(
 )
 parser.add_argument("--visualize_hands", action="store_true", help="Draw red spheres on the tracked XR hand joints.")
 parser.add_argument(
-    "--gesture_touch_cm",
+    "--arm_kp",
     type=float,
-    default=2.0,
-    help="Stop gesture: max same-finger cross-hand tip distance (cm) counted as touching.",
+    default=400.0,
+    help="Arm joint drive stiffness kp [N·m/rad] (all 14 Panda joints). Stamped on every recorded demo.",
 )
 parser.add_argument(
-    "--gesture_hold_s",
+    "--arm_kd",
     type=float,
-    default=0.5,
-    help="Stop gesture: seconds all five pairs must stay touching to trigger.",
+    default=80.0,
+    help="Arm joint drive damping kd [N·m·s/rad] (all 14 Panda joints). Stamped on every recorded demo.",
+)
+parser.add_argument(
+    "--hand_kp",
+    type=float,
+    default=400.0,
+    help="Finger joint drive stiffness kp [N·m/rad] (all 44 SharpaWave joints). Stamped on every recorded demo.",
+)
+parser.add_argument(
+    "--hand_kd",
+    type=float,
+    default=4.0,
+    help="Finger joint drive damping kd [N·m·s/rad] (all 44 SharpaWave joints). Stamped on every recorded demo.",
 )
 parser.add_argument(
     "--user",
@@ -385,7 +397,14 @@ def build_env_cfg(scene_usda: str) -> ManagerBasedRLEnvCfg:
     env_cfg = DuoTeleopEnvCfg()
     env_cfg.sim.device = args_cli.device
     env_cfg.episode_length_s = args_cli.episode_length_s
-    env_cfg.scene.robot = duo_robot_cfg(pos=tuple(args_cli.robot_pos), rot=tuple(args_cli.robot_rot))
+    env_cfg.scene.robot = duo_robot_cfg(
+        pos=tuple(args_cli.robot_pos),
+        rot=tuple(args_cli.robot_rot),
+        arm_stiffness=args_cli.arm_kp,
+        arm_damping=args_cli.arm_kd,
+        hand_stiffness=args_cli.hand_kp,
+        hand_damping=args_cli.hand_kd,
+    )
     add_usda_scene(env_cfg.scene, scene_usda, track_objects=not args_cli.no_track_objects)
     # Render every Nth physics substep, as close to the requested rate as the dt allows.
     interval = max(1, round(1.0 / (env_cfg.sim.dt * args_cli.render_frequency)))
@@ -513,8 +532,8 @@ class AutoStartMatcher:
 
     Hysteresis: after any active period (or a failed match), re-arming requires
     the match to be clearly broken once (any hand beyond 1.5x tolerance).
-    Without this, stopping via the cross-hand gesture — hands still at the pose
-    the robot holds — would instantly restart teleop.
+    Without this, any stop that leaves the hands at the pose the robot holds
+    would instantly restart teleop.
 
     While auto-start is waiting, axis frames are drawn on both hand wrists
     (large) and both calibrated wrist targets (small) so the operator can see
@@ -677,17 +696,15 @@ class AutoStartMatcher:
 class EpisodeFlow:
     """Episode lifecycle state for the teleop loop.
 
-    Play starts teleop (and, when recording, the episode buffer). The
-    cross-hand stop gesture ends an episode and waits for a voice label;
-    saying "success"/"failure" at any time labels AND ends the current
-    episode; either way the labeled demo is exported, the scene resets, and
-    teleop ends stopped — the operator presses Play for the next episode.
+    Play starts teleop (and, when recording, the episode buffer). Saying
+    "success"/"failure" at any time ends AND labels the current episode; the
+    labeled demo is exported, the scene resets, and teleop ends stopped — the
+    operator presses Play (or matches the start pose) for the next episode.
     Reset (headset button) discards the in-flight episode.
     """
 
-    def __init__(self, env: ManagerBasedRLEnv, gesture, labeler, recording: bool, scene_name: str = ""):
+    def __init__(self, env: ManagerBasedRLEnv, labeler, recording: bool, scene_name: str = ""):
         self.env = env
-        self.gesture = gesture
         self.labeler = labeler
         self.scene_name = scene_name
         self.next_requested = False  # voice "next": advance to the next scene in the list
@@ -695,7 +712,7 @@ class EpisodeFlow:
         self.teleop = None  # bound after the device is created
         self.teleop_active = False
         self.reset_requested = False
-        self.awaiting_label = False  # gesture ended the episode; waiting for the voice label
+        self.awaiting_label = False  # an episode was closed; waiting for the voice label
         self.align_requested = False  # voice "align" heard; served by the loop
         self.suppress_active_frames = 0  # ignore the client's stale "playing" state after a host stop
         self.demo_count = 0
@@ -774,12 +791,18 @@ class EpisodeFlow:
         try:
             handler = rm._dataset_file_handler
             demo_id = handler.get_num_episodes() - 1
+            demo_group = handler._hdf5_data_group[f"demo_{demo_id}"]
             if self.scene_name:
-                handler._hdf5_data_group[f"demo_{demo_id}"].attrs["scene"] = self.scene_name
-                handler.flush()
+                demo_group.attrs["scene"] = self.scene_name
+            # The drive gains the demo was recorded with, for training/replay.
+            demo_group.attrs["arm_kp"] = args_cli.arm_kp
+            demo_group.attrs["arm_kd"] = args_cli.arm_kd
+            demo_group.attrs["hand_kp"] = args_cli.hand_kp
+            demo_group.attrs["hand_kd"] = args_cli.hand_kd
+            handler.flush()
         except Exception as exc:
             demo_id = self.demo_count
-            print(f"[WARNING] Could not tag the demo with its scene name: {exc}")
+            print(f"[WARNING] Could not tag the demo with its scene name and gains: {exc}")
         rm.reset()
         self.demo_count += 1
         self.awaiting_label = False
@@ -845,7 +868,6 @@ class EpisodeFlow:
         self.env.reset()
         settle_scene(self.env)
         self.teleop.reset()
-        self.gesture.reset()
         self.awaiting_label = False
         self.reset_requested = False
 
@@ -862,17 +884,6 @@ class EpisodeFlow:
             self.suppress_active_frames -= 1
         if ctrl.should_reset:
             self.reset_requested = True
-
-    def handle_gesture(self, xr_hands: torch.Tensor) -> bool:
-        """Returns True if the stop gesture fired this frame."""
-        if not (self.teleop_active and self.gesture.update(xr_hands)):
-            return False
-        if self.episode_has_data():
-            self.close_episode()
-        else:
-            self.stop_teleop()
-            print("[INFO] Stop gesture: no recorded steps, teleop paused.")
-        return True
 
 
 def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) -> tuple[str, tuple]:
@@ -901,7 +912,6 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
     from xr_extras import (
         XR_EXTRAS_DIM,
         AnchorAligner,
-        CrossHandStopGesture,
         HandJointMarkers,
         apply_arm_visual,
         current_head_pose,
@@ -926,9 +936,8 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
 
     apply_arm_visual(args_cli.arm_visual)
     markers = HandJointMarkers() if args_cli.visualize_hands else None
-    gesture = CrossHandStopGesture(touch_dist=args_cli.gesture_touch_cm / 100.0, hold_s=args_cli.gesture_hold_s)
 
-    flow = EpisodeFlow(env, gesture, labeler, recording, scene_name=scene_name)
+    flow = EpisodeFlow(env, labeler, recording, scene_name=scene_name)
 
     # --user selects the per-user calibration from calibrate_hand_shape.py; an
     # explicitly overridden --hand_calibration wins over it.
@@ -979,7 +988,7 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
         )
     print(
         "[INFO] Teleop loop started. Headset: Play = start, Stop = pause, Reset = reset (discards episode). "
-        "Cross-hand stop gesture ends an episode; say 'success'/'failure' to label it (also ends it mid-run). "
+        "Say 'success'/'failure' to end, label, and export the episode. "
         "Episode timeout discards without export."
     )
     with teleop, torch.inference_mode():
@@ -1004,7 +1013,7 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
                 if flow.align_requested:
                     flow.align_requested = False
                     if flow.teleop_active:
-                        print("[ALIGN] Ignored while teleop is running: press Stop (or use the gesture) first.")
+                        print("[ALIGN] Ignored while teleop is running: press Stop first.")
                     else:
                         head = current_head_pose()
                         if head is None:
@@ -1023,8 +1032,6 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
                 if markers is not None:
                     markers.update(xr_hands)
 
-                if flow.handle_gesture(xr_hands):
-                    continue
                 if auto_start is not None:
                     auto_start.update(action)
                 if not flow.teleop_active:

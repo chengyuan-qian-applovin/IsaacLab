@@ -35,22 +35,19 @@ one demo in a timestamped robomimic-style HDF5 under `--record_dir`
    your calibrated wrist targets (robot wrists only while a hand is
    untracked); they disappear when teleop engages (`--debug_auto_start` keeps
    them up and prints the errors).
-2. End the episode either way:
-   - **Cross-hand stop gesture** — touch all five fingertip pairs of the two
-     hands together for 0.5 s. The episode closes and waits for your label.
-   - **Just say the label** — speaking a label mid-episode ends AND labels it
-     in one utterance.
-3. **Say "success" or "failure"** into the machine's microphone. The demo is
-   exported with that label, the scene resets, and teleop ends in the stopped
-   state — press Play to start the next episode.
-4. **Reset** (headset button) discards the in-flight episode instead; an
+2. **Say "success" or "failure"** to end the episode: the demo is exported
+   with that label, the scene resets, and teleop ends in the stopped state —
+   press Play (or match the start pose) for the next episode.
+3. **Reset** (headset button) discards the in-flight episode instead; an
    episode timeout also discards.
 
 Each demo carries per-step robot joint states, tracked object poses, the 58-D
 actions, the raw XR hand poses (`obs/xr_hands`, (T, 2, 26, 7), the retargeter
 input — enough to re-tune retargeting offline), the PD drive setpoints
-(`obs/joint_setpoints`, (T, 58), the differential-IK output), and a boolean
-`success` attribute.
+(`obs/joint_setpoints`, (T, 58), the differential-IK output), and HDF5
+attributes: the boolean `success` label, the `scene` name, and the drive
+gains it was recorded with (`arm_kp`/`arm_kd`/`hand_kp`/`hand_kd` — the
+`--arm_kp` etc. flags, tunable from the launcher's "Control gains" group).
 
 ## Replaying episodes
 
@@ -99,7 +96,7 @@ command is ignored.
 
 A two-page launcher (plain tkinter; Isaac Sim only starts when you press
 Start): page 1 groups the teleop parameters by concern (operator & voice,
-session start, domain randomization, stop gesture, visuals, advanced); page 2
+session start, domain randomization, control gains, visuals, advanced); page 2
 picks a scene directory and a dataset HDF5 file and shows a table of every
 scene with the success/failure trajectory counts already collected for it in
 that dataset — tick the scenes to collect this session (click toggles one

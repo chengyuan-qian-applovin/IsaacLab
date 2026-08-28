@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""XR extras for the duo teleop: raw hand passthrough, stop gesture, visual helpers.
+"""XR extras for the duo teleop: raw hand passthrough and visual helpers.
 
 The IsaacTeleop device returns exactly one flat action tensor per frame, so the
 raw hand-tracking data rides along INSIDE that tensor: :class:`HandsXrPassthrough`
@@ -11,7 +11,7 @@ is a pipeline node that emits the two hands' 26 joint poses as
 ``XR_EXTRAS_DIM = 364`` extra elements (2 hands x 26 joints x [x, y, z, qx, qy,
 qz, qw], sim world frame, xyzw quats), which the pipeline appends after the 58-D
 robot action. The teleop loop slices them off before ``env.step`` and feeds them
-to the stop gesture, the hand-joint markers, and the ``obs/xr_hands`` recorder.
+to the hand-joint markers and the ``obs/xr_hands`` recorder.
 An untracked hand (or joint) reads as all zeros.
 
 Import only after AppLauncher.
@@ -19,14 +19,8 @@ Import only after AppLauncher.
 
 from __future__ import annotations
 
-import time
-
 import numpy as np
 import torch
-
-# OpenXR fingertip joint indices (XR_EXT_hand_tracking order), thumb through little.
-_TIP_INDICES = (5, 10, 15, 20, 25)
-_WRIST_INDEX = 1
 
 XR_EXTRAS_DIM = 2 * 26 * 7
 """Elements appended to the action tensor by :class:`HandsXrPassthrough`."""
@@ -76,52 +70,6 @@ def make_hands_passthrough(name: str = "xr_hands_passthrough"):
                 out[i] = float(v)
 
     return HandsXrPassthrough(name=name)
-
-
-class CrossHandStopGesture:
-    """All five same-finger tip pairs within ``touch_dist``, held ``hold_s`` seconds.
-
-    Cross-hand by construction, so it cannot collide with the intra-hand pinches
-    that drive DexPilot. After triggering, it re-arms only once any pair separates
-    beyond ``release_dist`` (hysteresis against retriggering while the hands part).
-    """
-
-    def __init__(self, touch_dist: float = 0.02, release_dist: float = 0.10, hold_s: float = 0.5):
-        self._touch_dist = touch_dist
-        self._release_dist = release_dist
-        self._hold_s = hold_s
-        self._touch_since: float | None = None
-        self._armed = True
-
-    def reset(self) -> None:
-        self._touch_since = None
-        self._armed = True
-
-    def update(self, xr_hands: torch.Tensor) -> bool:
-        """Feed the (2, 26, 7) raw hand block; returns True exactly once per gesture."""
-        pos = xr_hands[:, :, :3]
-        # An untracked hand reads as all zeros; require both wrists to be live.
-        if pos[0, _WRIST_INDEX].norm() < 1e-6 or pos[1, _WRIST_INDEX].norm() < 1e-6:
-            self._touch_since = None
-            return False
-        dists = (pos[0, list(_TIP_INDICES)] - pos[1, list(_TIP_INDICES)]).norm(dim=-1)
-
-        if not self._armed:
-            if bool((dists > self._release_dist).any()):
-                self._armed = True
-            return False
-
-        if bool((dists < self._touch_dist).all()):
-            now = time.monotonic()
-            if self._touch_since is None:
-                self._touch_since = now
-            elif now - self._touch_since >= self._hold_s:
-                self._touch_since = None
-                self._armed = False
-                return True
-        else:
-            self._touch_since = None
-        return False
 
 
 class HandJointMarkers:
