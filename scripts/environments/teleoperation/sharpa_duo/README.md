@@ -74,9 +74,11 @@ openai-whisper` into the env; done via `--whisper_model`, default `base.en`,
 running on `--whisper_device`, default `cpu` so it never competes with the sim
 and CloudXR for the GPU). Besides the labels, saying **"align"** (while teleop
 is stopped) re-anchors the XR session: it rotates the world about your head
-until you face the robot's forward axis and moves you to `--align_head_xy`
-(default: the TACO table's near edge, z untouched) — the port of the source
-branch's AVP Align button, with voice replacing the button. The head pose is
+until you face the robot's forward axis, moves you to `--align_head_xy`
+(default: the TACO table's near edge) and sets your head `--align_head_z`
+(default 1.5 m) above the scene floor — pass 0 to keep the headset's own
+floor calibration instead — the port of the source branch's AVP Align
+button, with voice replacing the button. The head pose is
 queried from XRCore on demand; do NOT put a head tracker in the retargeting
 pipeline (it makes every session step fail on this stack).
 Every transcription is printed to the console, labels and mis-hearings alike.

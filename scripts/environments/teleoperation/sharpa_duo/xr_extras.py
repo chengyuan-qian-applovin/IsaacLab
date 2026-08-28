@@ -233,10 +233,12 @@ class AnchorAligner:
     Port of the feature branch's aligner to the IsaacTeleop stack. The correction
     is the same world-frame rigid ΔT: rotate about the user's current head
     position until the head's forward axis (OpenXR: −Z) points along the robot's
-    facing direction, then translate the head's xy onto ``target_head_xy``; z is
-    never touched, so the calibrated floor height holds. Because ΔT rigidly moves
-    the whole XR→world mapping, the wrist offsets — which live in the wrist's own
-    frame — are unaffected.
+    facing direction, then translate the head's xy onto ``target_head_xy`` and —
+    when ``target_head_z`` is given — the head's height onto it (putting the
+    world's z=0 floor exactly ``target_head_z`` below the head; with None the
+    calibrated floor height holds). Because ΔT rigidly moves the whole XR→world
+    mapping, the wrist offsets — which live in the wrist's own frame — are
+    unaffected.
 
     Mechanism difference vs the 2.x branch: there is no direct XRCore write here.
     On this stack the :class:`~isaaclab_teleop.xr_anchor_utils.XrAnchorSynchronizer`
@@ -246,9 +248,12 @@ class AnchorAligner:
     the new anchor to both the renderer and the pipeline's ``world_T_anchor``.
     """
 
-    def __init__(self, teleop, target_head_xy: tuple[float, float], robot_yaw: float):
+    def __init__(
+        self, teleop, target_head_xy: tuple[float, float], robot_yaw: float, target_head_z: float | None = None
+    ):
         self._xr_cfg = teleop._anchor_manager._xr_cfg
         self._target_xy = np.asarray(target_head_xy, dtype=np.float64)
+        self._target_z = None if target_head_z is None else float(target_head_z)
         self._robot_yaw = float(robot_yaw)
 
     def align(self, head_pose_w: np.ndarray) -> bool:
@@ -270,12 +275,16 @@ class AnchorAligner:
         new_pos = q_dyaw.apply(anchor_pos - head_pos) + head_pos
         new_pos[0] += self._target_xy[0] - head_pos[0]
         new_pos[1] += self._target_xy[1] - head_pos[1]
+        height_note = ""
+        if self._target_z is not None:
+            new_pos[2] += self._target_z - head_pos[2]
+            height_note = f", head height -> {self._target_z:.2f} m (was {head_pos[2]:.2f})"
         new_quat = q_dyaw * R.from_quat(self._xr_cfg.anchor_rot)
 
         self._xr_cfg.anchor_pos = tuple(float(v) for v in new_pos)
         self._xr_cfg.anchor_rot = tuple(float(v) for v in new_quat.as_quat())
         print(
             f"[ALIGN] Re-anchored: yaw {np.degrees(dyaw):+.1f} deg, head xy ->"
-            f" ({self._target_xy[0]:.2f}, {self._target_xy[1]:.2f})"
+            f" ({self._target_xy[0]:.2f}, {self._target_xy[1]:.2f}){height_note}"
         )
         return True

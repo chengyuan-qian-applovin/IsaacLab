@@ -261,6 +261,15 @@ parser.add_argument(
         " Default (0, -0.6) stands you at the TACO table's near edge."
     ),
 )
+parser.add_argument(
+    "--align_head_z",
+    type=float,
+    default=1.5,
+    help=(
+        "Voice 'align' command: world height [m] the head is moved to, putting the scene floor (z=0)"
+        " that far below your eyes. Pass 0 or negative to keep the headset's own floor calibration."
+    ),
+)
 parser.add_argument("--no_voice", action="store_true", help="Disable the Whisper success/failure voice labeling.")
 parser.add_argument(
     "--whisper_model", type=str, default="base.en", help="Whisper model for voice labels (e.g. base.en, small.en)."
@@ -947,7 +956,8 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
     # The rig faces +x at identity, so the facing angle IS the root quat's yaw
     # (the default +90 deg yaw faces +y, reproducing the source branch's target).
     robot_yaw = float(R.from_quat(args_cli.robot_rot).as_euler("ZYX")[0])
-    aligner = AnchorAligner(teleop, tuple(args_cli.align_head_xy), robot_yaw)
+    align_head_z = args_cli.align_head_z if args_cli.align_head_z > 0 else None
+    aligner = AnchorAligner(teleop, tuple(args_cli.align_head_xy), robot_yaw, target_head_z=align_head_z)
     auto_start = None
     if not args_cli.no_auto_start:
         auto_start = AutoStartMatcher(
