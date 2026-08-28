@@ -31,6 +31,7 @@ import os
 import subprocess
 import sys
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -109,6 +110,16 @@ _PARAMS = [
 # command line.
 _INITIAL_OVERRIDES = {"--mic_device": "quest"}
 
+# Palette (light, one blue accent).
+_BG = "#eef0f4"  # window background
+_PANEL = "#ffffff"  # group boxes, table
+_FG = "#1c2430"  # main text
+_MUTED = "#5c6675"  # secondary text
+_ACCENT = "#2563eb"  # primary buttons
+_ACCENT_ACTIVE = "#1d4ed8"
+_STRIPE = "#f5f7fa"  # odd table rows
+_DANGER = "#dc2626"  # stop button
+
 
 class TeleopLauncher(tk.Tk):
     """Two-page launcher; see the module docstring."""
@@ -116,7 +127,9 @@ class TeleopLauncher(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Duo Teleop Launcher")
-        self.geometry("860x640")
+        self._apply_style()
+        self.geometry(f"{self._px(980)}x{self._px(820)}")
+        self.minsize(self._px(820), self._px(620))
         self._proc: subprocess.Popen | None = None
         self._param_vars: dict[str, tuple[tk.Variable, object, str]] = {}
         self._scene_rows: dict[str, dict] = {}  # basename -> {path, selected(BooleanVar)}
@@ -125,7 +138,7 @@ class TeleopLauncher(tk.Tk):
         container = ttk.Frame(self)
         container.pack(fill="both", expand=True)
         for name in ("params", "scenes", "running"):
-            frame = ttk.Frame(container, padding=12)
+            frame = ttk.Frame(container, padding=self._px(16))
             frame.grid(row=0, column=0, sticky="nsew")
             self._pages[name] = frame
         container.rowconfigure(0, weight=1)
@@ -136,47 +149,120 @@ class TeleopLauncher(tk.Tk):
         self._build_running_page(self._pages["running"])
         self._show("params")
 
+    def _px(self, logical: int) -> int:
+        """Scale a logical pixel size to the screen (HiDPI-aware)."""
+        return int(round(logical * self._scale))
+
+    def _apply_style(self) -> None:
+        """Readable fonts scaled to the screen, one clean theme for every widget.
+
+        Tk's defaults are ~10 pt and ignore HiDPI screens entirely, which is why
+        the stock launcher rendered tiny. Sizes here are in PIXELS (negative tk
+        font sizes) scaled from the screen height, so the layout looks the same
+        on a 1080p and a 4K/HiDPI panel.
+        """
+        self._scale = min(2.0, max(1.0, self.winfo_screenheight() / 1080))
+        base = self._px(16)  # body text height in pixels
+
+        # Best available proportional family. Conda's Tk is often built without
+        # Xft and sees only legacy X11 core fonts (no DejaVu, no unicode arrows
+        # or check marks — which is also why the UI text sticks to ASCII), so
+        # fall through to the scalable Type1 face those setups do have.
+        available = {f.lower(): f for f in tkfont.families(self)}
+        family = None
+        for candidate in ("dejavu sans", "liberation sans", "noto sans", "ubuntu", "nimbus sans l", "helvetica"):
+            if candidate in available:
+                family = available[candidate]
+                break
+        for name in (
+            "TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont",
+            "TkIconFont", "TkTooltipFont", "TkCaptionFont", "TkFixedFont",
+        ):  # fmt: skip
+            try:
+                font = tkfont.nametofont(name)
+                font.configure(size=-base, **({"family": family} if family else {}))
+            except tk.TclError:
+                pass
+        self._font_title = tkfont.Font(font=tkfont.nametofont("TkDefaultFont"))
+        self._font_title.configure(size=-self._px(24), weight="bold")
+        self._font_bold = tkfont.Font(font=tkfont.nametofont("TkDefaultFont"))
+        self._font_bold.configure(weight="bold")
+
+        style = ttk.Style(self)
+        style.theme_use("clam")
+        self.configure(background=_BG)
+        style.configure(".", background=_BG, foreground=_FG, bordercolor="#d4d9e1", focuscolor=_ACCENT)
+        style.configure("Title.TLabel", font=self._font_title)
+        style.configure("Muted.TLabel", foreground=_MUTED)
+        style.configure("TLabelframe", background=_PANEL, relief="solid", borderwidth=1, padding=self._px(12))
+        style.configure("TLabelframe.Label", background=_PANEL, foreground=_MUTED, font=self._font_bold)
+        style.configure("Panel.TFrame", background=_PANEL)
+        style.configure("Panel.TLabel", background=_PANEL)
+        style.configure("Panel.TCheckbutton", background=_PANEL)
+        style.map("Panel.TCheckbutton", background=[("active", _PANEL)])
+        style.configure("TCheckbutton", indicatorsize=self._px(18), indicatormargin=(0, 0, self._px(8), 0))
+        style.configure("TCombobox", arrowsize=self._px(22))
+        pad_x, pad_y = self._px(14), self._px(7)
+        style.configure("TButton", padding=(pad_x, pad_y))
+        style.configure("Accent.TButton", background=_ACCENT, foreground="#ffffff", padding=(pad_x, pad_y))
+        style.map(
+            "Accent.TButton",
+            background=[("pressed", _ACCENT_ACTIVE), ("active", _ACCENT_ACTIVE), ("disabled", "#9db4e8")],
+        )
+        style.configure("Danger.TButton", background=_DANGER, foreground="#ffffff", padding=(pad_x, pad_y))
+        style.map("Danger.TButton", background=[("pressed", "#b91c1c"), ("active", "#b91c1c")])
+        style.configure("TEntry", fieldbackground="#ffffff", padding=self._px(4))
+        style.configure("TCombobox", fieldbackground="#ffffff", padding=self._px(4))
+        style.configure("Treeview", background=_PANEL, fieldbackground=_PANEL, rowheight=self._px(32), borderwidth=1)
+        style.configure("Treeview.Heading", font=self._font_bold, padding=(self._px(8), self._px(8)))
+        style.map("Treeview", background=[("selected", "#dbe6fb")], foreground=[("selected", _FG)])
+
     def _show(self, name: str) -> None:
         self._pages[name].tkraise()
 
     # -- page 1: parameters ---------------------------------------------------
 
     def _build_params_page(self, page: ttk.Frame) -> None:
-        ttk.Label(page, text="Teleop parameters", font=("", 14, "bold")).pack(anchor="w")
+        ttk.Label(page, text="Teleop parameters", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(page, text="Only settings you change are passed on the command line.", style="Muted.TLabel").pack(
+            anchor="w", pady=(0, self._px(6))
+        )
+        # Packed before the (expanding) parameter grid so it can never be
+        # clipped off the bottom on a small window.
+        ttk.Button(
+            page, text="Select scenes  >>", style="Accent.TButton",
+            command=lambda: self._show("scenes"),
+        ).pack(side="bottom", anchor="e", pady=self._px(8))  # fmt: skip
         columns = ttk.Frame(page)
-        columns.pack(fill="both", expand=True, pady=8)
+        columns.pack(fill="both", expand=True, pady=self._px(8))
         groups: dict[str, ttk.LabelFrame] = {}
         order = []
         for _flag, _label, _default, _kind, group in _PARAMS:
             if group not in groups:
                 order.append(group)
-                groups[group] = ttk.LabelFrame(columns, text=group, padding=8)
+                groups[group] = ttk.LabelFrame(columns, text=f" {group} ")
         for i, group in enumerate(order):
-            groups[group].grid(row=i // 2, column=i % 2, sticky="nsew", padx=6, pady=6)
+            groups[group].grid(row=i // 2, column=i % 2, sticky="nsew", padx=self._px(8), pady=self._px(8))
         columns.columnconfigure((0, 1), weight=1)
 
         for flag, label, default, kind, group in _PARAMS:
             initial = _INITIAL_OVERRIDES.get(flag, default)
-            row = ttk.Frame(groups[group])
-            row.pack(fill="x", pady=1)
+            row = ttk.Frame(groups[group], style="Panel.TFrame")
+            row.pack(fill="x", pady=self._px(3))
             if kind == "bool":
                 var = tk.BooleanVar(value=initial)
-                ttk.Checkbutton(row, text=label, variable=var).pack(anchor="w")
+                ttk.Checkbutton(row, text=label, variable=var, style="Panel.TCheckbutton").pack(anchor="w")
             elif kind.startswith("choice:"):
                 var = tk.StringVar(value=initial)
-                ttk.Label(row, text=label).pack(side="left")
+                ttk.Label(row, text=label, style="Panel.TLabel").pack(side="left")
                 ttk.Combobox(
                     row, textvariable=var, values=kind.split(":", 1)[1].split(","), width=12, state="readonly"
                 ).pack(side="right")
             else:
                 var = tk.StringVar(value=str(initial))
-                ttk.Label(row, text=label).pack(side="left")
-                ttk.Entry(row, textvariable=var, width=14).pack(side="right")
+                ttk.Label(row, text=label, style="Panel.TLabel").pack(side="left")
+                ttk.Entry(row, textvariable=var, width=12).pack(side="right")
             self._param_vars[flag] = (var, default, kind)
-
-        ttk.Button(page, text="Select scenes  \N{RIGHTWARDS ARROW}", command=lambda: self._show("scenes")).pack(
-            anchor="e", pady=6
-        )
 
     def _collect_args(self) -> list[str]:
         """CLI arguments for every parameter that differs from its default."""
@@ -193,10 +279,12 @@ class TeleopLauncher(tk.Tk):
     # -- page 2: scenes & dataset ----------------------------------------------
 
     def _build_scenes_page(self, page: ttk.Frame) -> None:
-        ttk.Label(page, text="Scenes & dataset", font=("", 14, "bold")).pack(anchor="w")
+        ttk.Label(page, text="Scenes & dataset", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(page, text="Click a row to toggle whether that scene is collected this session.",
+                  style="Muted.TLabel").pack(anchor="w", pady=(0, self._px(6)))  # fmt: skip
 
         picker = ttk.Frame(page)
-        picker.pack(fill="x", pady=6)
+        picker.pack(fill="x", pady=self._px(8))
         self._scene_dir = tk.StringVar(value=_DEFAULT_SCENE_DIR)
         self._dataset = tk.StringVar(value=_DEFAULT_DATASET)
         for row_i, (label, var, browse) in enumerate(
@@ -205,9 +293,9 @@ class TeleopLauncher(tk.Tk):
                 ("Dataset file (created if missing)", self._dataset, self._browse_dataset),
             )
         ):
-            ttk.Label(picker, text=label).grid(row=row_i, column=0, sticky="w")
-            ttk.Entry(picker, textvariable=var, width=72).grid(row=row_i, column=1, sticky="ew", padx=6)
-            ttk.Button(picker, text="Browse", command=browse).grid(row=row_i, column=2)
+            ttk.Label(picker, text=label).grid(row=row_i, column=0, sticky="w", pady=self._px(3))
+            ttk.Entry(picker, textvariable=var).grid(row=row_i, column=1, sticky="ew", padx=self._px(8))
+            ttk.Button(picker, text="Browse", command=browse).grid(row=row_i, column=2, pady=self._px(3))
         picker.columnconfigure(1, weight=1)
 
         self._table = ttk.Treeview(page, columns=("sel", "success", "failure"), height=14)
@@ -215,21 +303,23 @@ class TeleopLauncher(tk.Tk):
         self._table.heading("sel", text="Collect?")
         self._table.heading("success", text="Success")
         self._table.heading("failure", text="Failure")
-        self._table.column("#0", width=460)
+        self._table.column("#0", width=self._px(500))
         for col in ("sel", "success", "failure"):
-            self._table.column(col, width=80, anchor="center")
-        self._table.pack(fill="both", expand=True, pady=6)
+            self._table.column(col, width=self._px(100), anchor="center", stretch=False)
+        self._table.tag_configure("odd", background=_STRIPE)
+        self._table.tag_configure("off", foreground=_MUTED)
+        self._table.pack(fill="both", expand=True, pady=self._px(8))
         self._table.bind("<Button-1>", self._on_table_click)
 
         buttons = ttk.Frame(page)
         buttons.pack(fill="x")
-        ttk.Button(buttons, text="\N{LEFTWARDS ARROW}  Parameters", command=lambda: self._show("params")).pack(
-            side="left"
-        )
-        ttk.Button(buttons, text="Refresh", command=self.refresh_table).pack(side="left", padx=6)
+        ttk.Button(buttons, text="<<  Parameters", command=lambda: self._show("params")).pack(side="left")
+        ttk.Button(buttons, text="Refresh", command=self.refresh_table).pack(side="left", padx=self._px(8))
         ttk.Button(buttons, text="Select all", command=lambda: self._set_all(True)).pack(side="left")
-        ttk.Button(buttons, text="Select none", command=lambda: self._set_all(False)).pack(side="left", padx=6)
-        ttk.Button(buttons, text="Start teleop", command=self.start_teleop).pack(side="right")
+        ttk.Button(buttons, text="Select none", command=lambda: self._set_all(False)).pack(
+            side="left", padx=self._px(8)
+        )
+        ttk.Button(buttons, text="Start teleop", style="Accent.TButton", command=self.start_teleop).pack(side="right")
 
         self.refresh_table()
 
@@ -250,49 +340,62 @@ class TeleopLauncher(tk.Tk):
             self._dataset.set(path)
             self.refresh_table()
 
+    def _row_tags(self, name: str) -> tuple[str, ...]:
+        row = self._scene_rows[name]
+        tags = ("odd",) if row["odd"] else ()
+        return tags if row["selected"].get() else (*tags, "off")
+
     def refresh_table(self) -> None:
         """Re-scan the scene directory and the dataset counts."""
         previous = {name: row["selected"].get() for name, row in self._scene_rows.items()}
         self._table.delete(*self._table.get_children())
         self._scene_rows.clear()
         counts = scan_dataset(self._dataset.get())
-        for path in scan_scene_dir(self._scene_dir.get()):
+        for i, path in enumerate(scan_scene_dir(self._scene_dir.get())):
             name = os.path.basename(path)
             success, failure = counts.get(name, (0, 0))
             selected = tk.BooleanVar(value=previous.get(name, True))
-            self._scene_rows[name] = {"path": path, "selected": selected}
+            self._scene_rows[name] = {"path": path, "selected": selected, "odd": i % 2 == 1}
             self._table.insert(
-                "", "end", iid=name, text=name, values=("\N{CHECK MARK}" if selected.get() else "", success, failure)
-            )
+                "", "end", iid=name, text=name, tags=self._row_tags(name),
+                values=("Yes" if selected.get() else "", success, failure),
+            )  # fmt: skip
         untagged = counts.get("<untagged>")
         if untagged:
-            self._table.insert("", "end", iid="<untagged>", text="(demos without a scene tag)", values=("", *untagged))
+            self._table.insert(
+                "", "end", iid="<untagged>", text="(demos without a scene tag)", tags=("off",), values=("", *untagged)
+            )
+
+    def _set_row(self, name: str, value: bool) -> None:
+        self._scene_rows[name]["selected"].set(value)
+        self._table.set(name, "sel", "Yes" if value else "")
+        self._table.item(name, tags=self._row_tags(name))
 
     def _on_table_click(self, event) -> None:
         row_id = self._table.identify_row(event.y)
         if row_id in self._scene_rows:
-            var = self._scene_rows[row_id]["selected"]
-            var.set(not var.get())
-            self._table.set(row_id, "sel", "\N{CHECK MARK}" if var.get() else "")
+            self._set_row(row_id, not self._scene_rows[row_id]["selected"].get())
 
     def _set_all(self, value: bool) -> None:
-        for name, row in self._scene_rows.items():
-            row["selected"].set(value)
-            self._table.set(name, "sel", "\N{CHECK MARK}" if value else "")
+        for name in self._scene_rows:
+            self._set_row(name, value)
 
     # -- page 3: running --------------------------------------------------------
 
     def _build_running_page(self, page: ttk.Frame) -> None:
-        self._running_label = ttk.Label(page, text="", font=("", 12))
-        self._running_label.pack(anchor="w", pady=8)
+        self._running_label = ttk.Label(page, text="", style="Title.TLabel")
+        self._running_label.pack(anchor="w", pady=self._px(8))
         ttk.Label(
             page,
+            style="Muted.TLabel",
             text=(
                 "Console output (voice transcripts, saved-demo messages) is in the terminal\n"
                 "the launcher was started from. Say 'next' to advance through the selected scenes."
             ),
         ).pack(anchor="w")
-        ttk.Button(page, text="Stop teleop", command=self.stop_teleop).pack(anchor="w", pady=12)
+        ttk.Button(page, text="Stop teleop", style="Danger.TButton", command=self.stop_teleop).pack(
+            anchor="w", pady=self._px(16)
+        )
 
     def start_teleop(self) -> None:
         selected = [row["path"] for row in self._scene_rows.values() if row["selected"].get()]
