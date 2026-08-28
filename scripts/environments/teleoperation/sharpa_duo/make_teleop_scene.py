@@ -838,6 +838,13 @@ class EpisodeFlow:
         if label == "play":
             self.request_client_start()  # teleop_active follows via the state poll
             return
+        if label == "stop":
+            # Hands-free pause (the client Stop button's voice twin): the episode
+            # buffer is kept, so Play/auto-start resumes recording where it left off.
+            if self.teleop_active:
+                self.stop_teleop()
+                print("[VOICE] Teleop paused. Resume with 'play', the client button, or the start pose.")
+            return
         if label == "reset":
             self.reset_requested = True  # same as the client button: discards the episode
             return
@@ -1019,14 +1026,17 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
 
                 if flow.align_requested:
                     flow.align_requested = False
-                    if flow.teleop_active:
-                        print("[ALIGN] Ignored while teleop is running: press Stop first.")
+                    head = current_head_pose()
+                    if head is None:
+                        print("[ALIGN] No head pose available (is the visor on?); say 'align' again in a moment.")
                     else:
-                        head = current_head_pose()
-                        if head is None:
-                            print("[ALIGN] No head pose available (is the visor on?); say 'align' again in a moment.")
-                        else:
-                            aligner.align(head)
+                        if flow.teleop_active:
+                            # Re-anchoring shifts every world-frame hand target at
+                            # once, so never do it under a live session: pause
+                            # first (episode buffer kept), align, resume manually.
+                            flow.stop_teleop()
+                            print("[ALIGN] Teleop paused for re-anchoring; resume with 'play' or the start pose.")
+                        aligner.align(head)
 
                 # action is None until the XR session has started.
                 if action is None:

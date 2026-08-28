@@ -43,13 +43,14 @@ _COMMAND_RES = (
     # "a line" is Whisper's most common mis-hearing of a spoken "align".
     ("align", re.compile(r"\b(align\w*|a line)\b")),
     ("play", re.compile(r"\b(play\w*|start\w*)\b")),
+    ("stop", re.compile(r"\b(stop|pause)\b")),
     ("reset", re.compile(r"\breset\w*\b")),
     ("next", re.compile(r"\b(next|skip)\b")),
 )
 
 
 def parse_label(text: str) -> str | None:
-    """Map a transcription to a command: success / failure / align / play / reset, or None.
+    """Map a transcription to a command: success / failure / align / play / stop / reset / next, or None.
 
     Returns None when nothing matches or the utterance is contradictory
     (more than one command recognized at once).
@@ -244,7 +245,7 @@ class VoiceLabeler:
                     fp16=self._fp16,
                     temperature=0.0,
                     condition_on_previous_text=False,
-                    initial_prompt="Robot teleoperation commands: success, failure, align, play, reset, next.",
+                    initial_prompt="Robot teleoperation commands: success, failure, align, play, stop, reset, next.",
                 )
             except Exception as exc:
                 print(f"[VOICE] Transcription failed: {exc}")
