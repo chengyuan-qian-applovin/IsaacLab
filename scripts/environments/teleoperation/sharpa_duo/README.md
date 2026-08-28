@@ -38,8 +38,9 @@ one demo in a timestamped robomimic-style HDF5 under `--record_dir`
 2. **Say "success" or "failure"** to end the episode: the demo is exported
    with that label, the scene resets, and teleop ends in the stopped state —
    press Play (or match the start pose) for the next episode.
-3. **Reset** (headset button) discards the in-flight episode instead; an
-   episode timeout also discards.
+3. **Reset** (headset button or saying "reset") discards the in-flight
+   episode instead and leaves teleop stopped — start the next episode via
+   Play or auto-start; an episode timeout also discards.
 
 Each demo carries per-step robot joint states, tracked object poses, the 58-D
 actions, the raw XR hand poses (`obs/xr_hands`, (T, 2, 26, 7), the retargeter

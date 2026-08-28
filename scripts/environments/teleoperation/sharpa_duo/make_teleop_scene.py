@@ -700,7 +700,8 @@ class EpisodeFlow:
     "success"/"failure" at any time ends AND labels the current episode; the
     labeled demo is exported, the scene resets, and teleop ends stopped — the
     operator presses Play (or matches the start pose) for the next episode.
-    Reset (headset button) discards the in-flight episode.
+    Reset (headset button or voice) discards the in-flight episode and also
+    leaves teleop stopped.
     """
 
     def __init__(self, env: ManagerBasedRLEnv, labeler, recording: bool, scene_name: str = ""):
@@ -863,6 +864,11 @@ class EpisodeFlow:
             return
         if self.awaiting_label:
             print("[INFO] Reset while awaiting the voice label: episode discarded.")
+        # A reset always leaves teleop STOPPED: the client's play state is
+        # level-polled, so without a host-initiated Stop a voice "reset" would
+        # resume teleop the instant the scene is back — the robot would chase
+        # the hands with no auto-start/Play phase in between.
+        self.stop_teleop()
         if self.recording:
             self.env.recorder_manager.reset()
         self.env.reset()
@@ -870,6 +876,7 @@ class EpisodeFlow:
         self.teleop.reset()
         self.awaiting_label = False
         self.reset_requested = False
+        print("[INFO] Scene reset; teleop stopped — press Play, say 'play', or match the start pose.")
 
     def handle_control_events(self, poll_control_events) -> None:
         ctrl = poll_control_events(self.teleop)
