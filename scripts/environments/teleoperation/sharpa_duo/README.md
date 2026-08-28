@@ -149,7 +149,10 @@ On by default (`--no_dr` disables), applied at every episode reset:
   you match the robot wherever it actually is.
 - **Object placement**: each tracked object gets a uniform xy offset within
   `--dr_object_xy` (5 cm) and a yaw within `--dr_object_yaw` (180°) around
-  its authored pose. Draws are rejection-sampled against bounding-circle
+  its authored pose — after the whole randomization center is shifted
+  `--dr_object_bias` (30 cm, 0 disables) horizontally toward the robot base
+  (never past it), bringing the objects within easier reach.
+  Draws are rejection-sampled against bounding-circle
   overlap (footprints from the USD bounds + 1 cm margin — the collision model
   of sim_benchmark's scenegen solvers), never demanding more clearance than
   the authored layout had; after 50 failed draws the authored poses are kept.

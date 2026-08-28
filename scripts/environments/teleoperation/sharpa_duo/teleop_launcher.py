@@ -91,6 +91,7 @@ _PARAMS = [
     ("--dr_arm_jitter", "Arm start-pose jitter [rad]", 0.08, "float", "Domain randomization"),
     ("--dr_object_xy", "Object position range [m]", 0.05, "float", "Domain randomization"),
     ("--dr_object_yaw", "Object yaw range [deg]", 180.0, "float", "Domain randomization"),
+    ("--dr_object_bias", "Shift objects toward the robot [m]", 0.3, "float", "Domain randomization"),
     ("--settle_time", "Object settling time after reset [s]", 1.0, "float", "Domain randomization"),
     ("--gesture_touch_cm", "Stop gesture touch distance [cm]", 2.0, "float", "Stop gesture"),
     ("--gesture_hold_s", "Stop gesture hold time [s]", 0.5, "float", "Stop gesture"),

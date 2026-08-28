@@ -122,6 +122,15 @@ parser.add_argument(
     help="DR: uniform yaw offset range [deg] around each tracked object's authored orientation.",
 )
 parser.add_argument(
+    "--dr_object_bias",
+    type=float,
+    default=0.3,
+    help=(
+        "DR: fixed shift [m] moving every object's randomization center horizontally toward the robot"
+        " base (never past it), bringing objects within easier reach; 0 disables."
+    ),
+)
+parser.add_argument(
     "--settle_time",
     type=float,
     default=1.0,
@@ -401,6 +410,8 @@ def build_env_cfg(scene_usda: str) -> ManagerBasedRLEnvCfg:
                 "xy_range": args_cli.dr_object_xy,
                 "yaw_range": math.radians(args_cli.dr_object_yaw),
                 "margin": 0.01,
+                "bias_toward": (args_cli.robot_pos[0], args_cli.robot_pos[1]),
+                "bias_dist": args_cli.dr_object_bias,
             },
         )
     if args_cli.smoke is None and not args_cli.no_record:

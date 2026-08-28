@@ -127,17 +127,23 @@ def randomize_tracked_objects(
     yaw_range: float = 3.14159265,
     margin: float = 0.01,
     max_tries: int = 50,
+    bias_toward: tuple[float, float] | None = None,
+    bias_dist: float = 0.0,
 ) -> None:
     """Reset event: perturb every tracked object's authored pose, rejecting collisions.
 
     Each object gets a uniform xy offset in ``[-xy_range, xy_range]`` and a yaw
     offset in ``[-yaw_range, yaw_range]`` about its AUTHORED pose (so objects
-    stay in their scene's workspace without needing table bounds). A draw is
-    rejected — and the whole set resampled, up to ``max_tries`` — while any two
-    objects' bounding circles overlap (radius from the USD footprint plus
-    ``margin``; the collision model used by sim_benchmark's scenegen solvers).
-    Runs after ``reset_scene_to_default``, overwriting the poses it restored.
-    Falls back to the authored poses if no collision-free draw is found.
+    stay in their scene's workspace without needing table bounds). With
+    ``bias_toward`` (an xy point [m], typically the robot base) and
+    ``bias_dist``, every randomization center is first shifted ``bias_dist``
+    [m] horizontally toward that point (never past it), bringing the objects
+    within easier reach. A draw is rejected — and the whole set resampled, up
+    to ``max_tries`` — while any two objects' bounding circles overlap (radius
+    from the USD footprint plus ``margin``; the collision model used by
+    sim_benchmark's scenegen solvers). Runs after ``reset_scene_to_default``,
+    overwriting the poses it restored. Falls back to the (biased) authored
+    poses if no collision-free draw is found.
 
     Stacked arrangements (objects authored xy-coincident, e.g. a box lid on its
     base) are moved as one: they share a single xy offset and receive no yaw
@@ -155,12 +161,21 @@ def randomize_tracked_objects(
     base_rot = torch.stack(
         [torch.tensor(env.scene[n].cfg.init_state.rot, dtype=torch.float32, device=device) for n in names]
     )
+    if bias_toward is not None and bias_dist > 0.0:
+        # Shift every randomization center toward the target point. Coincident
+        # (stacked) objects get identical shifts, so clusters stay intact.
+        target_xy = torch.tensor(bias_toward[:2], dtype=torch.float32, device=device)
+        to_target = target_xy - base_pos[:, :2]
+        dist = to_target.norm(dim=-1, keepdim=True)
+        direction = torch.where(dist > 1e-6, to_target / dist, torch.zeros_like(to_target))
+        base_pos[:, :2] += direction * torch.clamp(dist, max=bias_dist)
     radii = torch.tensor([FOOTPRINT_RADII.get(n.removeprefix("object_"), 0.05) + margin for n in names], device=device)
 
     # Per-pair clearance requirement: the bounding-circle sum, but never MORE
-    # than the authored layout already provides (some scenes author objects
+    # than the (biased) layout already provides (some scenes author objects
     # closer than their conservative circles — e.g. a brush leaning on a bowl —
-    # and demanding extra clearance would make every draw fail).
+    # and demanding extra clearance would make every draw fail; the bias can
+    # also converge objects slightly, so the cap uses the biased distances).
     authored_dists = (base_pos[:, None, :2] - base_pos[None, :, :2]).norm(dim=-1)
     min_dists = torch.minimum(radii[:, None] + radii[None, :], authored_dists)
 
