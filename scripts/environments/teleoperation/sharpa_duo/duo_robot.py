@@ -88,24 +88,27 @@ def sided(names: list[str], side: str) -> list[str]:
     return [f"{side}_{name}" for name in names]
 
 
-# Ready pose: the standard Franka home configuration, applied identically to
-# both arms (the mirrored arm mounts make the resulting postures mirror each
-# other in the workspace).
+# Ready pose: square 6-DoF IK solution (joint 2 fixed at 0.6 on both arms --
+# the requested 0.3 is infeasible for these targets, feasibility starts at
+# ~0.40) for both hands palm-down, yawed 30 deg inward, at
+# (+-0.30, -0.60, 1.00) in the scene frame, on the re-clocked mounts
+# (left Rz(-45) "flipped", right Rz(-135)). Best of two IK branches per arm;
+# free-joint min-margin 0.55 rad.
 ARM_READY_POSE = {
-    "left_panda_joint1": 0.0,
-    "left_panda_joint2": -0.785,
-    "left_panda_joint3": 0.0,
-    "left_panda_joint4": -2.356,
-    "left_panda_joint5": 0.0,
-    "left_panda_joint6": 1.571,
-    "left_panda_joint7": 0.785,
-    "right_panda_joint1": 0.0,
-    "right_panda_joint2": -0.785,
-    "right_panda_joint3": 0.0,
-    "right_panda_joint4": -2.356,
-    "right_panda_joint5": 0.0,
-    "right_panda_joint6": 1.571,
-    "right_panda_joint7": 0.785,
+    "left_panda_joint1": 0.6024,
+    "left_panda_joint2": 0.6,
+    "left_panda_joint3": 0.8563,
+    "left_panda_joint4": -2.5242,
+    "left_panda_joint5": -1.9285,
+    "left_panda_joint6": 1.3715,
+    "left_panda_joint7": 1.3574,
+    "right_panda_joint1": -0.6024,
+    "right_panda_joint2": 0.6,
+    "right_panda_joint3": -0.8563,
+    "right_panda_joint4": -2.5242,
+    "right_panda_joint5": 1.9285,
+    "right_panda_joint6": 1.3715,
+    "right_panda_joint7": 1.7842,
 }
 
 
@@ -122,14 +125,14 @@ def duo_robot_cfg(
     Args:
         pos: Root position of the torso in the environment frame [m].
         rot: Root orientation quaternion (x, y, z, w).
-
-    Returns:
-        The articulation config, ready to drop into an :class:`~isaaclab.scene.InteractiveSceneCfg`.
         arm_stiffness: Joint drive stiffness kp [N·m/rad] for all 14 Panda arm joints.
         arm_damping: Joint drive damping kd [N·m·s/rad] for all 14 Panda arm joints.
         hand_stiffness: Joint drive stiffness kp [N·m/rad] for all 44 SharpaWave finger joints.
         hand_damping: Joint drive damping kd [N·m·s/rad] for all 44 SharpaWave finger joints
             (the 4.0 default keeps Sharpa's USD-calibrated gain).
+
+    Returns:
+        The articulation config, ready to drop into an :class:`~isaaclab.scene.InteractiveSceneCfg`.
     """
     return ArticulationCfg(
         prim_path="{ENV_REGEX_NS}/robot",

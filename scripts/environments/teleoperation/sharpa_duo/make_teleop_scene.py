@@ -63,7 +63,7 @@ parser.add_argument(
     "--robot_pos",
     type=float,
     nargs=3,
-    default=(0.0, -0.8, 0.9),
+    default=(0.0, -0.8, 1.3),
     help="Rig torso position in the scene frame [m]. Default clears the raised (1 m) TACO tabletop.",
 )
 parser.add_argument(

@@ -5,350 +5,350 @@
    "dataset": "GigaHands",
    "action": "put",
    "task_description": "Add the sliced butter to the pan on the stove",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p013_fastfood_sandwich_087_seg000.usda"
+   "scene": "GigaHands_p013_fastfood_sandwich_087_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p032-sandwich/028#seg000",
    "dataset": "GigaHands",
    "action": "put",
    "task_description": "Add the sliced piece of butter to the pan on the stove",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p032_sandwich_028_seg000.usda"
+   "scene": "GigaHands_p032_sandwich_028_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p034-sandwich/028#seg000",
    "dataset": "GigaHands",
    "action": "put",
    "task_description": "'Add the sliced piece of butter to the pan on the stove'",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p034_sandwich_028_seg000.usda"
+   "scene": "GigaHands_p034_sandwich_028_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p036-sandwich/023#seg000",
    "dataset": "GigaHands",
    "action": "put",
    "task_description": "Add the sliced butter to the pan on the stove",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p036_sandwich_023_seg000.usda"
+   "scene": "GigaHands_p036_sandwich_023_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p039-sandwich/027#seg000",
    "dataset": "GigaHands",
    "action": "put",
    "task_description": "Add the sliced piece of butter to the pan on the stove",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p039_sandwich_027_seg000.usda"
+   "scene": "GigaHands_p039_sandwich_027_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p048-sandwich/027#seg000",
    "dataset": "GigaHands",
    "action": "put",
    "task_description": "Add the sliced butter to the pan on the stove",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p048_sandwich_027_seg000.usda"
+   "scene": "GigaHands_p048_sandwich_027_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p053-salad/027#seg000",
    "dataset": "GigaHands",
    "action": "put",
    "task_description": "Add the sliced piece of butter to the pan on the stove",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p053_salad_027_seg000.usda"
+   "scene": "GigaHands_p053_salad_027_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p005-laptop/007#seg000",
    "dataset": "GigaHands",
    "action": "rearrange",
    "task_description": "Adjust the angle of the laptop screen for better viewing",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p005_laptop_007_seg000.usda"
+   "scene": "GigaHands_p005_laptop_007_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p007-laptop/007#seg000",
    "dataset": "GigaHands",
    "action": "rearrange",
    "task_description": "Adjust the angle of the laptop screen for better viewing",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p007_laptop_007_seg000.usda"
+   "scene": "GigaHands_p007_laptop_007_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p011-laptop/007#seg000",
    "dataset": "GigaHands",
    "action": "rearrange",
    "task_description": "Adjust the angle of the laptop screen for better viewing",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p011_laptop_007_seg000.usda"
+   "scene": "GigaHands_p011_laptop_007_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p017-laptop/007#seg000",
    "dataset": "GigaHands",
    "action": "rearrange",
    "task_description": "Adjust the angle of the laptop screen for better viewing",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p017_laptop_007_seg000.usda"
+   "scene": "GigaHands_p017_laptop_007_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p022-laptop/007#seg000",
    "dataset": "GigaHands",
    "action": "rearrange",
    "task_description": "Adjust the angle of the laptop screen for better viewing",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p022_laptop_007_seg000.usda"
+   "scene": "GigaHands_p022_laptop_007_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p030-laptop/007#seg000",
    "dataset": "GigaHands",
    "action": "rearrange",
    "task_description": "Adjust the angle of the laptop screen for better viewing",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p030_laptop_007_seg000.usda"
+   "scene": "GigaHands_p030_laptop_007_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p034-laptop/007#seg000",
    "dataset": "GigaHands",
    "action": "rearrange",
    "task_description": "Adjust the angle of the laptop screen for better viewing",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p034_laptop_007_seg000.usda"
+   "scene": "GigaHands_p034_laptop_007_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p042-laptop/007#seg000",
    "dataset": "GigaHands",
    "action": "rearrange",
    "task_description": "Adjust the angle of the laptop screen for better viewing",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p042_laptop_007_seg000.usda"
+   "scene": "GigaHands_p042_laptop_007_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p047-laptop-2/007#seg000",
    "dataset": "GigaHands",
    "action": "rearrange",
    "task_description": "Adjust the angle of the laptop screen for better viewing",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p047_laptop_2_007_seg000.usda"
+   "scene": "GigaHands_p047_laptop_2_007_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p053-laptop/007#seg000",
    "dataset": "GigaHands",
    "action": "rearrange",
    "task_description": "Adjust the angle of the laptop screen for better viewing",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p053_laptop_007_seg000.usda"
+   "scene": "GigaHands_p053_laptop_007_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p012-tablet/037#seg000",
    "dataset": "GigaHands",
    "action": "rotate",
    "task_description": "Face the phone screen towards you for Face ID recognition",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p012_tablet_037_seg000.usda"
+   "scene": "GigaHands_p012_tablet_037_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p007-tablet-gopro/156#seg000",
    "dataset": "GigaHands",
    "action": "point",
    "task_description": "Aim the GoPro at the tree marker while viewing through the GoPro screen",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p007_tablet_gopro_156_seg000.usda"
+   "scene": "GigaHands_p007_tablet_gopro_156_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p008-boxing/006#seg000",
    "dataset": "GigaHands",
    "action": "adjust",
    "task_description": "Align the stand with the base, ensuring the connector holes on both the stand and base are properly positioned",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p008_boxing_006_seg000.usda"
+   "scene": "GigaHands_p008_boxing_006_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p023-boxing/006#seg000",
    "dataset": "GigaHands",
    "action": "adjust",
    "task_description": "Align the stand with the base, ensuring the connector holes on the stand and base are properly positioned",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p023_boxing_006_seg000.usda"
+   "scene": "GigaHands_p023_boxing_006_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p028-boxing/006#seg001",
    "dataset": "GigaHands",
    "action": "adjust",
    "task_description": "Align the stand with the base, ensuring the holes for the connectors are properly positioned at the base",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p028_boxing_006_seg001.usda"
+   "scene": "GigaHands_p028_boxing_006_seg001.usda"
   },
   {
    "episode_id": "GigaHands::p034-mindmap-boxing/071#seg000",
    "dataset": "GigaHands",
    "action": "adjust",
    "task_description": "Align the stand with the base, ensuring the holes for the connectors on both the stand and base are properly positioned",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p034_mindmap_boxing_071_seg000.usda"
+   "scene": "GigaHands_p034_mindmap_boxing_071_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p041-boxing/006#seg000",
    "dataset": "GigaHands",
    "action": "adjust",
    "task_description": "Align the stand with the base of the boxing bag setup, ensuring the holes for connectors are properly positioned",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p041_boxing_006_seg000.usda"
+   "scene": "GigaHands_p041_boxing_006_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p042-boxing/006#seg000",
    "dataset": "GigaHands",
    "action": "adjust",
    "task_description": "Align the stand with the base, ensuring the holes for connectors on both the stand and base are properly positioned",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p042_boxing_006_seg000.usda"
+   "scene": "GigaHands_p042_boxing_006_seg000.usda"
   },
   {
    "episode_id": "OakInk-v2::scene_01__A003++seq__590d0923c75785cbfb33__2023-04-21-20-39-42#seg008",
    "dataset": "OakInk-v2",
    "action": "assemble",
    "task_description": "Assemble the apple into the product in the plate.",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/OakInk_v2_scene_01_A003_seq_590d0923c75785cbfb33_2023_04_21_20_39_42_seg008.usda"
+   "scene": "OakInk_v2_scene_01_A003_seq_590d0923c75785cbfb33_2023_04_21_20_39_42_seg008.usda"
   },
   {
    "episode_id": "OakInk-v2::scene_01__O001++seq__7415df221fded77cf598__2023-04-13-20-38-59#seg000",
    "dataset": "OakInk-v2",
    "action": "assemble",
    "task_description": "Assemble the apple together.",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/OakInk_v2_scene_01_O001_seq_7415df221fded77cf598_2023_04_13_20_38_59_seg000.usda"
+   "scene": "OakInk_v2_scene_01_O001_seq_7415df221fded77cf598_2023_04_13_20_38_59_seg000.usda"
   },
   {
    "episode_id": "OakInk-v2::scene_01__A003++seq__263ad4d9bbcceec34ac5__2023-04-15-11-11-40#seg003",
    "dataset": "OakInk-v2",
    "action": "assemble",
    "task_description": "Assemble the bread into the product in the plate.",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/OakInk_v2_scene_01_A003_seq_263ad4d9bbcceec34ac5_2023_04_15_11_11_40_seg003.usda"
+   "scene": "OakInk_v2_scene_01_A003_seq_263ad4d9bbcceec34ac5_2023_04_15_11_11_40_seg003.usda"
   },
   {
    "episode_id": "OakInk-v2::scene_01__O001++seq__7415df221fded77cf598__2023-04-13-20-38-59#seg001",
    "dataset": "OakInk-v2",
    "action": "assemble",
    "task_description": "Assemble the bread together.",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/OakInk_v2_scene_01_O001_seq_7415df221fded77cf598_2023_04_13_20_38_59_seg001.usda"
+   "scene": "OakInk_v2_scene_01_O001_seq_7415df221fded77cf598_2023_04_13_20_38_59_seg001.usda"
   },
   {
    "episode_id": "OakInk-v2::scene_01__A003++seq__d05b4bb16d00b45e48d9__2023-04-21-20-49-34#seg004",
    "dataset": "OakInk-v2",
    "action": "assemble",
    "task_description": "Assemble the donut into the product in the plate.",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/OakInk_v2_scene_01_A003_seq_d05b4bb16d00b45e48d9_2023_04_21_20_49_34_seg004.usda"
+   "scene": "OakInk_v2_scene_01_A003_seq_d05b4bb16d00b45e48d9_2023_04_21_20_49_34_seg004.usda"
   },
   {
    "episode_id": "OakInk-v2::scene_01__A004++seq__d570c3d83771037b2600__2023-04-28-18-53-19#seg000",
    "dataset": "OakInk-v2",
    "action": "assemble",
    "task_description": "Assemble the donut into the product in the plate.",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/OakInk_v2_scene_01_A004_seq_d570c3d83771037b2600_2023_04_28_18_53_19_seg000.usda"
+   "scene": "OakInk_v2_scene_01_A004_seq_d570c3d83771037b2600_2023_04_28_18_53_19_seg000.usda"
   },
   {
    "episode_id": "GigaHands::p005-knitting-tablet/123#seg000",
    "dataset": "GigaHands",
    "action": "assemble",
    "task_description": "Reattach the phone case securely to the phone",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/GigaHands_p005_knitting_tablet_123_seg000.usda"
+   "scene": "GigaHands_p005_knitting_tablet_123_seg000.usda"
   },
   {
    "episode_id": "TACO::brush__brush__bowl__20230927_027",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush bowl",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_bowl_20230927_027.usda"
+   "scene": "TACO_brush_brush_bowl_20230927_027.usda"
   },
   {
    "episode_id": "TACO::brush__brush__bowl__20231005_186",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush bowl",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_bowl_20231005_186.usda"
+   "scene": "TACO_brush_brush_bowl_20231005_186.usda"
   },
   {
    "episode_id": "TACO::brush__brush__bowl__20231005_188",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush bowl",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_bowl_20231005_188.usda"
+   "scene": "TACO_brush_brush_bowl_20231005_188.usda"
   },
   {
    "episode_id": "TACO::brush__brush__bowl__20231005_190",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush bowl",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_bowl_20231005_190.usda"
+   "scene": "TACO_brush_brush_bowl_20231005_190.usda"
   },
   {
    "episode_id": "TACO::brush__brush__bowl__20231005_194",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush bowl",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_bowl_20231005_194.usda"
+   "scene": "TACO_brush_brush_bowl_20231005_194.usda"
   },
   {
    "episode_id": "TACO::brush__brush__bowl__20231005_196",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush bowl",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_bowl_20231005_196.usda"
+   "scene": "TACO_brush_brush_bowl_20231005_196.usda"
   },
   {
    "episode_id": "TACO::brush__brush__bowl__20231006_145",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush bowl",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_bowl_20231006_145.usda"
+   "scene": "TACO_brush_brush_bowl_20231006_145.usda"
   },
   {
    "episode_id": "TACO::brush__brush__box__20230927_029",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush box",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_box_20230927_029.usda"
+   "scene": "TACO_brush_brush_box_20230927_029.usda"
   },
   {
    "episode_id": "TACO::brush__brush__box__20230928_046",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush box",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_box_20230928_046.usda"
+   "scene": "TACO_brush_brush_box_20230928_046.usda"
   },
   {
    "episode_id": "TACO::brush__brush__box__20230930_034",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush box",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_box_20230930_034.usda"
+   "scene": "TACO_brush_brush_box_20230930_034.usda"
   },
   {
    "episode_id": "TACO::brush__brush__box__20230930_038",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush box",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_box_20230930_038.usda"
+   "scene": "TACO_brush_brush_box_20230930_038.usda"
   },
   {
    "episode_id": "TACO::brush__brush__box__20231005_200",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush box",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_box_20231005_200.usda"
+   "scene": "TACO_brush_brush_box_20231005_200.usda"
   },
   {
    "episode_id": "TACO::brush__brush__box__20231006_155",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush box",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_box_20231006_155.usda"
+   "scene": "TACO_brush_brush_box_20231006_155.usda"
   },
   {
    "episode_id": "TACO::brush__brush__box__20231006_157",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush box",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_box_20231006_157.usda"
+   "scene": "TACO_brush_brush_box_20231006_157.usda"
   },
   {
    "episode_id": "TACO::brush__brush__box__20231006_163",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush box",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_box_20231006_163.usda"
+   "scene": "TACO_brush_brush_box_20231006_163.usda"
   },
   {
    "episode_id": "TACO::brush__brush__cup__20231026_001",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush cup",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_cup_20231026_001.usda"
+   "scene": "TACO_brush_brush_cup_20231026_001.usda"
   },
   {
    "episode_id": "TACO::brush__brush__cup__20231026_002",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush cup",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_cup_20231026_002.usda"
+   "scene": "TACO_brush_brush_cup_20231026_002.usda"
   },
   {
    "episode_id": "TACO::brush__brush__cup__20231026_003",
    "dataset": "TACO",
    "action": "brush",
    "task_description": "use brush to brush cup",
-   "scene": "/root/projects/failure_data_gen/04_episode_scenegen/runs/test_scenes_50/TACO_brush_brush_cup_20231026_003.usda"
+   "scene": "TACO_brush_brush_cup_20231026_003.usda"
   }
  ],
  "failures": [
