@@ -25,13 +25,14 @@ one demo in a timestamped robomimic-style HDF5 under `--record_dir`
 
 1. **Play** starts teleop and the episode buffer — by the client button, the
    voice command, or **auto-start**: hold both wrists at the robot's hand
-   poses (within 10 cm / 25° for 0.5 s, `--auto_start_*_tol` to tune,
+   poses (within 5 cm / 20° for 0.5 s, `--auto_start_*_tol` to tune,
    `--no_auto_start` to disable) and teleop engages by itself with zero
-   initial IK error, so the robot never snaps to distant hands. While teleop
-   is stopped, coordinate-axis frames mark both flanges (large) and your
-   calibrated wrist targets (small) so you can see what to line up; they
-   disappear the moment teleop starts. After a stop it re-arms only once you
-   move your hands clearly away.
+   initial IK error, so the robot never snaps to distant hands. After a stop
+   it re-arms only once you move your hands clearly away. While auto-start is
+   waiting, axis frames mark the poses to match — large on the robot's two
+   flanges, small on your calibrated wrist targets (flanges only while a hand
+   is untracked); they disappear when teleop engages (`--debug_auto_start`
+   keeps them up and prints the errors).
 2. End the episode either way:
    - **Cross-hand stop gesture** — touch all five fingertip pairs of the two
      hands together for 0.5 s. The episode closes and waits for your label.

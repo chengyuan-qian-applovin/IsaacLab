@@ -63,8 +63,8 @@ parser.add_argument(
     "--robot_pos",
     type=float,
     nargs=3,
-    default=(0.0, -0.7, 0.8),
-    help="Rig torso position in the scene frame [m]. Default matches the raised (1 m) TACO tabletop.",
+    default=(0.0, -0.8, 0.9),
+    help="Rig torso position in the scene frame [m]. Default clears the raised (1 m) TACO tabletop.",
 )
 parser.add_argument(
     "--robot_rot",
@@ -77,7 +77,7 @@ parser.add_argument(
     "--anchor_pos",
     type=float,
     nargs=3,
-    default=(0.0, -0.7, -0.21),
+    default=(0.0, -0.8, -0.21),
     help="XR anchor position: default stands you at the rig torso; the raised TACO tabletop lands at ~1.21 m.",
 )
 parser.add_argument(
@@ -238,8 +238,8 @@ parser.add_argument(
     "--debug_auto_start",
     action="store_true",
     help=(
-        "Auto-start debugging: draw coordinate frames on both panda_link8 flanges (large) and on both"
-        " calibrated wrist targets (small), and print the per-hand position/rotation errors once per second."
+        "Auto-start debugging: keep the alignment axis frames visible during teleop too (they always show"
+        " while auto-start is waiting), and print the per-hand position/rotation errors once per second."
     ),
 )
 parser.add_argument(
@@ -494,11 +494,10 @@ class AutoStartMatcher:
     Without this, stopping via the cross-hand gesture — hands still at the pose
     the robot holds — would instantly restart teleop.
 
-    While teleop is stopped, coordinate-axis frames are drawn on both flanges
-    (large) and on both calibrated wrist targets (small) so the operator can
-    see what to line up; they disappear the moment teleop starts. With
-    ``debug`` they stay up during teleop too, and the four error numbers are
-    printed once per second.
+    While auto-start is waiting, axis frames are drawn on both flanges (large)
+    and both calibrated wrist targets (small) so the operator can see the poses
+    to match; they disappear once teleop engages. ``debug`` keeps the frames up
+    during teleop too and prints the per-hand errors once per second.
     """
 
     def __init__(
@@ -518,47 +517,51 @@ class AutoStartMatcher:
         self._pos_tol = pos_tol
         self._rot_tol = rot_tol
         self._hold_s = hold_s
+        self._debug = debug
         self._flange_ids = [env.scene["robot"].body_names.index(f"{s}_panda_link8") for s in ("left", "right")]
         self._armed = True
         self._match_since: float | None = None
-        self._debug = debug
+        self._frame_markers = None
+        self._frames_visible = False
         self._last_debug_print = 0.0
-        self._markers_shown = False
+        try:
+            import isaaclab.sim as sim_utils
+            from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+            from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
-        import isaaclab.sim as sim_utils
-        from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
-        from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-
-        frame_usd = f"{ISAAC_NUCLEUS_DIR}/Props/UIElements/frame_prim.usd"
-        self._markers = VisualizationMarkers(
-            VisualizationMarkersCfg(
-                prim_path="/Visuals/auto_start_frames",
-                markers={
-                    "flange": sim_utils.UsdFileCfg(usd_path=frame_usd, scale=(0.15, 0.15, 0.15)),
-                    "target": sim_utils.UsdFileCfg(usd_path=frame_usd, scale=(0.08, 0.08, 0.08)),
-                },
+            frame_usd = f"{ISAAC_NUCLEUS_DIR}/Props/UIElements/frame_prim.usd"
+            self._frame_markers = VisualizationMarkers(
+                VisualizationMarkersCfg(
+                    prim_path="/Visuals/auto_start_frames",
+                    markers={
+                        "flange": sim_utils.UsdFileCfg(usd_path=frame_usd, scale=(0.15, 0.15, 0.15)),
+                        "target": sim_utils.UsdFileCfg(usd_path=frame_usd, scale=(0.08, 0.08, 0.08)),
+                    },
+                )
             )
-        )
-        self._markers.set_visibility(False)
+        except Exception as exc:
+            print(f"[WARNING] Auto-start axis frames unavailable ({exc}); matching still works.")
 
-    def _show_markers(self, flange_poses: torch.Tensor, targets: torch.Tensor | None) -> None:
-        """Frames on the flanges (large) and, when the hands are tracked, the wrist targets (small)."""
-        poses = flange_poses
-        indices = [0, 0]
-        if targets is not None:
+    def _show_frames(self, flange_poses: torch.Tensor | None, targets: torch.Tensor | None) -> None:
+        """Draw frames on the flanges (large) and wrist targets (small); None-None hides them."""
+        if self._frame_markers is None:
+            return
+        if flange_poses is None:
+            if self._frames_visible:
+                self._frame_markers.set_visibility(False)
+                self._frames_visible = False
+            return
+        if targets is None:  # hands untracked: flange frames only
+            poses, indices = flange_poses, [0, 0]
+        else:
             poses = torch.cat([flange_poses, targets.to(flange_poses.device)], dim=0)
             indices = [0, 0, 1, 1]
-        self._markers.visualize(translations=poses[:, :3], orientations=poses[:, 3:7], marker_indices=indices)
-        if not self._markers_shown:
-            self._markers.set_visibility(True)
-            self._markers_shown = True
+        self._frame_markers.visualize(translations=poses[:, :3], orientations=poses[:, 3:7], marker_indices=indices)
+        if not self._frames_visible:
+            self._frame_markers.set_visibility(True)
+            self._frames_visible = True
 
-    def _hide_markers(self) -> None:
-        if self._markers_shown:
-            self._markers.set_visibility(False)
-            self._markers_shown = False
-
-    def _debug_print(self, pos_err, rot_err) -> None:
+    def _debug_print(self, pos_err: torch.Tensor, rot_err: torch.Tensor) -> None:
         now = time.monotonic()
         if now - self._last_debug_print >= 1.0:
             self._last_debug_print = now
@@ -572,12 +575,13 @@ class AutoStartMatcher:
     def update(self, action_world: torch.Tensor) -> None:
         """Feed the 58-D world-frame action of one frame; may fire Play."""
         flow = self._flow
-        if (flow.teleop_active or flow.awaiting_label) and not self._debug:
-            # Teleop running: no alignment frames, and no error computation
-            # (two pose readbacks per frame) either.
-            self._hide_markers()
+        busy = flow.teleop_active or flow.awaiting_label
+        if busy and not self._debug:
+            # No error computation (two pose readbacks) during teleop, and the
+            # alignment frames get out of the operator's way.
             self._armed = False
             self._match_since = None
+            self._show_frames(None, None)
             return
         robot = self._env.scene["robot"]
         origin = self._env.scene.env_origins[0]
@@ -586,11 +590,11 @@ class AutoStartMatcher:
             flange_poses[i, :3] = robot.data.body_pos_w.torch[0, body_id] - origin
             flange_poses[i, 3:7] = robot.data.body_quat_w.torch[0, body_id]
         targets = action_world[:14].view(2, 7)
-        tracked = float(targets[:, :3].norm(dim=-1).min()) >= 1e-6
-        self._show_markers(flange_poses, targets if tracked else None)
-        if not tracked:
+        if float(targets[:, :3].norm(dim=-1).min()) < 1e-6:
+            # A hand is untracked: show where the flanges are, nothing to match yet.
+            self._show_frames(flange_poses, None)
             self._match_since = None
-            return  # a hand is untracked
+            return
         pos_err = torch.empty(2)
         rot_err = torch.empty(2)
         for i in range(2):
@@ -598,10 +602,11 @@ class AutoStartMatcher:
             rot_err[i] = self._quat_err(
                 targets[i, 3:7].to(flange_poses.device).unsqueeze(0), flange_poses[i, 3:7].unsqueeze(0)
             )[0]
+        self._show_frames(flange_poses, targets)
         if self._debug:
             self._debug_print(pos_err, rot_err)
 
-        if flow.teleop_active or flow.awaiting_label:
+        if busy:
             self._armed = False
             self._match_since = None
             return
