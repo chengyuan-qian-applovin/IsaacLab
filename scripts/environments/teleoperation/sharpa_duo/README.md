@@ -102,7 +102,9 @@ Start): page 1 groups the teleop parameters by concern (operator & voice,
 session start, domain randomization, stop gesture, visuals, advanced); page 2
 picks a scene directory and a dataset HDF5 file and shows a table of every
 scene with the success/failure trajectory counts already collected for it in
-that dataset — tick the scenes to collect this session. Start writes the
+that dataset — tick the scenes to collect this session (click toggles one
+scene, dragging paints the toggle over consecutive rows, and Shift+Click
+extends the last toggle over the whole range, Excel-style). Start writes the
 selection to a scene-list JSON and runs the teleop with `--dataset_file`:
 demos from **all** scenes and sessions append into the chosen file (each
 tagged with its scene), so the table's counts accumulate across sessions.

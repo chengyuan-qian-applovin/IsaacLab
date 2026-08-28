@@ -281,8 +281,14 @@ class TeleopLauncher(tk.Tk):
 
     def _build_scenes_page(self, page: ttk.Frame) -> None:
         ttk.Label(page, text="Scenes & dataset", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(page, text="Click a row to toggle whether that scene is collected this session.",
-                  style="Muted.TLabel").pack(anchor="w", pady=(0, self._px(6)))  # fmt: skip
+        ttk.Label(
+            page,
+            text=(
+                "Click a row to toggle whether that scene is collected this session;"
+                " drag to toggle a whole run of rows, or Shift+Click to extend the last toggle up to a row."
+            ),
+            style="Muted.TLabel",
+        ).pack(anchor="w", pady=(0, self._px(6)))
 
         picker = ttk.Frame(page)
         picker.pack(fill="x", pady=self._px(8))
@@ -310,7 +316,16 @@ class TeleopLauncher(tk.Tk):
         self._table.tag_configure("odd", background=_STRIPE)
         self._table.tag_configure("off", foreground=_MUTED)
         self._table.pack(fill="both", expand=True, pady=self._px(8))
-        self._table.bind("<Button-1>", self._on_table_click)
+        # Excel-style toggling: click one row, drag to paint a run, Shift+Click
+        # to extend the last toggle over a range (see _on_table_press).
+        self._table.configure(selectmode="none")
+        self._table.bind("<Button-1>", self._on_table_press)
+        self._table.bind("<B1-Motion>", self._on_table_drag)
+        self._table.bind("<ButtonRelease-1>", lambda _event: self._end_table_drag())
+        self._toggle_anchor: str | None = None  # last individually toggled row
+        self._anchor_state = True  # the state that toggle applied
+        self._drag_origin: str | None = None  # row where the current drag started
+        self._pre_drag: dict[str, bool] = {}  # states when the drag started
 
         buttons = ttk.Frame(page)
         buttons.pack(fill="x")
@@ -372,10 +387,43 @@ class TeleopLauncher(tk.Tk):
         self._table.set(name, "sel", "Yes" if value else "")
         self._table.item(name, tags=self._row_tags(name))
 
-    def _on_table_click(self, event) -> None:
+    def _rows_between(self, a: str, b: str) -> list[str]:
+        """The consecutive scene rows from ``a`` to ``b`` (inclusive, any order)."""
+        rows = [iid for iid in self._table.get_children() if iid in self._scene_rows]
+        i, j = rows.index(a), rows.index(b)
+        return rows[min(i, j) : max(i, j) + 1]
+
+    def _on_table_press(self, event) -> None:
+        """Click toggles a row; Shift+Click extends the last toggle over the range."""
         row_id = self._table.identify_row(event.y)
-        if row_id in self._scene_rows:
-            self._set_row(row_id, not self._scene_rows[row_id]["selected"].get())
+        if row_id not in self._scene_rows:
+            return
+        if event.state & 0x0001 and self._toggle_anchor in self._scene_rows:  # Shift held
+            for name in self._rows_between(self._toggle_anchor, row_id):
+                self._set_row(name, self._anchor_state)
+            return
+        state = not self._scene_rows[row_id]["selected"].get()
+        self._toggle_anchor, self._anchor_state = row_id, state
+        self._drag_origin = row_id
+        self._pre_drag = {name: r["selected"].get() for name, r in self._scene_rows.items()}
+        self._set_row(row_id, state)
+
+    def _on_table_drag(self, event) -> None:
+        """Dragging paints the clicked toggle over every row passed; backing up restores."""
+        if self._drag_origin is None:
+            return
+        row_id = self._table.identify_row(event.y)
+        if row_id not in self._scene_rows:
+            return
+        painted = set(self._rows_between(self._drag_origin, row_id))
+        for name in self._scene_rows:
+            target = self._anchor_state if name in painted else self._pre_drag[name]
+            if self._scene_rows[name]["selected"].get() != target:
+                self._set_row(name, target)
+
+    def _end_table_drag(self) -> None:
+        self._drag_origin = None
+        self._pre_drag = {}
 
     def _set_all(self, value: bool) -> None:
         for name in self._scene_rows:
