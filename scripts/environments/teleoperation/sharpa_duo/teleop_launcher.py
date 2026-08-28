@@ -399,14 +399,17 @@ class TeleopLauncher(tk.Tk):
         if row_id not in self._scene_rows:
             return
         if event.state & 0x0001 and self._toggle_anchor in self._scene_rows:  # Shift held
-            for name in self._rows_between(self._toggle_anchor, row_id):
+            touched = self._rows_between(self._toggle_anchor, row_id)
+            for name in touched:
                 self._set_row(name, self._anchor_state)
+            self._table.selection_set(touched)  # highlight what the gesture touched
             return
         state = not self._scene_rows[row_id]["selected"].get()
         self._toggle_anchor, self._anchor_state = row_id, state
         self._drag_origin = row_id
         self._pre_drag = {name: r["selected"].get() for name, r in self._scene_rows.items()}
         self._set_row(row_id, state)
+        self._table.selection_set(row_id)
 
     def _on_table_drag(self, event) -> None:
         """Dragging paints the clicked toggle over every row passed; backing up restores."""
@@ -415,11 +418,13 @@ class TeleopLauncher(tk.Tk):
         row_id = self._table.identify_row(event.y)
         if row_id not in self._scene_rows:
             return
-        painted = set(self._rows_between(self._drag_origin, row_id))
+        painted = self._rows_between(self._drag_origin, row_id)
+        painted_set = set(painted)
         for name in self._scene_rows:
-            target = self._anchor_state if name in painted else self._pre_drag[name]
+            target = self._anchor_state if name in painted_set else self._pre_drag[name]
             if self._scene_rows[name]["selected"].get() != target:
                 self._set_row(name, target)
+        self._table.selection_set(painted)
 
     def _end_table_drag(self) -> None:
         self._drag_origin = None
