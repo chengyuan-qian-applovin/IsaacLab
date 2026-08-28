@@ -482,10 +482,12 @@ def to_root_frame(env: ManagerBasedRLEnv, action: torch.Tensor) -> torch.Tensor:
 class AutoStartMatcher:
     """Start teleop automatically when the operator's wrists match the robot's hands.
 
-    While teleop is stopped, compares the pipeline's wrist TARGETS (world frame,
-    calibration and flange offsets already applied — i.e. where the flanges
-    would be commanded to go) against the robot flanges' actual poses. When both
-    hands are within ``pos_tol`` [m] and ``rot_tol`` [rad] for ``hold_s``
+    While teleop is stopped, compares the pipeline's wrist TARGETS against the
+    SharpaWave hands' actual wrist poses (``*_hand_wrist`` — where the
+    operator's wrist maps onto the robot, more natural to line up with than the
+    arm flange). The pipeline commands the flanges, so each flange target is
+    pushed through the fixed flange-to-wrist transform before comparing. When
+    both hands are within ``pos_tol`` [m] and ``rot_tol`` [rad] for ``hold_s``
     seconds, a host-initiated Play fires — so teleop always engages with zero
     initial IK error instead of the robot snapping to wherever the hands are.
 
@@ -494,10 +496,10 @@ class AutoStartMatcher:
     Without this, stopping via the cross-hand gesture — hands still at the pose
     the robot holds — would instantly restart teleop.
 
-    While auto-start is waiting, axis frames are drawn on both flanges (large)
-    and both calibrated wrist targets (small) so the operator can see the poses
-    to match; they disappear once teleop engages. ``debug`` keeps the frames up
-    during teleop too and prints the per-hand errors once per second.
+    While auto-start is waiting, axis frames are drawn on both hand wrists
+    (large) and both calibrated wrist targets (small) so the operator can see
+    the poses to match; they disappear once teleop engages. ``debug`` keeps the
+    frames up during teleop too and prints the per-hand errors once per second.
     """
 
     def __init__(
@@ -518,7 +520,10 @@ class AutoStartMatcher:
         self._rot_tol = rot_tol
         self._hold_s = hold_s
         self._debug = debug
-        self._flange_ids = [env.scene["robot"].body_names.index(f"{s}_panda_link8") for s in ("left", "right")]
+        body_names = env.scene["robot"].body_names
+        self._wrist_ids = [body_names.index(f"{s}_hand_wrist") for s in ("left", "right")]
+        self._flange_ids = [body_names.index(f"{s}_panda_link8") for s in ("left", "right")]
+        self._flange_to_wrist: tuple[torch.Tensor, torch.Tensor] | None = None  # fixed, computed on first update
         self._armed = True
         self._match_since: float | None = None
         self._frame_markers = None
@@ -542,19 +547,19 @@ class AutoStartMatcher:
         except Exception as exc:
             print(f"[WARNING] Auto-start axis frames unavailable ({exc}); matching still works.")
 
-    def _show_frames(self, flange_poses: torch.Tensor | None, targets: torch.Tensor | None) -> None:
-        """Draw frames on the flanges (large) and wrist targets (small); None-None hides them."""
+    def _show_frames(self, wrist_poses: torch.Tensor | None, targets: torch.Tensor | None) -> None:
+        """Draw frames on the hand wrists (large) and wrist targets (small); None-None hides them."""
         if self._frame_markers is None:
             return
-        if flange_poses is None:
+        if wrist_poses is None:
             if self._frames_visible:
                 self._frame_markers.set_visibility(False)
                 self._frames_visible = False
             return
-        if targets is None:  # hands untracked: flange frames only
-            poses, indices = flange_poses, [0, 0]
+        if targets is None:  # hands untracked: robot wrist frames only
+            poses, indices = wrist_poses, [0, 0]
         else:
-            poses = torch.cat([flange_poses, targets.to(flange_poses.device)], dim=0)
+            poses = torch.cat([wrist_poses, targets.to(wrist_poses.device)], dim=0)
             indices = [0, 0, 1, 1]
         self._frame_markers.visualize(translations=poses[:, :3], orientations=poses[:, 3:7], marker_indices=indices)
         if not self._frames_visible:
@@ -583,26 +588,44 @@ class AutoStartMatcher:
             self._match_since = None
             self._show_frames(None, None)
             return
+        from isaaclab.utils.math import combine_frame_transforms
+
         robot = self._env.scene["robot"]
         origin = self._env.scene.env_origins[0]
-        flange_poses = torch.empty(2, 7, device=origin.device)
-        for i, body_id in enumerate(self._flange_ids):
-            flange_poses[i, :3] = robot.data.body_pos_w.torch[0, body_id] - origin
-            flange_poses[i, 3:7] = robot.data.body_quat_w.torch[0, body_id]
-        targets = action_world[:14].view(2, 7)
-        if float(targets[:, :3].norm(dim=-1).min()) < 1e-6:
-            # A hand is untracked: show where the flanges are, nothing to match yet.
-            self._show_frames(flange_poses, None)
+        wrist_poses = torch.empty(2, 7, device=origin.device)
+        for i, body_id in enumerate(self._wrist_ids):
+            wrist_poses[i, :3] = robot.data.body_pos_w.torch[0, body_id] - origin
+            wrist_poses[i, 3:7] = robot.data.body_quat_w.torch[0, body_id]
+        if self._flange_to_wrist is None:
+            # The hand wrist is mounted to the flange by fixed joints, so this
+            # offset is configuration-independent: compute it once from FK.
+            flange_poses = torch.empty(2, 7, device=origin.device)
+            for i, body_id in enumerate(self._flange_ids):
+                flange_poses[i, :3] = robot.data.body_pos_w.torch[0, body_id] - origin
+                flange_poses[i, 3:7] = robot.data.body_quat_w.torch[0, body_id]
+            self._flange_to_wrist = subtract_frame_transforms(
+                flange_poses[:, :3], flange_poses[:, 3:7], wrist_poses[:, :3], wrist_poses[:, 3:7]
+            )
+        flange_targets = action_world[:14].view(2, 7)
+        if float(flange_targets[:, :3].norm(dim=-1).min()) < 1e-6:
+            # A hand is untracked: show where the robot wrists are, nothing to match yet.
+            self._show_frames(wrist_poses, None)
             self._match_since = None
             return
+        # Where the hand wrists would be with the flanges at their targets.
+        target_pos, target_quat = combine_frame_transforms(
+            flange_targets[:, :3].to(origin.device),
+            flange_targets[:, 3:7].to(origin.device),
+            self._flange_to_wrist[0],
+            self._flange_to_wrist[1],
+        )
+        targets = torch.cat([target_pos, target_quat], dim=-1)
         pos_err = torch.empty(2)
         rot_err = torch.empty(2)
         for i in range(2):
-            pos_err[i] = (targets[i, :3].to(flange_poses.device) - flange_poses[i, :3]).norm()
-            rot_err[i] = self._quat_err(
-                targets[i, 3:7].to(flange_poses.device).unsqueeze(0), flange_poses[i, 3:7].unsqueeze(0)
-            )[0]
-        self._show_frames(flange_poses, targets)
+            pos_err[i] = (targets[i, :3] - wrist_poses[i, :3]).norm()
+            rot_err[i] = self._quat_err(targets[i, 3:7].unsqueeze(0), wrist_poses[i, 3:7].unsqueeze(0))[0]
+        self._show_frames(wrist_poses, targets)
         if self._debug:
             self._debug_print(pos_err, rot_err)
 
