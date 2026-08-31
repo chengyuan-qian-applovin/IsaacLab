@@ -3,12 +3,13 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Load a scene USDA, add the FR3 Duo + SharpaWave rig, and teleoperate it via XR.
+"""Load a scene USDA, add a bimanual SharpaWave rig, and teleoperate it via XR.
 
-The pipeline in one line: your USDA becomes the environment, the duo rig is
-placed into it at ``--robot_pos``/``--robot_rot``, and your tracked hands drive
-it — wrists through per-arm differential IK, all fingers through DexPilot
-retargeting. Episodes are recorded to a robomimic-style HDF5 by default and
+The pipeline in one line: your USDA becomes the environment, the rig selected
+by ``--embodiment`` (FR3 Duo torso by default, or two table-edge-mounted I2RT
+YAM Ultra arms) is placed into it at ``--robot_pos``/``--robot_rot``, and your
+tracked hands drive it — wrists through per-arm differential IK, all fingers
+through DexPilot retargeting. Episodes are recorded to a robomimic-style HDF5 by default and
 labeled hands-free: saying "success" or "failure" (transcribed locally with
 OpenAI Whisper) ends, labels, and exports the episode — see README.md for the
 full flow.
@@ -47,7 +48,18 @@ print = functools.partial(print, flush=True)  # noqa: A001
 
 from isaaclab.app import AppLauncher
 
-parser = argparse.ArgumentParser(description="Teleoperate the FR3 Duo + SharpaWave rig in a USDA scene.")
+parser = argparse.ArgumentParser(description="Teleoperate a bimanual SharpaWave rig in a USDA scene.")
+parser.add_argument(
+    "--embodiment",
+    type=str,
+    choices=("franka_duo", "yam_duo"),
+    default="franka_duo",
+    help=(
+        "Robot embodiment: 'franka_duo' (fixed torso + two 7-DoF Panda arms, default) or 'yam_duo'"
+        " (two 6-DoF I2RT YAM Ultra arms on a table-edge rail, bases 0.565 m apart). Both carry"
+        " SharpaWave hands. See duo_robot.py."
+    ),
+)
 parser.add_argument(
     "--scene_usda",
     type=str,
@@ -63,15 +75,19 @@ parser.add_argument(
     "--robot_pos",
     type=float,
     nargs=3,
-    default=(0.0, -0.8, 1.3),
-    help="Rig torso position in the scene frame [m]. Default clears the raised (1 m) TACO tabletop.",
+    default=None,
+    help=(
+        "Rig root position in the scene frame [m]. The default is per-embodiment: the franka_duo"
+        " torso at (0, -0.8, 1.3) clearing the raised (1 m) TACO tabletop, the yam_duo rail ON the"
+        " tabletop at its near edge (0, -0.55, 1.0)."
+    ),
 )
 parser.add_argument(
     "--robot_rot",
     type=float,
     nargs=4,
-    default=(0.0, 0.0, 0.7071068, 0.7071068),
-    help="Rig torso orientation quaternion (x y z w). Default: +90 deg yaw (facing +y).",
+    default=None,
+    help="Rig root orientation quaternion (x y z w). Default: +90 deg yaw (facing +y).",
 )
 parser.add_argument(
     "--anchor_pos",
@@ -200,13 +216,13 @@ parser.add_argument(
     "--arm_kp",
     type=float,
     default=400.0,
-    help="Arm joint drive stiffness kp [N·m/rad] (all 14 Panda joints). Stamped on every recorded demo.",
+    help="Arm joint drive stiffness kp [N·m/rad] (all arm joints). Stamped on every recorded demo.",
 )
 parser.add_argument(
     "--arm_kd",
     type=float,
     default=80.0,
-    help="Arm joint drive damping kd [N·m·s/rad] (all 14 Panda joints). Stamped on every recorded demo.",
+    help="Arm joint drive damping kd [N·m·s/rad] (all arm joints). Stamped on every recorded demo.",
 )
 parser.add_argument(
     "--hand_kp",
@@ -369,8 +385,15 @@ from isaaclab.utils.math import subtract_frame_transforms
 from isaaclab_physx.physics import PhysxCfg
 
 from duo_env import DuoEnvCfg
-from duo_robot import duo_robot_cfg
+from duo_robot import EMBODIMENTS
 from usda_scene import add_usda_scene
+
+# The selected robot embodiment; per-embodiment placement defaults resolve here.
+SPEC = EMBODIMENTS[args_cli.embodiment]
+if args_cli.robot_pos is None:
+    args_cli.robot_pos = list(SPEC.default_robot_pos)
+if args_cli.robot_rot is None:
+    args_cli.robot_rot = list(SPEC.default_robot_rot)
 
 
 # -- Environment config -----------------------------------------------------------
@@ -397,7 +420,8 @@ def build_env_cfg(scene_usda: str) -> ManagerBasedRLEnvCfg:
     env_cfg = DuoTeleopEnvCfg()
     env_cfg.sim.device = args_cli.device
     env_cfg.episode_length_s = args_cli.episode_length_s
-    env_cfg.scene.robot = duo_robot_cfg(
+    env_cfg.actions = SPEC.actions_cfg()
+    env_cfg.scene.robot = SPEC.robot_cfg(
         pos=tuple(args_cli.robot_pos),
         rot=tuple(args_cli.robot_rot),
         arm_stiffness=args_cli.arm_kp,
@@ -428,7 +452,7 @@ def build_env_cfg(scene_usda: str) -> ManagerBasedRLEnvCfg:
             params={
                 "position_range": (-args_cli.dr_arm_jitter, args_cli.dr_arm_jitter),
                 "velocity_range": (0.0, 0.0),
-                "asset_cfg": SceneEntityCfg("robot", joint_names=["(left|right)_panda_joint[1-7]"]),
+                "asset_cfg": SceneEntityCfg("robot", joint_names=[SPEC.arm_joint_regex]),
             },
         )
         env_cfg.events.dr_objects = EventTermCfg(
@@ -561,7 +585,9 @@ class AutoStartMatcher:
         self._debug = debug
         body_names = env.scene["robot"].body_names
         self._wrist_ids = [body_names.index(f"{s}_hand_wrist") for s in ("left", "right")]
-        self._flange_ids = [body_names.index(f"{s}_panda_link8") for s in ("left", "right")]
+        # The IK-commanded bodies (Panda flanges; the wrist bodies themselves on
+        # the YAM rig, making the transform below the identity).
+        self._flange_ids = [body_names.index(SPEC.ik_body(s)) for s in ("left", "right")]
         self._flange_to_wrist: tuple[torch.Tensor, torch.Tensor] | None = None  # fixed, computed on first update
         self._armed = True
         self._match_since: float | None = None
@@ -795,7 +821,8 @@ class EpisodeFlow:
             demo_group = handler._hdf5_data_group[f"demo_{demo_id}"]
             if self.scene_name:
                 demo_group.attrs["scene"] = self.scene_name
-            # The drive gains the demo was recorded with, for training/replay.
+            # The robot embodiment and drive gains, for training/replay.
+            demo_group.attrs["embodiment"] = SPEC.name
             demo_group.attrs["arm_kp"] = args_cli.arm_kp
             demo_group.attrs["arm_kd"] = args_cli.arm_kd
             demo_group.attrs["hand_kp"] = args_cli.hand_kp
@@ -980,7 +1007,9 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
     if args_cli.user and hand_calibration == parser.get_default("hand_calibration"):
         hand_calibration = f"hand_calibration_{args_cli.user}.yml"
         print(f"[INFO] Using user '{args_cli.user}' hand calibration: {hand_calibration}")
-    pipeline, retargeters = build_duo_pipeline(include_xr_hands=True, hand_calibration=hand_calibration)
+    pipeline, retargeters = build_duo_pipeline(
+        include_xr_hands=True, hand_calibration=hand_calibration, wrist_offsets_xyzw=SPEC.wrist_offsets_xyzw
+    )
     teleop_cfg = IsaacTeleopCfg(
         xr_cfg=XrCfg(anchor_pos=tuple(anchor[0]), anchor_rot=tuple(anchor[1])),
         pipeline_builder=lambda: pipeline,
@@ -1085,7 +1114,7 @@ def run_smoke(env: ManagerBasedRLEnv, num_steps: int) -> None:
     env.reset()
     settle_scene(env)
     robot = env.scene["robot"]
-    flange_ids = [robot.body_names.index(f"{side}_panda_link8") for side in ("left", "right")]
+    flange_ids = [robot.body_names.index(SPEC.ik_body(side)) for side in ("left", "right")]
 
     def flange_poses_root() -> torch.Tensor:
         """Both flange poses in the root frame, flattened to (14,)."""
