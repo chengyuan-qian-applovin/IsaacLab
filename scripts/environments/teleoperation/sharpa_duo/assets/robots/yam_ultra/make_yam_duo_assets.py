@@ -66,9 +66,14 @@ BASE_Y = {"left": +BASE_SEPARATION / 2, "right": -BASE_SEPARATION / 2}
 # (the child frame of joint6). The stock YAM gripper extends along the mount
 # frame's -z, so the hand flange (whose +z runs toward the fingers) mounts as
 # Rx(180°)·Rz(clock). The clock angle re-centers joint6's ±120° range for
-# palm-down tabletop teleop; 90° won the reachability study (see the mount
-# study in the PR/changelog notes).
-HAND_MOUNT_CLOCK_DEG = {"left": 90.0, "right": 90.0}
+# palm-down tabletop teleop: joint6's axis IS the finger direction, so the
+# clock picks which hand-roll direction gets the range. 90° won the overall
+# reachability study, but at the palm-down ready pose it leaves only ~30° of
+# roll toward the operator's inward direction on the LEFT hand (live finding);
+# the 180° re-clock to 270° flips the left window (~150° inward / 30° outward)
+# while position reach is unaffected. The right hand's inward direction is the
+# mirrored one, which clock 90° already favors, so it keeps the study optimum.
+HAND_MOUNT_CLOCK_DEG = {"left": 270.0, "right": 90.0}
 
 # Per-arm base yaw about z, relative to the rig's +x facing.
 BASE_YAW_DEG = {"left": 0.0, "right": 0.0}

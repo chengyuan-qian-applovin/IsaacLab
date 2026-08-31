@@ -268,13 +268,16 @@ YAM_ARM_JOINTS = [f"yam_joint{i}" for i in range(1, 7)]
 # rail at its default table-edge placement (0, -0.55, 1.0) facing +y
 # (see assets/robots/yam_ultra/make_yam_duo_assets.py for the rig geometry).
 # Tightest limit margin is joint 4 at 0.168 rad; all other joints >= 0.5 rad.
+# Joint 6 differs by 180 deg between the sides because the LEFT hand is
+# re-clocked 180 deg on the flange (see make_yam_duo_assets.py): same wrist
+# pose, but the left wrist-roll window favors the operator's inward direction.
 YAM_READY_POSE: dict[str, float] = {
     "left_yam_joint1": -0.0118,
     "left_yam_joint2": 1.6584,
     "left_yam_joint3": 0.2558,
     "left_yam_joint4": 1.4026,
     "left_yam_joint5": 0.5117,
-    "left_yam_joint6": -1.5708,
+    "left_yam_joint6": 1.5708,
     "right_yam_joint1": 0.0024,
     "right_yam_joint2": 1.6584,
     "right_yam_joint3": 0.2558,
