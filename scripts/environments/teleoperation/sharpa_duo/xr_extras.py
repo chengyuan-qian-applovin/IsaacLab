@@ -203,6 +203,12 @@ class AnchorAligner:
         self._target_xy = np.asarray(target_head_xy, dtype=np.float64)
         self._target_z = None if target_head_z is None else float(target_head_z)
         self._robot_yaw = float(robot_yaw)
+        # Mutating the shared XrCfg only works if the synchronizer that pushes
+        # the anchor every pre-sync frame holds the SAME object — the one
+        # failure mode where align would "succeed" yet visibly do nothing.
+        sync = getattr(teleop._anchor_manager, "_anchor_sync", None)
+        if sync is not None and sync._xr_cfg is not self._xr_cfg:
+            print("[WARNING] Align: the anchor synchronizer holds a different XrCfg; align will not take effect.")
 
     def align(self, head_pose_w: np.ndarray) -> bool:
         """Apply the correction for the given world-frame head pose [pos, quat xyzw]."""

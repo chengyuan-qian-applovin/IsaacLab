@@ -81,7 +81,8 @@ queried from XRCore on demand; do NOT put a head tracker in the retargeting
 pipeline (it makes every session step fail on this stack).
 Every transcription is printed to the console, labels and mis-hearings alike.
 The full voice vocabulary: **"success"** / **"failure"** (label + export the
-episode), **"align"** (re-anchor; if teleop is running it is paused first),
+episode), **"align"** (re-anchor; only while teleop is stopped — say "stop"
+first if it is running),
 **"play"** (or "start" — starts teleop, driven through the same state machine
 as the client button), **"stop"** (or "pause" — pauses teleop, keeping the
 episode buffer; resume with "play" or auto-start),

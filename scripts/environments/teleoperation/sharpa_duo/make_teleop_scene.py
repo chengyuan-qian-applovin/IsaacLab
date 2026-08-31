@@ -900,6 +900,27 @@ class EpisodeFlow:
             self.reset_requested = True
 
 
+def serve_align(flow: EpisodeFlow, aligner, head_pose_fn) -> bool:
+    """Serve a pending voice "align" request; returns True if the re-anchor ran.
+
+    Align NEVER runs while teleop is active — re-anchoring shifts every
+    world-frame hand target at once, which would jerk the robot under a live
+    session. The request is consumed either way; while a head pose is merely
+    unavailable the operator is told to try again.
+    """
+    if not flow.align_requested:
+        return False
+    flow.align_requested = False
+    if flow.teleop_active:
+        print("[ALIGN] Ignored while teleop is running: say 'stop' (or press Stop), align, then resume.")
+        return False
+    head = head_pose_fn()
+    if head is None:
+        print("[ALIGN] No head pose available (is the visor on?); say 'align' again in a moment.")
+        return False
+    return aligner.align(head)
+
+
 def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) -> tuple[str, tuple]:
     """Drive the env from XR hand tracking for one scene (see :class:`EpisodeFlow`).
 
@@ -1024,19 +1045,7 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
                 action = teleop.advance()
                 flow.handle_control_events(poll_control_events)
 
-                if flow.align_requested:
-                    flow.align_requested = False
-                    head = current_head_pose()
-                    if head is None:
-                        print("[ALIGN] No head pose available (is the visor on?); say 'align' again in a moment.")
-                    else:
-                        if flow.teleop_active:
-                            # Re-anchoring shifts every world-frame hand target at
-                            # once, so never do it under a live session: pause
-                            # first (episode buffer kept), align, resume manually.
-                            flow.stop_teleop()
-                            print("[ALIGN] Teleop paused for re-anchoring; resume with 'play' or the start pose.")
-                        aligner.align(head)
+                serve_align(flow, aligner, current_head_pose)
 
                 # action is None until the XR session has started.
                 if action is None:
