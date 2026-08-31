@@ -81,7 +81,7 @@ def scan_dataset(dataset_path: str) -> dict[str, tuple[int, int]]:
 _PARAMS = [
     ("--embodiment", "Robot embodiment", "franka_duo", "choice:franka_duo,yam_duo", "Operator & voice"),
     ("--user", "User name (hand calibration)", "", "str", "Operator & voice"),
-    ("--mic_device", "Microphone (quest / default / ALSA name)", "default", "str", "Operator & voice"),
+    ("--mic_device", "Microphone (quest / avp / default / ALSA name)", "default", "str", "Operator & voice"),
     ("--whisper_model", "Whisper model", "base.en", "str", "Operator & voice"),
     ("--no_voice", "Disable voice commands", False, "bool", "Operator & voice"),
     ("--cloudxr_env", "Headset client", "cloudxrjs", "choice:cloudxrjs,avp,none", "Operator & voice"),

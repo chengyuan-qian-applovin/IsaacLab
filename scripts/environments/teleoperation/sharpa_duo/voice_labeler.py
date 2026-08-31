@@ -88,11 +88,13 @@ class VoiceLabeler:
         device: torch device for Whisper. Default ``cpu`` so transcription never
             competes with the simulation and CloudXR encode for the GPU.
         mic_device: ALSA capture device passed to ``arecord -D``, or
-            ``"quest"`` (optionally ``"quest:<port>"``, default port 8444) to
-            receive audio from the headset's browser instead — see
-            :mod:`quest_mic`. With the quest source, calibration waits until
-            the headset page connects and measures ambient from its first
-            1.5 s, so stay quiet right after tapping "Start microphone".
+            ``"quest"`` / ``"avp"`` (optionally ``"quest:<port>"`` /
+            ``"avp:<port>"``, default port 8444) to receive audio from the
+            headset instead — see :mod:`headset_mic` (Quest streams from a
+            browser page, the AVP client app streams natively). With a headset
+            source, calibration waits until the headset connects and measures
+            ambient from its first 1.5 s, so stay quiet right after the mic
+            starts streaming.
         min_utterance_s: Shortest speech burst considered an utterance.
         silence_s: Trailing silence that closes an utterance.
         max_utterance_s: Utterances are clipped to this length.
@@ -117,12 +119,12 @@ class VoiceLabeler:
         self._max_chunks = max(self._min_chunks, round(max_utterance_s / _CHUNK_S))
 
         self._proc = None
-        self._quest = None
-        if mic_device == "quest" or mic_device.startswith("quest:"):
-            from quest_mic import QuestMicServer
+        self._headset = None
+        kind, _, port_str = mic_device.partition(":")
+        if kind in ("quest", "avp"):
+            from headset_mic import HeadsetMicServer
 
-            port = int(mic_device.split(":", 1)[1]) if ":" in mic_device else 8444
-            self._quest = QuestMicServer(port=port)
+            self._headset = HeadsetMicServer(port=int(port_str) if port_str else 8444, client=kind)
         else:
             self._proc = subprocess.Popen(
                 ["arecord", "-q", "-D", mic_device, "-f", "S16_LE", "-r", str(_SAMPLE_RATE), "-c", "1", "-t", "raw"],
@@ -183,14 +185,14 @@ class VoiceLabeler:
         self._stop.set()
         if self._proc is not None:
             self._proc.terminate()
-        if self._quest is not None:
-            self._quest.close()
+        if self._headset is not None:
+            self._headset.close()
 
     # -- internals -----------------------------------------------------------
 
     def _read_chunk(self) -> np.ndarray | None:
-        if self._quest is not None:
-            raw = self._quest.read_chunk()  # blocks until the headset page streams
+        if self._headset is not None:
+            raw = self._headset.read_chunk()  # blocks until the headset streams
             if raw is None:
                 return None
         else:

@@ -195,16 +195,26 @@ Audio can come from two places:
 
 - **Workstation microphone** (default): captured via `arecord`
   (`--mic_device` selects the ALSA device); stay within speaking range.
-- **Headset microphone** (`--mic_device quest`): nothing in the CloudXR stack
-  streams the headset mic to the server, so `quest_mic.py` provides the path —
-  the script serves a small HTTPS page and prints its URL; open it in the
-  Quest browser *before* connecting the CloudXR client, accept the certificate
-  (it reuses the CloudXR proxy's), tap **Start microphone**, grant the mic
-  permission, then connect the CloudXR client as usual. The page streams
-  16 kHz PCM over WSS from the background tab, putting the mic at your mouth
-  instead of across the room. Open the port first
-  (`sudo ufw allow 8444/tcp`; `quest:<port>` changes it). Stay quiet for the
-  first ~2 s after tapping Start — the energy gate calibrates on that ambient.
+- **Headset microphone** (`--mic_device quest` or `--mic_device avp`): nothing
+  in the CloudXR stack streams the headset mic to the server, so
+  `headset_mic.py` provides the path — a WSS server the headset streams 16 kHz
+  PCM to, putting the mic at your mouth instead of across the room. Open the
+  port first (`sudo ufw allow 8444/tcp`; `quest:<port>` / `avp:<port>` changes
+  it). Stay quiet for the first ~2 s after the stream starts — the energy gate
+  calibrates on that ambient. The two clients differ in how the stream starts:
+  - **Quest** (`--mic_device quest`): the script serves a small HTTPS mic
+    page and prints its URL; open it in the Quest browser *before* connecting
+    the CloudXR client, accept the certificate (it reuses the CloudXR
+    proxy's), tap **Start microphone**, grant the mic permission, then
+    connect the CloudXR client as usual. The page keeps streaming from the
+    background tab.
+  - **Apple Vision Pro** (`--mic_device avp`, pair with `--cloudxr_env avp`):
+    the Isaac XR Teleop Sample Client — built from its `feature/avp-voice-mic`
+    branch — captures the mic natively and streams it to the same server by
+    itself once its **Stream microphone** toggle (on by default) is enabled
+    and the CloudXR session connects; grant the mic permission on first use.
+    Nothing to open on the headset. (The wire protocol is identical, so a
+    quest/avp mix-up only prints the wrong instructions — audio still works.)
 
 Test the mic + Whisper chain without starting the simulator:
 
