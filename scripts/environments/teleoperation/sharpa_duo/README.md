@@ -185,6 +185,14 @@ selection to a scene-list JSON and runs the teleop with `--record_dir`: every
 labeled episode lands there as its own HDF5 file, so the table's counts
 accumulate across sessions. With a fleet server URL set on page 1, starting
 with **no** scenes selected lets the fleet server pick the scenes instead.
+
+Page 2 also connects to the fleet server directly: enter the URL (same field
+as the Fleet parameter group) and press **Connect** — the table gains live
+**Fleet progress** (`successes/target`, green when the target is met) and
+**Working now** (which collectors are on that scene right now) columns,
+auto-refreshed every 15 s; scenes that exist only on the server are listed
+too. **Select needed** ticks exactly the local scenes the fleet still needs
+(under target, not retired), so "collect what's missing" is one click.
 Cycle the selected scenes with the "next" voice command; when the run exits,
 the launcher returns to the table with refreshed counts.
 

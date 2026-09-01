@@ -11,7 +11,7 @@ AppLauncher and from helper scripts.
 
 Design (mirrors the server's guarantees):
 
-- **Checkin** at startup returns the fleet-wide status snapshot and wipes any
+- **Check-in** at startup returns the fleet-wide status snapshot and wipes any
   presence rows a crashed previous run of this collector left behind.
 - **Presence, not locks**: :meth:`FleetClient.declare_scene` tells the server
   "this collector is working on this scene"; any number of collectors may
@@ -60,6 +60,63 @@ class FleetError(RuntimeError):
     """A fleet server request failed (HTTP error status or unreachable)."""
 
 
+def request(
+    server_url: str,
+    token: str | None,
+    method: str,
+    path: str,
+    body: dict | None = None,
+    raw: bytes | None = None,
+    timeout: float = 30.0,
+    out_path: str | None = None,
+) -> dict:
+    """One fleet-server HTTP request; JSON in/out unless ``raw``/``out_path`` is given.
+
+    ``out_path`` streams the response body to that file (atomically, via a temp
+    file) instead of parsing it. Raises :class:`FleetError` on any failure.
+    """
+    headers = {}
+    if token:
+        headers["X-Fleet-Token"] = token
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    elif raw is not None:
+        data = raw
+        headers["Content-Type"] = "application/octet-stream"
+    req = urllib.request.Request(server_url.rstrip("/") + path, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if out_path is not None:
+                tmp_path = f"{out_path}.part-{os.getpid()}"
+                try:
+                    with open(tmp_path, "wb") as f:
+                        shutil.copyfileobj(resp, f)
+                    os.replace(tmp_path, out_path)
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                return {}
+            return json.loads(resp.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        with contextlib.suppress(Exception):
+            detail = exc.read().decode(errors="replace")[:500]
+        raise FleetError(f"{method} {path} -> HTTP {exc.code}: {detail}") from exc
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        raise FleetError(f"{method} {path} -> {exc}") from exc
+
+
+def fetch_status(server_url: str, token: str | None = None, timeout: float = 10.0) -> dict:
+    """The fleet status snapshot, read-only: no collector registration, no local state.
+
+    For dashboards/GUIs that only observe the fleet (e.g. the teleop launcher);
+    a collecting session uses :meth:`FleetClient.check_in` instead.
+    """
+    return request(server_url, token or os.environ.get("FLEET_TOKEN"), "GET", "/api/status", timeout=timeout)
+
+
 class FleetClient:
     """See the module docstring. Construct, :meth:`start`, and :meth:`close` at exit."""
 
@@ -98,43 +155,16 @@ class FleetClient:
         timeout: float = 30.0,
         out_path: str | None = None,
     ) -> dict:
-        headers = {}
-        if self.token:
-            headers["X-Fleet-Token"] = self.token
-        data = None
-        if body is not None:
-            data = json.dumps(body).encode()
-            headers["Content-Type"] = "application/json"
-        elif raw is not None:
-            data = raw
-            headers["Content-Type"] = "application/octet-stream"
-        request = urllib.request.Request(self.server_url + path, data=data, method=method, headers=headers)
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as resp:
-                if out_path is not None:
-                    tmp_path = f"{out_path}.part-{os.getpid()}"
-                    try:
-                        with open(tmp_path, "wb") as f:
-                            shutil.copyfileobj(resp, f)
-                        os.replace(tmp_path, out_path)
-                    finally:
-                        if os.path.exists(tmp_path):
-                            os.remove(tmp_path)
-                    return {}
-                return json.loads(resp.read() or b"{}")
-        except urllib.error.HTTPError as exc:
-            detail = ""
-            with contextlib.suppress(Exception):
-                detail = exc.read().decode(errors="replace")[:500]
-            raise FleetError(f"{method} {path} -> HTTP {exc.code}: {detail}") from exc
-        except (urllib.error.URLError, OSError, TimeoutError) as exc:
-            raise FleetError(f"{method} {path} -> {exc}") from exc
+        return request(
+            self.server_url, self.token, method, path, body=body, raw=raw, timeout=timeout, out_path=out_path
+        )
 
     # -- coordination -------------------------------------------------------------
 
     def check_in(self) -> dict:
         """Startup sync: register this collector and return the fleet status snapshot."""
-        return self._request("POST", "/api/checkin", body={"collector_id": self.collector_id})
+        path = "/api/checkin"  # codespell:ignore checkin
+        return self._request("POST", path, body={"collector_id": self.collector_id})
 
     def suggest(self, n: int) -> list[dict]:
         """Up to ``n`` under-target scenes the server recommends, best first."""

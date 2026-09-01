@@ -32,6 +32,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
@@ -159,6 +160,12 @@ class TeleopLauncher(tk.Tk):
         self._proc: subprocess.Popen | None = None
         self._param_vars: dict[str, tuple[tk.Variable, object, str]] = {}
         self._scene_rows: dict[str, dict] = {}  # basename -> {path, selected(BooleanVar)}
+        self._fleet_scenes: dict[str, dict] = {}  # scene_id -> server scene row (last poll)
+        self._fleet_totals: dict | None = None
+        self._fleet_online: list[str] = []
+        self._fleet_connected = False
+        self._fleet_busy = False  # a poll thread is in flight
+        self._fleet_poll_id: str | None = None  # pending self.after(...) handle
 
         self._pages = {}
         container = ttk.Frame(self)
@@ -337,18 +344,35 @@ class TeleopLauncher(tk.Tk):
             ttk.Label(picker, text=label).grid(row=row_i, column=0, sticky="w", pady=self._px(3))
             ttk.Entry(picker, textvariable=var).grid(row=row_i, column=1, sticky="ew", padx=self._px(8))
             ttk.Button(picker, text="Browse", command=browse).grid(row=row_i, column=2, pady=self._px(3))
+        # Fleet server row: the entry edits the SAME variable as the Fleet
+        # parameter group on page 1 (so Start passes it as --fleet_server), and
+        # Connect polls the server's live per-scene progress into the table.
+        fleet_row = 2  # after the scene-dir and record-dir rows
+        ttk.Label(picker, text="Fleet server").grid(row=fleet_row, column=0, sticky="w", pady=self._px(3))
+        ttk.Entry(picker, textvariable=self._param_vars["--fleet_server"][0]).grid(
+            row=fleet_row, column=1, sticky="ew", padx=self._px(8)
+        )
+        self._fleet_btn = ttk.Button(picker, text="Connect", command=self.connect_fleet)
+        self._fleet_btn.grid(row=fleet_row, column=2, pady=self._px(3))
         picker.columnconfigure(1, weight=1)
+        self._fleet_status = ttk.Label(picker, text="Fleet: not connected.", style="Muted.TLabel")
+        self._fleet_status.grid(row=fleet_row + 1, column=0, columnspan=3, sticky="w", pady=(0, self._px(3)))
 
-        self._table = ttk.Treeview(page, columns=("sel", "success", "failure"), height=14)
+        self._table = ttk.Treeview(page, columns=("sel", "success", "failure", "fleet", "workers"), height=14)
         self._table.heading("#0", text="Scene")
         self._table.heading("sel", text="Collect?")
         self._table.heading("success", text="Success")
         self._table.heading("failure", text="Failure")
-        self._table.column("#0", width=self._px(500))
+        self._table.heading("fleet", text="Fleet progress")
+        self._table.heading("workers", text="Working now")
+        self._table.column("#0", width=self._px(420))
         for col in ("sel", "success", "failure"):
-            self._table.column(col, width=self._px(100), anchor="center", stretch=False)
+            self._table.column(col, width=self._px(90), anchor="center", stretch=False)
+        self._table.column("fleet", width=self._px(120), anchor="center", stretch=False)
+        self._table.column("workers", width=self._px(150), anchor="w", stretch=False)
         self._table.tag_configure("odd", background=_STRIPE)
         self._table.tag_configure("off", foreground=_MUTED)
+        self._table.tag_configure("fleet_done", foreground="#1a7f4e")
         self._table.pack(fill="both", expand=True, pady=self._px(8))
         # Excel-style toggling: click one row, drag to paint a run, Shift+Click
         # to extend the last toggle over a range (see _on_table_press).
@@ -369,6 +393,10 @@ class TeleopLauncher(tk.Tk):
         ttk.Button(buttons, text="Select none", command=lambda: self._set_all(False)).pack(
             side="left", padx=self._px(8)
         )
+        self._select_needed_btn = ttk.Button(
+            buttons, text="Select needed", command=self._select_needed, state="disabled"
+        )
+        self._select_needed_btn.pack(side="left")
         ttk.Button(buttons, text="Start teleop", style="Accent.TButton", command=self.start_teleop).pack(side="right")
 
         self.refresh_table()
@@ -388,10 +416,23 @@ class TeleopLauncher(tk.Tk):
     def _row_tags(self, name: str) -> tuple[str, ...]:
         row = self._scene_rows[name]
         tags = ("odd",) if row["odd"] else ()
-        return tags if row["selected"].get() else (*tags, "off")
+        if not row["selected"].get():
+            return (*tags, "off")
+        if self._fleet_cells(name)[2]:  # at target on the server
+            tags = (*tags, "fleet_done")
+        return tags
+
+    def _fleet_cells(self, name: str) -> tuple[str, str, bool]:
+        """The (fleet progress, working now) cells for a scene, and whether it is at target."""
+        row = self._fleet_scenes.get(name)
+        if row is None:
+            return ("-" if self._fleet_connected else "", "", False)
+        done = row["successes"] >= row["target_successes"]
+        progress = f"{row['successes']}/{row['target_successes']}" + (" (retired)" if row["retired"] else "")
+        return (progress, ", ".join(row["active_workers"]), done and not row["retired"])
 
     def refresh_table(self) -> None:
-        """Re-scan the scene directory and the recorded episode counts."""
+        """Re-render the table: local scenes + episode counts + fleet progress."""
         previous = {name: row["selected"].get() for name, row in self._scene_rows.items()}
         self._table.delete(*self._table.get_children())
         self._scene_rows.clear()
@@ -401,15 +442,117 @@ class TeleopLauncher(tk.Tk):
             success, failure = counts.get(name, (0, 0))
             selected = tk.BooleanVar(value=previous.get(name, True))
             self._scene_rows[name] = {"path": path, "selected": selected, "odd": i % 2 == 1}
+            fleet, workers, _done = self._fleet_cells(name)
             self._table.insert(
                 "", "end", iid=name, text=name, tags=self._row_tags(name),
-                values=("Yes" if selected.get() else "", success, failure),
+                values=("Yes" if selected.get() else "", success, failure, fleet, workers),
             )  # fmt: skip
         untagged = counts.get("<untagged>")
         if untagged:
             self._table.insert(
                 "", "end", iid="<untagged>", text="(demos without a scene tag)", tags=("off",), values=("", *untagged)
             )
+        # Scenes that exist on the fleet server but not in the local scene dir:
+        # visible for awareness (fleet mode downloads them), not selectable.
+        local = set(self._scene_rows)
+        for name in sorted(self._fleet_scenes):
+            if name in local:
+                continue
+            fleet, workers, _done = self._fleet_cells(name)
+            self._table.insert(
+                "", "end", iid=f"<server>{name}", text=f"{name} (server only)", tags=("off",),
+                values=("", "", "", fleet, workers),
+            )  # fmt: skip
+
+    # -- fleet connection -------------------------------------------------------
+
+    def connect_fleet(self) -> None:
+        """Connect to (or immediately re-poll) the fleet server from the Fleet parameters."""
+        var = self._param_vars["--fleet_server"][0]
+        server = str(var.get()).strip()
+        if not server:
+            messagebox.showerror("No fleet server", "Enter the fleet server URL first (e.g. http://fleet-host:8080).")
+            return
+        if not server.startswith(("http://", "https://")):
+            server = f"http://{server}"
+            var.set(server)
+        self._poll_fleet(manual=True)
+
+    def _poll_fleet(self, manual: bool = False) -> None:
+        """Fetch the fleet status snapshot in a worker thread (tkinter must never block).
+
+        The worker only writes a plain attribute — tkinter calls (even
+        ``after``) are not safe from other threads — and a main-thread
+        ``after`` watcher applies the result.
+        """
+        self._fleet_poll_id = None
+        if self._fleet_busy:
+            return
+        server = str(self._param_vars["--fleet_server"][0].get()).strip()
+        if not server:
+            return
+        token = str(self._param_vars["--fleet_token"][0].get()).strip() or None
+        self._fleet_busy = True
+        self._fleet_result: tuple[dict | None, str | None] | None = None
+        if manual:
+            self._fleet_btn.config(state="disabled")
+            self._fleet_status.config(text=f"Fleet: connecting to {server} ...", foreground=_MUTED)
+
+        def worker() -> None:
+            from fleet_client import fetch_status
+
+            try:
+                self._fleet_result = (fetch_status(server, token), None)
+            except Exception as exc:  # noqa: BLE001 — any failure is just "unreachable" here
+                self._fleet_result = (None, str(exc))
+
+        threading.Thread(target=worker, daemon=True, name="fleet-status-poll").start()
+        self._watch_fleet_result(manual)
+
+    def _watch_fleet_result(self, manual: bool) -> None:
+        result = self._fleet_result
+        if result is None:
+            self.after(100, lambda: self._watch_fleet_result(manual))
+            return
+        snapshot, error = result
+        self._fleet_update(snapshot=snapshot, error=error, manual=manual)
+
+    def _fleet_update(self, snapshot: dict | None = None, error: str | None = None, manual: bool = False) -> None:
+        """Apply a poll result on the tkinter thread and schedule the next poll."""
+        self._fleet_busy = False
+        self._fleet_btn.config(state="normal")
+        if error is not None:
+            self._fleet_status.config(text=f"Fleet: unreachable — {error}", foreground=_DANGER)
+            if not self._fleet_connected:
+                return  # never connected: stay manual, no auto-poll loop
+        else:
+            self._fleet_connected = True
+            self._fleet_btn.config(text="Refresh now")
+            self._select_needed_btn.config(state="normal")
+            self._fleet_scenes = {s["scene_id"]: s for s in snapshot["scenes"]}
+            self._fleet_totals = snapshot["totals"]
+            self._fleet_online = [c["collector_id"] for c in snapshot["collectors"] if c["online"]]
+            t = self._fleet_totals
+            online = ", ".join(self._fleet_online) or "none"
+            self._fleet_status.config(
+                foreground=_MUTED,
+                text=(
+                    f"Fleet: {t['successes_toward_target']}/{t['target_successes']} successes across"
+                    f" {t['scenes']} scenes — online: {online} (auto-refreshes every 15 s)"
+                ),
+            )
+            self.refresh_table()
+        if self._fleet_poll_id is not None:
+            self.after_cancel(self._fleet_poll_id)
+        self._fleet_poll_id = self.after(15000, self._poll_fleet)
+
+    def _select_needed(self) -> None:
+        """Tick exactly the local scenes the fleet still needs (under target, not retired)."""
+        for name in self._scene_rows:
+            row = self._fleet_scenes.get(name)
+            if row is None:
+                continue  # unknown to the server: leave the operator's choice alone
+            self._set_row(name, not row["retired"] and row["successes"] < row["target_successes"])
 
     def _set_row(self, name: str, value: bool) -> None:
         self._scene_rows[name]["selected"].set(value)
