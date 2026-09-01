@@ -79,7 +79,14 @@ floor calibration instead — the port of the source branch's AVP Align
 button, with voice replacing the button. The head pose is
 queried from XRCore on demand; do NOT put a head tracker in the retargeting
 pipeline (it makes every session step fail on this stack).
-Every transcription is printed to the console, labels and mis-hearings alike.
+Every transcription is printed to the console, labels and mis-hearings alike,
+and echoed in the headset on a floating panel: `Heard: "..."` for an utterance
+that matched no command, and `Detected "..." - executed: ...` naming the effect
+(or the reason it was ignored) when one ran. The panel hides itself after
+`--voice_display_seconds` (default 4); `--voice_display_pos` moves it and
+`--no_voice_display` turns it off. Since it shows mis-hearings too, a panel
+that stays blank while you talk means the audio never reached Whisper — check
+the microphone rather than the wording.
 The full voice vocabulary: **"success"** / **"failure"** (label + export the
 episode), **"align"** (re-anchor; only while teleop is stopped — say "stop"
 first if it is running),
@@ -135,7 +142,8 @@ in any instructions JSON sitting next to the scene file — it is shown as a
 floating emissive panel in the world (`task_display.py`), so the operator
 reads the task in XR. `--task_display_pos` moves it (default: past the table
 at head height, facing the operator); `--no_task_display` hides it. The text
-is also printed to the console at every scene start.
+is also printed to the console at every scene start. The voice-feedback panel
+is a second billboard from the same module, sitting below this one by default.
 
 ## Settling period
 

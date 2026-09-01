@@ -29,6 +29,7 @@ import queue
 import re
 import subprocess
 import threading
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -58,6 +59,25 @@ def parse_label(text: str) -> str | None:
     text = text.lower()
     matches = [name for name, regex in _COMMAND_RES if regex.search(text)]
     return matches[0] if len(matches) == 1 else None
+
+
+@dataclass(frozen=True)
+class VoiceEvent:
+    """One closed utterance: what was transcribed and which command it mapped to.
+
+    Every utterance the energy gate captures produces an event, including ones
+    that match no command, so the caller can show the operator what was heard.
+
+    Attributes:
+        text: The transcription, or ``""`` when audio was captured but Whisper
+            found no intelligible speech.
+        command: The parsed command (success / failure / align / play / stop /
+            reset / next), or None when the utterance matched none of them (or
+            matched several, which is treated as contradictory).
+    """
+
+    text: str
+    command: str | None
 
 
 class VoiceLabeler:
@@ -109,7 +129,7 @@ class VoiceLabeler:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
             )
-        self._events: queue.Queue[str] = queue.Queue()
+        self._events: queue.Queue[VoiceEvent] = queue.Queue()
         self._clips: queue.Queue[np.ndarray] = queue.Queue()
         self._stop = threading.Event()
         #: Energy gate, set once ambient calibration finishes (None before).
@@ -128,8 +148,13 @@ class VoiceLabeler:
         self._reader.start()
         self._worker.start()
 
-    def poll(self) -> str | None:
-        """Return the next ``"success"``/``"failure"`` event, or None."""
+    def poll(self) -> VoiceEvent | None:
+        """Return the next captured utterance, or None when none is pending.
+
+        An event is emitted for every utterance the energy gate closes, so
+        callers see mis-hearings too; act only on events whose
+        :attr:`VoiceEvent.command` is not None.
+        """
         try:
             return self._events.get_nowait()
         except queue.Empty:
@@ -253,10 +278,11 @@ class VoiceLabeler:
             text = result["text"].strip()
             if not text:
                 print(f"[VOICE] Heard a {len(clip) / _SAMPLE_RATE:.1f} s sound but no intelligible speech.")
+                self._events.put(VoiceEvent("", None))
                 continue
             label = parse_label(text)
             if label is None:
                 print(f'[VOICE] Heard: "{text}" (no label)')
             else:
                 print(f'[VOICE] Heard: "{text}" -> {label.upper()}')
-                self._events.put(label)
+            self._events.put(VoiceEvent(text, label))

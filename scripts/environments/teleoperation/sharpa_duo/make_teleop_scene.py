@@ -152,6 +152,24 @@ parser.add_argument(
     help="World position [m] of the floating task-description panel (default: beyond the table, head height).",
 )
 parser.add_argument(
+    "--no_voice_display",
+    action="store_true",
+    help="Do not echo what the voice labeler heard (and did) on a floating panel in the headset.",
+)
+parser.add_argument(
+    "--voice_display_pos",
+    type=float,
+    nargs=3,
+    default=(0.0, 0.9, 1.25),
+    help="World position [m] of the floating voice-feedback panel (default: just below the task panel).",
+)
+parser.add_argument(
+    "--voice_display_seconds",
+    type=float,
+    default=4.0,
+    help="How long a voice message stays on the headset panel before it hides.",
+)
+parser.add_argument(
     "--render_frequency",
     type=float,
     default=30.0,
@@ -332,9 +350,9 @@ if args_cli.voice_test is not None:
     deadline = time.time() + args_cli.voice_test
     next_meter = time.time() + 2.0
     while time.time() < deadline:
-        label = labeler.poll()
-        if label is not None:
-            print(f"[VOICE] EVENT: {label}")
+        event = labeler.poll()
+        if event is not None and event.command is not None:
+            print(f"[VOICE] EVENT: {event.command}")
         if time.time() >= next_meter:
             next_meter += 2.0
             peak = labeler.take_peak()
@@ -711,6 +729,7 @@ class EpisodeFlow:
         self.next_requested = False  # voice "next": advance to the next scene in the list
         self.recording = recording
         self.teleop = None  # bound after the device is created
+        self.voice_display = None  # bound after the headset panel is spawned
         self.teleop_active = False
         self.reset_requested = False
         self.awaiting_label = False  # an episode was closed; waiting for the voice label
@@ -828,43 +847,65 @@ class EpisodeFlow:
     # -- per-iteration handlers ----------------------------------------------
 
     def handle_voice_label(self) -> None:
-        """Route a voice command; labels end (if needed) and export the current episode."""
-        label = self.labeler.poll() if self.labeler is not None else None
-        if label is None:
+        """Route a voice command, echoing what was heard and done in the headset."""
+        event = self.labeler.poll() if self.labeler is not None else None
+        if event is None:
             return
+        if event.command is None:
+            # Mis-hearings are shown too: without them a command that silently
+            # failed to parse is indistinguishable from a dead microphone.
+            self.show_voice_message(f'Heard: "{event.text}"' if event.text else "Heard a sound, but no speech")
+            return
+        outcome = self._run_voice_command(event.command)
+        self.show_voice_message(f'Detected "{event.text}" - executed: {outcome}')
+
+    def show_voice_message(self, message: str) -> None:
+        """Put ``message`` on the headset feedback panel, when one is spawned."""
+        if self.voice_display is not None:
+            self.voice_display.show(message)
+
+    def _run_voice_command(self, label: str) -> str:
+        """Act on a recognized command and describe the effect for the operator.
+
+        The returned text is what the headset panel shows after "executed:", so
+        it names what happened — or why the command was ignored.
+        """
         if label == "align":
             self.align_requested = True
-            return
+            return "align (re-anchoring)"
         if label == "play":
-            self.request_client_start()  # teleop_active follows via the state poll
-            return
+            blocked = self.awaiting_label
+            self.request_client_start()  # no-ops (and explains) while awaiting a label
+            return "play ignored - label the episode first" if blocked else "play - starting teleop"
         if label == "stop":
             # Hands-free pause (the client Stop button's voice twin): the episode
             # buffer is kept, so Play/auto-start resumes recording where it left off.
-            if self.teleop_active:
-                self.stop_teleop()
-                print("[VOICE] Teleop paused. Resume with 'play', the client button, or the start pose.")
-            return
+            if not self.teleop_active:
+                return "stop ignored - teleop was not running"
+            self.stop_teleop()
+            print("[VOICE] Teleop paused. Resume with 'play', the client button, or the start pose.")
+            return "stop - teleop paused"
         if label == "reset":
             self.reset_requested = True  # same as the client button: discards the episode
-            return
+            return "reset - discarding the episode"
         if label == "next":
             if self.awaiting_label:
                 print("[SCENE] 'next' ignored: say 'success' or 'failure' first (or press Reset to discard).")
-            else:
-                if self.recording and self.episode_has_data():
-                    print("[SCENE] Switching scenes: the unlabeled in-flight episode is discarded.")
-                self.next_requested = True
-            return
+                return "next ignored - label the episode first"
+            if self.recording and self.episode_has_data():
+                print("[SCENE] Switching scenes: the unlabeled in-flight episode is discarded.")
+            self.next_requested = True
+            return "next - switching scene"
         if not self.recording:
-            return
+            return f"{label} ignored - recording is disabled"
         if not self.awaiting_label and self.episode_has_data():
             # Label spoken mid-episode: it ends AND labels in one utterance.
             self.close_episode(prompt_label=False)
-        if self.awaiting_label:
-            self.export_episode(label == "success")
-        else:
+        if not self.awaiting_label:
             print(f"[INFO] Voice label '{label}' ignored: no recorded steps yet.")
+            return f"{label} ignored - no recorded steps yet"
+        self.export_episode(label == "success")
+        return f"{label} - episode exported"
 
     def handle_reset(self) -> None:
         if not self.reset_requested:
@@ -973,6 +1014,15 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
     markers = HandJointMarkers() if args_cli.visualize_hands else None
 
     flow = EpisodeFlow(env, labeler, recording, scene_name=scene_name)
+    if labeler is not None and not args_cli.no_voice_display:
+        from task_display import MessageDisplay
+
+        # Same convention as the task panel: at yaw 0 it faces -y, so it
+        # counter-rotates with the rig to stay square to the operator.
+        voice_panel_yaw = float(R.from_quat(args_cli.robot_rot).as_euler("ZYX", degrees=True)[0]) - 90.0
+        flow.voice_display = MessageDisplay(
+            tuple(args_cli.voice_display_pos), voice_panel_yaw, seconds=args_cli.voice_display_seconds
+        )
 
     # --user selects the per-user calibration from calibrate_hand_shape.py; an
     # explicitly overridden --hand_calibration wins over it.
@@ -1038,6 +1088,8 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
                 # Voice labels first, and exports BEFORE any reset is processed,
                 # so a label + reset burst cannot discard the episode.
                 flow.handle_voice_label()
+                if flow.voice_display is not None:
+                    flow.voice_display.update()  # hides the panel once its message ages out
                 if flow.next_requested:
                     flow.request_client_stop()
                     break
