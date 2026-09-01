@@ -836,9 +836,30 @@ class TeleopSessionLifecycle:
             logger.info("CloudXR auto-launch disabled (auto_launch_cloudxr=False)")
             return
 
+        # Plumb NV_CXR_SERVER_PORT through to the WSS proxy backend.
+        # isaacteleop's launcher calls wss.run() without backend_port, so the
+        # proxy always dials 49100 even when the runtime binds a different port.
+        # This monkey-patches wss.run's default so the proxy follows the runtime
+        # when NV_CXR_SERVER_PORT is set — required to run parallel sessions on
+        # one host (each user picks a distinct signaling port).
+        import functools
         from pathlib import Path
 
         from isaacteleop.cloudxr import CloudXRLauncher as _CloudXRLauncher
+        from isaacteleop.cloudxr import wss as _cxr_wss
+
+        _backend_port_env = os.environ.get("NV_CXR_SERVER_PORT", "").strip()
+        if _backend_port_env and not getattr(_cxr_wss.run, "_isaaclab_patched", False):
+            _orig_wss_run = _cxr_wss.run
+            _backend_port = int(_backend_port_env)
+
+            @functools.wraps(_orig_wss_run)
+            async def _patched_wss_run(*args, backend_port: int = _backend_port, **kwargs):
+                return await _orig_wss_run(*args, backend_port=backend_port, **kwargs)
+
+            _patched_wss_run._isaaclab_patched = True  # type: ignore[attr-defined]
+            _cxr_wss.run = _patched_wss_run
+            logger.info("Patched CloudXR WSS proxy to dial backend port %d", _backend_port)
 
         self._cloudxr_launcher = _CloudXRLauncher(
             install_dir=str(Path.home() / ".cloudxr"),
