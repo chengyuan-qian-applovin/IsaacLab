@@ -1061,10 +1061,15 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
     pipeline, retargeters = build_duo_pipeline(
         include_xr_hands=True, hand_calibration=hand_calibration, wrist_offsets_xyzw=SPEC.wrist_offsets_xyzw
     )
+    # The tuning UI is a GLFW (X11) window, not a Kit one: without a display
+    # its thread dies with "Failed to initialize GLFW", so don't request it.
+    has_display = bool(os.environ.get("DISPLAY"))
+    if not has_display:
+        print("[INFO] No DISPLAY: skipping the retargeter tuning UI.")
     teleop_cfg = IsaacTeleopCfg(
         xr_cfg=XrCfg(anchor_pos=tuple(anchor[0]), anchor_rot=tuple(anchor[1])),
         pipeline_builder=lambda: pipeline,
-        retargeters_to_tune=lambda: retargeters,
+        retargeters_to_tune=(lambda: retargeters) if has_display else None,
         sim_device=env.device,
     )
     # The CloudXR runtime is owned by main() and survives scene switches, so
