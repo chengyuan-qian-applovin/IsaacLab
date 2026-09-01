@@ -181,21 +181,22 @@ page 2 picks the record directory and the **scene source** — a radio choice
 between two mutually exclusive modes:
 
 - **Local directory** (default): scan a directory recursively for `*.usda`
-  and tick the scenes to collect. The run is fully standalone — no fleet
-  server is involved at all.
+  and tick the scenes to collect; the table shows the per-machine
+  success/failure demo counts recorded under the record directory. The run
+  is fully standalone — no fleet server is involved at all.
 - **Fleet server**: enter the server URL (plus optional collector id/token)
-  and press **Connect**. The table then lists the *server's* scenes with live
-  **Fleet progress** (`successes/target`, green when met) and **Working now**
-  (who is collecting each scene right now) columns, auto-refreshed every
-  15 s; newly listed scenes come pre-ticked when the fleet still needs them,
-  and **Select needed** re-derives that ticking on demand. Start passes the
-  ticked scene ids as `--fleet_scene_ids`: the run downloads them from the
-  server (sha256-verified) and uploads every labeled episode as it happens.
+  and press **Connect**. The table then lists the *server's* scenes with the
+  server's numbers only: live **Fleet progress** (`successes/target`, green
+  when met) and **Working now** (who is collecting each scene right now)
+  columns, auto-refreshed every 15 s; newly listed scenes come pre-ticked
+  when the fleet still needs them, and **Select needed** re-derives that
+  ticking on demand. Start passes the ticked scene ids as
+  `--fleet_scene_ids`: the run downloads them from the server
+  (sha256-verified) and uploads every labeled episode as it happens.
 
-In both modes the table shows the success/failure demo counts already
-recorded under the record directory, and selection works the same way (click
-toggles one scene, dragging paints the toggle over consecutive rows, and
-Shift+Click extends the last toggle over the whole range, Excel-style).
+Selection works the same way in both modes (click toggles one scene,
+dragging paints the toggle over consecutive rows, and Shift+Click extends
+the last toggle over the whole range, Excel-style).
 Cycle the selected scenes with the "next" voice command; when the run exits,
 the launcher returns to the table with refreshed counts.
 

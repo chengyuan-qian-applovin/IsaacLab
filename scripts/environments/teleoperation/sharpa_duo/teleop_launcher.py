@@ -14,17 +14,15 @@ A plain-tkinter launcher (no Isaac Sim involved until Start is pressed):
   mutually exclusive modes:
 
   - **Local directory**: scan a directory recursively for ``*.usda`` and tick
-    the scenes to collect. The run is fully standalone — no fleet server is
-    involved at all.
+    the scenes to collect; the table shows the per-machine success/failure
+    demo counts recorded under the record directory. The run is fully
+    standalone — no fleet server is involved at all.
   - **Fleet server**: connect to the fleet coordination server (URL, optional
     collector id and token); the table then lists the SERVER's scenes with
-    live progress (``successes/target``, who is collecting each scene right
-    now, auto-refreshed every 15 s), and you tick which of those to collect.
-    The run downloads the ticked scenes from the server and uploads every
-    labeled episode as it happens.
-
-  In both modes the table shows the success/failure demo counts already
-  recorded under the record directory.
+    the server's numbers only — fleet-wide progress (``successes/target``)
+    and who is collecting each scene right now, auto-refreshed every 15 s —
+    and you tick which of those to collect. The run downloads the ticked
+    scenes from the server and uploads every labeled episode as it happens.
 - **Start teleop** launches ``make_teleop_scene.py`` with the active source's
   arguments — a local scene-list JSON, or ``--fleet_server`` +
   ``--fleet_scene_ids``, never both — and the scenes cycle with the "next"
@@ -471,7 +469,9 @@ class TeleopLauncher(tk.Tk):
         if server_mode:
             self._local_pane.grid_remove()
             self._server_pane.grid()
-            self._table.configure(displaycolumns=("sel", "success", "failure", "fleet", "workers"))
+            # Server mode shows only the server's numbers (fleet-wide progress);
+            # the local per-machine demo counts are a local-directory concern.
+            self._table.configure(displaycolumns=("sel", "fleet", "workers"))
         else:
             self._server_pane.grid_remove()
             self._local_pane.grid()
@@ -500,17 +500,16 @@ class TeleopLauncher(tk.Tk):
     def refresh_table(self) -> None:
         """Re-render the table for the active scene source.
 
-        Local mode lists the ``*.usda`` files under the scene directory; server
-        mode lists the fleet server's scenes (from the last status poll). Both
-        show the success/failure demo counts already recorded under the record
-        directory, keyed by the scene basename.
+        Local mode lists the ``*.usda`` files under the scene directory with the
+        per-machine success/failure demo counts recorded under the record
+        directory. Server mode lists the fleet server's scenes (from the last
+        status poll) with the SERVER's numbers only — fleet-wide progress and
+        live workers.
         """
         previous = {name: row["selected"].get() for name, row in self._scene_rows.items()}
         self._table.delete(*self._table.get_children())
         self._scene_rows.clear()
-        counts = scan_record_dir(self._record_dir.get())
-        server_mode = self._scene_source.get() == "server"
-        if server_mode:
+        if self._scene_source.get() == "server":
             if not self._fleet_connected:
                 self._table.insert(
                     "", "end", iid="<hint>", text="(press Connect to list the fleet server's scenes)",
@@ -519,7 +518,6 @@ class TeleopLauncher(tk.Tk):
                 return
             for i, name in enumerate(sorted(self._fleet_scenes)):
                 row = self._fleet_scenes[name]
-                success, failure = counts.get(name, (0, 0))
                 # New rows default to "the fleet still needs this scene".
                 needed = not row["retired"] and row["successes"] < row["target_successes"]
                 selected = tk.BooleanVar(value=previous.get(name, needed))
@@ -527,18 +525,19 @@ class TeleopLauncher(tk.Tk):
                 fleet, workers, _done = self._fleet_cells(name)
                 self._table.insert(
                     "", "end", iid=name, text=name, tags=self._row_tags(name),
-                    values=("Yes" if selected.get() else "", success, failure, fleet, workers),
+                    values=("Yes" if selected.get() else "", "", "", fleet, workers),
                 )  # fmt: skip
-        else:
-            for i, path in enumerate(scan_scene_dir(self._scene_dir.get())):
-                name = os.path.basename(path)
-                success, failure = counts.get(name, (0, 0))
-                selected = tk.BooleanVar(value=previous.get(name, True))
-                self._scene_rows[name] = {"path": path, "selected": selected, "odd": i % 2 == 1}
-                self._table.insert(
-                    "", "end", iid=name, text=name, tags=self._row_tags(name),
-                    values=("Yes" if selected.get() else "", success, failure, "", ""),
-                )  # fmt: skip
+            return
+        counts = scan_record_dir(self._record_dir.get())
+        for i, path in enumerate(scan_scene_dir(self._scene_dir.get())):
+            name = os.path.basename(path)
+            success, failure = counts.get(name, (0, 0))
+            selected = tk.BooleanVar(value=previous.get(name, True))
+            self._scene_rows[name] = {"path": path, "selected": selected, "odd": i % 2 == 1}
+            self._table.insert(
+                "", "end", iid=name, text=name, tags=self._row_tags(name),
+                values=("Yes" if selected.get() else "", success, failure, "", ""),
+            )  # fmt: skip
         untagged = counts.get("<untagged>")
         if untagged:
             self._table.insert(
