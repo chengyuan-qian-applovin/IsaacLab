@@ -29,6 +29,12 @@ A plain-tkinter launcher (no Isaac Sim involved until Start is pressed):
   voice command. Console output stays in the terminal the launcher was
   started from.
 
+Every setting (parameters, directories, scene source, fleet connection,
+window geometry) is remembered across runs in
+``~/.config/duo_teleop_launcher.json`` (saved on close and on Start); a
+remembered fleet-server source reconnects automatically. The window sizes
+itself to fit all content on first launch.
+
 Run:
 
     ./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/teleop_launcher.py
@@ -36,6 +42,7 @@ Run:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -49,6 +56,11 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _TELEOP_SCRIPT = os.path.join(_HERE, "make_teleop_scene.py")
 _DEFAULT_SCENE_DIR = os.path.join(_HERE, "scenes")
 _DEFAULT_RECORD_DIR = os.path.abspath(os.path.join(os.getcwd(), "datasets", "duo_teleop"))
+# Settings (parameters, directories, scene source, fleet connection, window
+# geometry) persist here across launcher runs; saved on close and on Start.
+_SETTINGS_PATH = os.environ.get(
+    "DUO_TELEOP_LAUNCHER_SETTINGS", os.path.join(os.path.expanduser("~"), ".config", "duo_teleop_launcher.json")
+)
 
 
 def scan_scene_dir(scene_dir: str) -> list[str]:
@@ -159,8 +171,7 @@ class TeleopLauncher(tk.Tk):
         super().__init__()
         self.title("Duo Teleop Launcher")
         self._apply_style()
-        self.geometry(f"{self._px(980)}x{self._px(820)}")
-        self.minsize(self._px(820), self._px(620))
+        self.minsize(self._px(700), self._px(520))
         self._proc: subprocess.Popen | None = None
         self._param_vars: dict[str, tuple[tk.Variable, object, str]] = {}
         self._scene_rows: dict[str, dict] = {}  # basename -> {path, selected(BooleanVar)}
@@ -184,7 +195,20 @@ class TeleopLauncher(tk.Tk):
         self._build_params_page(self._pages["params"])
         self._build_scenes_page(self._pages["scenes"])
         self._build_running_page(self._pages["running"])
+        self._apply_settings(self._load_settings())
         self._show("params")
+
+        # Size the window to fit ALL content (the tallest page wins, clamped to
+        # the screen) unless a remembered geometry exists; no manual resizing
+        # needed to see everything.
+        self.update_idletasks()
+        geometry = self._settings.get("geometry")
+        if not isinstance(geometry, str) or "x" not in geometry:
+            width = min(self.winfo_reqwidth(), int(self.winfo_screenwidth() * 0.95))
+            height = min(self.winfo_reqheight(), int(self.winfo_screenheight() * 0.92))
+            geometry = f"{width}x{height}"
+        self.geometry(geometry)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _px(self, logical: int) -> int:
         """Scale a logical pixel size to the screen (HiDPI-aware)."""
@@ -198,8 +222,8 @@ class TeleopLauncher(tk.Tk):
         font sizes) scaled from the screen height, so the layout looks the same
         on a 1080p and a 4K/HiDPI panel.
         """
-        # The 0.8 keeps the UI comfortably compact (full HiDPI scaling felt big).
-        self._scale = 0.8 * min(2.0, max(1.0, self.winfo_screenheight() / 1080))
+        # 0.96 = the original compact 0.8 enlarged by 20% for readability.
+        self._scale = 0.96 * min(2.0, max(1.0, self.winfo_screenheight() / 1080))
         base = self._px(16)  # body text height in pixels
 
         # Best available proportional family. Conda's Tk is often built without
@@ -257,6 +281,62 @@ class TeleopLauncher(tk.Tk):
 
     def _show(self, name: str) -> None:
         self._pages[name].tkraise()
+
+    # -- persisted settings ------------------------------------------------------
+
+    def _load_settings(self) -> dict:
+        try:
+            with open(_SETTINGS_PATH) as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _apply_settings(self, settings: dict) -> None:
+        """Restore the remembered launcher state; missing or unknown keys are ignored."""
+        self._settings = settings
+        for flag, value in settings.get("params", {}).items():
+            if flag in self._param_vars:
+                with contextlib.suppress(tk.TclError):  # e.g. a bool flag remembered as a bad type
+                    self._param_vars[flag][0].set(value)
+        for key, var in (
+            ("record_dir", self._record_dir),
+            ("scene_dir", self._scene_dir),
+            ("fleet_server", self._fleet_server_var),
+            ("collector_id", self._collector_id_var),
+            ("fleet_token", self._fleet_token_var),
+        ):
+            if isinstance(settings.get(key), str):
+                var.set(settings[key])
+        if settings.get("scene_source") in ("local", "server"):
+            self._scene_source.set(settings["scene_source"])
+        self._on_source_change()  # shows the restored source's pane and re-renders the table
+        # The remembered source is the fleet server: reconnect right away.
+        if self._scene_source.get() == "server" and str(self._fleet_server_var.get()).strip():
+            self._poll_fleet(manual=True)
+
+    def _save_settings(self) -> None:
+        settings = {
+            "params": {flag: var.get() for flag, (var, _default, _kind) in self._param_vars.items()},
+            "record_dir": self._record_dir.get(),
+            "scene_dir": self._scene_dir.get(),
+            "scene_source": self._scene_source.get(),
+            "fleet_server": self._fleet_server_var.get(),
+            "collector_id": self._collector_id_var.get(),
+            "fleet_token": self._fleet_token_var.get(),
+            "geometry": self.geometry(),
+        }
+        try:
+            os.makedirs(os.path.dirname(_SETTINGS_PATH), exist_ok=True)
+            with open(_SETTINGS_PATH, "w") as f:
+                json.dump(settings, f, indent=2)
+            os.chmod(_SETTINGS_PATH, 0o600)  # the fleet token is stored in here
+        except OSError as exc:
+            print(f"[LAUNCHER] Could not save settings to {_SETTINGS_PATH}: {exc}")
+
+    def _on_close(self) -> None:
+        self._save_settings()
+        self.destroy()
 
     # -- page 1: parameters ---------------------------------------------------
 
@@ -407,7 +487,7 @@ class TeleopLauncher(tk.Tk):
         self._server_pane.columnconfigure(1, weight=1)
         self._server_pane.grid_remove()  # local mode is the default
 
-        self._table = ttk.Treeview(page, columns=("sel", "success", "failure", "fleet", "workers"), height=14)
+        self._table = ttk.Treeview(page, columns=("sel", "success", "failure", "fleet", "workers"), height=12)
         self._table.heading("#0", text="Scene")
         self._table.heading("sel", text="Collect?")
         self._table.heading("success", text="Success")
@@ -423,7 +503,6 @@ class TeleopLauncher(tk.Tk):
         self._table.tag_configure("off", foreground=_MUTED)
         self._table.tag_configure("fleet_done", foreground="#1a7f4e")
         self._table.configure(displaycolumns=("sel", "success", "failure"))  # fleet columns appear in server mode
-        self._table.pack(fill="both", expand=True, pady=self._px(8))
         # Excel-style toggling: click one row, drag to paint a run, Shift+Click
         # to extend the last toggle over a range (see _on_table_press).
         self._table.configure(selectmode="none")
@@ -435,8 +514,10 @@ class TeleopLauncher(tk.Tk):
         self._drag_origin: str | None = None  # row where the current drag started
         self._pre_drag: dict[str, bool] = {}  # states when the drag started
 
+        # The button row packs BEFORE the table (side bottom): when the window
+        # is short, the table shrinks instead of the buttons getting clipped.
         buttons = ttk.Frame(page)
-        buttons.pack(fill="x")
+        buttons.pack(side="bottom", fill="x")
         ttk.Button(buttons, text="<<  Parameters", command=lambda: self._show("params")).pack(side="left")
         ttk.Button(buttons, text="Refresh", command=self.refresh_table).pack(side="left", padx=self._px(8))
         ttk.Button(buttons, text="Select all", command=lambda: self._set_all(True)).pack(side="left")
@@ -448,6 +529,7 @@ class TeleopLauncher(tk.Tk):
         )
         self._select_needed_btn.pack(side="left")
         ttk.Button(buttons, text="Start teleop", style="Accent.TButton", command=self.start_teleop).pack(side="right")
+        self._table.pack(fill="both", expand=True, pady=self._px(8))
 
         self.refresh_table()
 
@@ -748,6 +830,7 @@ class TeleopLauncher(tk.Tk):
             "--headless",
             *self._collect_args(),
         ]  # fmt: skip
+        self._save_settings()  # remember everything the run was started with
         print("[LAUNCHER] " + " ".join(command))
         self._proc = subprocess.Popen(command)
         self._running_label.config(text=f"Teleop running (pid {self._proc.pid}), {scenes_str} selected.")

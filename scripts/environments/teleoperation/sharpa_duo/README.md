@@ -196,7 +196,10 @@ between two mutually exclusive modes:
 
 Selection works the same way in both modes (click toggles one scene,
 dragging paints the toggle over consecutive rows, and Shift+Click extends
-the last toggle over the whole range, Excel-style).
+the last toggle over the whole range, Excel-style). All settings —
+parameters, directories, scene source, fleet connection, window geometry —
+persist across launcher runs in `~/.config/duo_teleop_launcher.json`, and a
+remembered fleet-server source reconnects automatically.
 Cycle the selected scenes with the "next" voice command; when the run exits,
 the launcher returns to the table with refreshed counts.
 
