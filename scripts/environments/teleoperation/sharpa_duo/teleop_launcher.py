@@ -76,15 +76,25 @@ def scan_dataset(dataset_path: str) -> dict[str, tuple[int, int]]:
     return {k: (v[0], v[1]) for k, v in counts.items()}
 
 
+# The headset choice sets BOTH the microphone source and the CloudXR client in
+# one go: label -> (--mic_device, --cloudxr_env). Quest streams its mic from
+# the CloudXR.js browser page; the AVP's Isaac XR Teleop client streams the mic
+# natively once its CloudXR session connects (see headset_mic.py).
+_DEVICES = {
+    "meta quest": ("quest", "cloudxrjs"),
+    "avp": ("avp", "avp"),
+}
+
 # Parameter schema: (flag, label, default, kind, group). Kind: str|float|bool|choice:<a,b,c>.
-# Defaults mirror make_teleop_scene.py's argparse defaults.
+# Defaults mirror make_teleop_scene.py's argparse defaults. The "device" entry
+# is a pseudo-parameter: _collect_args expands it through _DEVICES instead of
+# passing it through as a flag.
 _PARAMS = [
+    ("device", "Device", "meta quest", "choice:meta quest,avp", "Operator & voice"),
     ("--embodiment", "Robot embodiment", "franka_duo", "choice:franka_duo,yam_duo", "Operator & voice"),
     ("--user", "User name (hand calibration)", "", "str", "Operator & voice"),
-    ("--mic_device", "Microphone (quest / avp / default / ALSA name)", "default", "str", "Operator & voice"),
     ("--whisper_model", "Whisper model", "base.en", "str", "Operator & voice"),
     ("--no_voice", "Disable voice commands", False, "bool", "Operator & voice"),
-    ("--cloudxr_env", "Headset client", "cloudxrjs", "choice:cloudxrjs,avp,none", "Operator & voice"),
     ("--no_auto_start", "Disable auto-start", False, "bool", "Session start"),
     ("--auto_start_pos_tol", "Auto-start position tolerance [m]", 0.10, "float", "Session start"),
     ("--auto_start_rot_tol", "Auto-start rotation tolerance [deg]", 25.0, "float", "Session start"),
@@ -111,7 +121,7 @@ _PARAMS = [
 # defaults. The schema default above stays the argparse default so
 # ``_collect_args`` recognizes these as changed and passes them on the
 # command line.
-_INITIAL_OVERRIDES = {"--mic_device": "quest"}
+_INITIAL_OVERRIDES: dict[str, object] = {}
 
 # Palette (light, one blue accent).
 _BG = "#eef0f4"  # window background
@@ -269,11 +279,19 @@ class TeleopLauncher(tk.Tk):
             self._param_vars[flag] = (var, default, kind)
 
     def _collect_args(self) -> list[str]:
-        """CLI arguments for every parameter that differs from its default."""
+        """CLI arguments for every parameter that differs from its default.
+
+        The "device" pseudo-parameter always expands to explicit ``--mic_device``
+        and ``--cloudxr_env`` flags (via ``_DEVICES``), so the launched teleop
+        session unambiguously matches the selected headset.
+        """
         args = []
         for flag, (var, default, kind) in self._param_vars.items():
             value = var.get()
-            if kind == "bool":
+            if flag == "device":
+                mic_device, cloudxr_env = _DEVICES[str(value)]
+                args += ["--mic_device", mic_device, "--cloudxr_env", cloudxr_env]
+            elif kind == "bool":
                 if value:
                     args.append(flag)
             elif str(value) != str(default) and str(value).strip() != "":
