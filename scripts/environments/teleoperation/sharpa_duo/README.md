@@ -183,8 +183,10 @@ one scene, dragging paints the toggle over consecutive rows, and Shift+Click
 extends the last toggle over the whole range, Excel-style). Start writes the
 selection to a scene-list JSON and runs the teleop with `--record_dir`: every
 labeled episode lands there as its own HDF5 file, so the table's counts
-accumulate across sessions. With a fleet server URL set on page 1, starting
-with **no** scenes selected lets the fleet server pick the scenes instead.
+accumulate across sessions. The scenes are always your selection — with a
+fleet server configured, episodes upload as they are labeled, but the launcher
+never hands scene choice to the server (that mode exists only on the CLI, via
+`--fleet_scenes` with no explicit scene selection).
 
 Page 2 also connects to the fleet server directly: enter the URL (same field
 as the Fleet parameter group) and press **Connect** — the table gains live

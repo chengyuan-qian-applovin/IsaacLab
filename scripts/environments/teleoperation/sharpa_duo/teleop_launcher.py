@@ -17,8 +17,8 @@ A plain-tkinter launcher (no Isaac Sim involved until Start is pressed):
 - **Start teleop** writes the selection to a scene-list JSON and launches
   ``make_teleop_scene.py`` with ``--record_dir`` — cycle the selected scenes
   with the "next" voice command. With a fleet server URL set (Fleet group on
-  page 1) episodes also upload to the fleet server as they are labeled, and
-  starting with NO scenes selected lets the server pick the scenes instead.
+  page 1, or the Connect row on page 2) episodes also upload to the fleet
+  server as they are labeled — the scenes themselves are always picked here.
   Console output stays in the terminal the launcher was started from.
 
 Run:
@@ -128,7 +128,6 @@ _PARAMS = [
     ("--fleet_server", "Fleet server URL (empty = standalone)", "", "str", "Fleet"),
     ("--collector_id", "Collector name (default: hostname)", "", "str", "Fleet"),
     ("--fleet_token", "Fleet token (default: $FLEET_TOKEN)", "", "str", "Fleet"),
-    ("--fleet_scenes", "Server-picked scenes per session", "8", "str", "Fleet"),
 ]
 
 # UI prefills that intentionally differ from the teleop script's argparse
@@ -625,37 +624,26 @@ class TeleopLauncher(tk.Tk):
 
     def start_teleop(self) -> None:
         selected = [row["path"] for row in self._scene_rows.values() if row["selected"].get()]
-        fleet_server = str(self._param_vars["--fleet_server"][0].get()).strip()
-        record_dir = os.path.abspath(self._record_dir.get())
-        os.makedirs(record_dir, exist_ok=True)
-        scene_args = []
-        if selected:
-            scene_list_path = os.path.join(record_dir, "launcher.scene_list.json")
-            with open(scene_list_path, "w") as f:
-                json.dump({"scenes": selected}, f, indent=2)
-            scene_args = ["--scene_list", scene_list_path]
-        elif fleet_server:
-            # No local selection + a fleet server: the server picks the scenes.
-            if not messagebox.askokcancel(
-                "Fleet-picked scenes", "No scenes selected — let the fleet server pick what needs collecting?"
-            ):
-                return
-        else:
+        if not selected:
             messagebox.showerror("No scenes", "Select at least one scene to collect.")
             return
+        record_dir = os.path.abspath(self._record_dir.get())
+        os.makedirs(record_dir, exist_ok=True)
+        scene_list_path = os.path.join(record_dir, "launcher.scene_list.json")
+        with open(scene_list_path, "w") as f:
+            json.dump({"scenes": selected}, f, indent=2)
 
         command = [
             sys.executable,
             _TELEOP_SCRIPT,
-            *scene_args,
+            "--scene_list", scene_list_path,
             "--record_dir", record_dir,
             "--headless",
             *self._collect_args(),
         ]  # fmt: skip
         print("[LAUNCHER] " + " ".join(command))
         self._proc = subprocess.Popen(command)
-        scenes_str = f"{len(selected)} scene(s) selected" if selected else "scenes picked by the fleet server"
-        self._running_label.config(text=f"Teleop running (pid {self._proc.pid}), {scenes_str}.")
+        self._running_label.config(text=f"Teleop running (pid {self._proc.pid}), {len(selected)} scene(s) selected.")
         self._show("running")
         self.after(1000, self._poll_process)
 
