@@ -38,9 +38,12 @@ the tracked joints).
 
 ## Recording episodes, hands-free
 
-Recording is on by default (`--no_record` disables it). Every episode becomes
-one demo in a timestamped robomimic-style HDF5 under `--record_dir`
-(default `./datasets/duo_teleop`):
+Recording is on by default (`--no_record` disables it). Every labeled episode
+becomes its **own** robomimic-style HDF5 file under `--record_dir` (default
+`./datasets/duo_teleop`), named `<scene>_<timestamp>_<uuid8>.hdf5` and holding
+a single `demo_0` — one trajectory per file, so each can be uploaded to the
+fleet server the moment it is labeled, and an interrupted write can never
+corrupt earlier demos:
 
 1. **Play** starts teleop and the episode buffer — by the client button, the
    voice command, or **auto-start**: hold both wrists at the robot's hand
@@ -65,9 +68,55 @@ Each demo carries per-step robot joint states, tracked object poses, the 58-D
 actions, the raw XR hand poses (`obs/xr_hands`, (T, 2, 26, 7), the retargeter
 input — enough to re-tune retargeting offline), the PD drive setpoints
 (`obs/joint_setpoints`, (T, 58), the differential-IK output), and HDF5
-attributes: the boolean `success` label, the `scene` name, and the drive
-gains it was recorded with (`arm_kp`/`arm_kd`/`hand_kp`/`hand_kd` — the
-`--arm_kp` etc. flags, tunable from the launcher's "Control gains" group).
+attributes: the boolean `success` label, the `scene` name, the `episode_uuid`
+(the identity the fleet server also keys on), and the drive gains it was
+recorded with (`arm_kp`/`arm_kd`/`hand_kp`/`hand_kd` — the `--arm_kp` etc.
+flags, tunable from the launcher's "Control gains" group).
+
+## Fleet collection (multiple headsets, one coordinator)
+
+For campaigns with several Quest/AVP collectors running at once, the
+`duo-fleet-server` repo (a small FastAPI + SQLite service kept separate from
+IsaacLab; see its README for setup) is the single source of truth: which scenes
+need how many successful demos, who is working on what right now, and every
+labeled trajectory. Point each collector at it:
+
+```bash
+export FLEET_TOKEN=change-me   # or pass --fleet_token
+./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/make_teleop_scene.py \
+    --fleet_server http://fleet-host:8080 --collector_id ws1-quest --headless
+```
+
+What fleet mode does, in the order it happens:
+
+1. **Startup sync**: the collector checks in and prints the fleet-wide status
+   (progress toward targets, who else is online).
+2. **Scene download**: with no explicit `--scene_list`/`--scene_usda`, the
+   server picks the `--fleet_scenes` most-needed scenes (highest priority,
+   fewest active collectors, most demos remaining) and they are downloaded
+   into `<record_dir>/fleet_scenes/`, sha256-verified. Cycle them with "next"
+   as usual. An explicit scene selection still works — the server then just
+   tracks it.
+3. **Presence**: entering a scene declares "this collector works here" — pure
+   information, never a lock: any number of collectors may share a scene, and
+   a crashed collector can never block anyone (its presence just goes stale
+   after 120 s without a heartbeat).
+4. **Immediate upload**: the moment an episode is voice-labeled, it is queued
+   in a local outbox (`<record_dir>/fleet_outbox.sqlite3`) and a background
+   thread uploads it — file first, then the metadata commit, keyed by the
+   episode UUID so retries are idempotent. The teleop loop never waits on the
+   network; if the server is unreachable, episodes stay queued (across
+   restarts) and sync when it returns. The reply prints the scene's live
+   progress and says when it hits its target.
+
+Seed the server with scenes from any collector machine:
+
+```bash
+./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/fleet_push_scenes.py \
+    --fleet_server http://fleet-host:8080 --scene_list scenes/scene_list.json --target 20
+```
+
+and watch the live dashboard at `http://fleet-host:8080/`.
 
 ## Replaying episodes
 
@@ -126,15 +175,16 @@ command is ignored.
 
 A two-page launcher (plain tkinter; Isaac Sim only starts when you press
 Start): page 1 groups the teleop parameters by concern (operator & voice,
-session start, domain randomization, control gains, visuals, advanced); page 2
-picks a scene directory and a dataset HDF5 file and shows a table of every
-scene with the success/failure trajectory counts already collected for it in
-that dataset — tick the scenes to collect this session (click toggles one
-scene, dragging paints the toggle over consecutive rows, and Shift+Click
+session start, domain randomization, control gains, visuals, advanced, fleet);
+page 2 picks a scene directory and a record directory and shows a table of
+every scene with the success/failure trajectory counts already collected for
+it in that directory — tick the scenes to collect this session (click toggles
+one scene, dragging paints the toggle over consecutive rows, and Shift+Click
 extends the last toggle over the whole range, Excel-style). Start writes the
-selection to a scene-list JSON and runs the teleop with `--dataset_file`:
-demos from **all** scenes and sessions append into the chosen file (each
-tagged with its scene), so the table's counts accumulate across sessions.
+selection to a scene-list JSON and runs the teleop with `--record_dir`: every
+labeled episode lands there as its own HDF5 file, so the table's counts
+accumulate across sessions. With a fleet server URL set on page 1, starting
+with **no** scenes selected lets the fleet server pick the scenes instead.
 Cycle the selected scenes with the "next" voice command; when the run exits,
 the launcher returns to the table with refreshed counts.
 
@@ -331,6 +381,11 @@ never shifts pinch timing.
 | `duo_teleop_pipeline.py` | The IsaacTeleop retargeting pipeline (hand tracking → 58-D action). |
 | `sharpa_retargeting.py` | Calibrated DexPilot finger retargeting (hand-shape calibration, raw-distance pinch hysteresis). |
 | `usda_scene.py` | References the scene USDA into the env and registers its rigid bodies so resets restore their poses. |
+| `recording.py` | Recorder terms + the per-episode HDF5 handler (one file per labeled trajectory). |
+| `fleet_client.py` | Client for the duo-fleet-server: startup check-in, presence, scene download, crash-safe episode upload outbox. |
+| `fleet_push_scenes.py` | Seeds the fleet server with scene USDAs, targets, and task descriptions over HTTP. |
+| `teleop_launcher.py` | Tkinter launcher UI: parameters, scene selection, per-scene collected counts. |
+| `voice_labeler.py` / `quest_audio.py` | Whisper voice commands; headset mic streaming + sound cues. |
 | `assets/robots/` | Vendored robot USD (torso + arms + hands + skin material). |
 | `assets/dex_retargeting/` | Vendored SharpaWave URDFs + DexPilot YAMLs for the finger retargeting. |
 

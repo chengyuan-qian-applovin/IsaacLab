@@ -9,10 +9,13 @@ The pipeline in one line: your USDA becomes the environment, the rig selected
 by ``--embodiment`` (FR3 Duo torso by default, or two table-edge-mounted I2RT
 YAM Ultra arms) is placed into it at ``--robot_pos``/``--robot_rot``, and your
 tracked hands drive it — wrists through per-arm differential IK, all fingers
-through DexPilot retargeting. Episodes are recorded to a robomimic-style HDF5 by default and
-labeled hands-free: saying "success" or "failure" (transcribed locally with
-OpenAI Whisper) ends, labels, and exports the episode — see README.md for the
-full flow.
+through DexPilot retargeting. Episodes are recorded by default — each labeled
+episode becomes its own robomimic-style HDF5 file — and labeled hands-free:
+saying "success" or "failure" (transcribed locally with OpenAI Whisper) ends,
+labels, and exports the episode — see README.md for the full flow. With
+``--fleet_server``, this collector coordinates with the central fleet server:
+status syncs at startup, the scenes to work on are downloaded, and every
+labeled episode uploads immediately (see the fleet section in README.md).
 
 Example (headless is required for XR without a desktop display):
 
@@ -210,17 +213,40 @@ parser.add_argument(
     "--record_dir",
     type=str,
     default="./datasets/duo_teleop",
-    help="Directory for the recorded HDF5 dataset (one timestamped file per session, one demo per episode).",
+    help=(
+        "Directory for the recorded episodes: each labeled episode becomes its own HDF5 file"
+        " (<scene>_<timestamp>_<uuid8>.hdf5, one demo_0 inside). Also holds the fleet outbox"
+        " and scene cache when --fleet_server is used."
+    ),
 )
 parser.add_argument(
-    "--dataset_file",
+    "--fleet_server",
     type=str,
     default=None,
     help=(
-        "Append every demo (across all scenes and sessions) to this one HDF5 file instead of creating"
-        " a timestamped file per scene; created if missing. Demos carry a 'scene' attribute, so one"
-        " shared file stays scene-attributable. Used by the teleop launcher UI."
+        "URL of the duo fleet server (e.g. http://fleet-host:8080). When set, this collector checks"
+        " in at startup, declares which scene it is working on, and uploads every labeled episode"
+        " immediately (queued locally and retried if the server is unreachable). Without an explicit"
+        " --scene_list/--scene_usda, the scenes to work on are fetched from the server and downloaded."
     ),
+)
+parser.add_argument(
+    "--collector_id",
+    type=str,
+    default=None,
+    help="Collector name reported to the fleet server (default: this machine's hostname).",
+)
+parser.add_argument(
+    "--fleet_token",
+    type=str,
+    default=None,
+    help="Fleet server auth token (default: the FLEET_TOKEN environment variable).",
+)
+parser.add_argument(
+    "--fleet_scenes",
+    type=int,
+    default=8,
+    help="Fleet mode: how many server-suggested scenes to download and cycle through with 'next'.",
 )
 parser.add_argument("--no_record", action="store_true", help="Disable episode recording entirely.")
 parser.add_argument(
@@ -486,22 +512,15 @@ def build_env_cfg(scene_usda: str) -> ManagerBasedRLEnvCfg:
             },
         )
     if args_cli.smoke is None and not args_cli.no_record:
-        from recording import AppendableHDF5DatasetFileHandler, DuoRecorderManagerCfg
+        from recording import DuoRecorderManagerCfg, PerEpisodeHDF5DatasetFileHandler
 
+        # Every labeled episode becomes its own HDF5 file under record_dir; the
+        # dataset_filename is only the fallback filename prefix (the flow names
+        # each file <scene>_<timestamp>_<uuid8> at export time).
         env_cfg.recorders = DuoRecorderManagerCfg()
-        if args_cli.dataset_file:
-            # One shared file for all scenes/sessions, opened in append mode.
-            dataset_file = os.path.abspath(args_cli.dataset_file)
-            env_cfg.recorders.dataset_file_handler_class_type = AppendableHDF5DatasetFileHandler
-            env_cfg.recorders.dataset_export_dir_path = os.path.dirname(dataset_file)
-            env_cfg.recorders.dataset_filename = os.path.splitext(os.path.basename(dataset_file))[0]
-        else:
-            env_cfg.recorders.dataset_export_dir_path = os.path.abspath(args_cli.record_dir)
-            # Unique per session AND per scene: the stock HDF5 handler opens its file
-            # in "w" (truncate) mode at env creation, so a fixed name would wipe
-            # earlier sessions on every start.
-            scene_stem = os.path.splitext(os.path.basename(scene_usda))[0][:60]
-            env_cfg.recorders.dataset_filename = time.strftime("dataset_%Y%m%d_%H%M%S") + f"_{scene_stem}"
+        env_cfg.recorders.dataset_file_handler_class_type = PerEpisodeHDF5DatasetFileHandler
+        env_cfg.recorders.dataset_export_dir_path = os.path.abspath(args_cli.record_dir)
+        env_cfg.recorders.dataset_filename = os.path.splitext(os.path.basename(scene_usda))[0][:60]
     return env_cfg
 
 
@@ -749,10 +768,11 @@ class EpisodeFlow:
     leaves teleop stopped.
     """
 
-    def __init__(self, env: ManagerBasedRLEnv, labeler, recording: bool, scene_name: str = ""):
+    def __init__(self, env: ManagerBasedRLEnv, labeler, recording: bool, scene_name: str = "", fleet=None):
         self.env = env
         self.labeler = labeler
         self.scene_name = scene_name
+        self.fleet = fleet  # FleetClient or None; episode reports go through its outbox
         self.next_requested = False  # voice "next": advance to the next scene in the list
         self.recording = recording
         self.teleop = None  # bound after the device is created
@@ -827,48 +847,75 @@ class EpisodeFlow:
         print(f"[INFO] Episode ended ({n_steps} steps).{prompt}")
 
     def export_episode(self, success: bool) -> None:
+        """Export the frozen episode to its own HDF5 file and report it to the fleet.
+
+        The episode UUID minted here is the idempotency key everywhere: it names
+        the file, is stamped as an HDF5 attribute, and keys the fleet upload —
+        so a retried upload can only ever overwrite itself.
+        """
+        import uuid
+
         rm = self.env.recorder_manager
         actions = rm.get_episode(0).data.get("actions")
         n_steps = len(actions) if actions is not None else 0
+        episode_uuid = uuid.uuid4().hex
+        handler = rm._dataset_file_handler
+        scene_stem = os.path.splitext(self.scene_name)[0][:60] or "episode"
+        handler.next_episode_stem = f"{scene_stem}_{time.strftime('%Y%m%d_%H%M%S')}_{episode_uuid[:8]}"
         rm.set_success_to_episodes([0], torch.tensor([[success]], dtype=torch.bool, device=self.env.device))
         rm.export_episodes([0])
-        # File-level demo id (differs from the session count when appending to a
-        # shared dataset); also tag the demo with the scene it was recorded in
-        # (the handler writes only its fixed attrs, so set ours on the group).
+        # Tag the freshly written (still open) file with the episode identity and
+        # tuning (the handler writes only its fixed attrs, so set ours on demo_0),
+        # then close it so it is complete on disk before the uploader touches it.
+        episode_path = None
         try:
-            handler = rm._dataset_file_handler
-            demo_id = handler.get_num_episodes() - 1
-            demo_group = handler._hdf5_data_group[f"demo_{demo_id}"]
+            demo_group = handler._hdf5_data_group["demo_0"]
             if self.scene_name:
                 demo_group.attrs["scene"] = self.scene_name
+            demo_group.attrs["episode_uuid"] = episode_uuid
             # The robot embodiment and drive gains, for training/replay.
             demo_group.attrs["embodiment"] = SPEC.name
             demo_group.attrs["arm_kp"] = args_cli.arm_kp
             demo_group.attrs["arm_kd"] = args_cli.arm_kd
             demo_group.attrs["hand_kp"] = args_cli.hand_kp
             demo_group.attrs["hand_kd"] = args_cli.hand_kd
+            if self.fleet is not None:
+                demo_group.attrs["collector_id"] = self.fleet.collector_id
             handler.flush()
+            episode_path = handler.last_file_path
         except Exception as exc:
-            demo_id = self.demo_count
             print(f"[WARNING] Could not tag the demo with its scene name and gains: {exc}")
+        handler.close()
         rm.reset()
         self.demo_count += 1
         self.awaiting_label = False
         self.reset_requested = True  # hands-free: fresh scene for the next episode
         if success:
             self.success_count += 1
-        cfg = self.env.cfg.recorders
-        dataset_path = os.path.join(cfg.dataset_export_dir_path, cfg.dataset_filename + ".hdf5")
+        if self.fleet is not None and episode_path is not None:
+            self.fleet.report_episode(
+                episode_uuid,
+                self.scene_name,
+                success,
+                episode_path,
+                meta={
+                    "embodiment": SPEC.name,
+                    "num_steps": n_steps,
+                    "arm_kp": args_cli.arm_kp,
+                    "arm_kd": args_cli.arm_kd,
+                    "hand_kp": args_cli.hand_kp,
+                    "hand_kd": args_cli.hand_kd,
+                },
+            )
         try:
-            size_mb = os.path.getsize(dataset_path) / 1e6
-            size_str = f", {size_mb:.1f} MB on disk"
+            size_str = f", {os.path.getsize(episode_path) / 1e6:.1f} MB" if episode_path else ""
         except OSError:
             size_str = ""
         print(
-            f"[SAVED] demo_{demo_id}: success={success}, {n_steps} steps"
-            f" ({n_steps / 60.0:.1f} s) -> {dataset_path}\n"
+            f"[SAVED] Episode {episode_uuid[:8]}: success={success}, {n_steps} steps"
+            f" ({n_steps / 60.0:.1f} s){size_str} -> {episode_path}\n"
             f"[SAVED] Session total: {self.demo_count} demos"
-            f" ({self.success_count} success / {self.demo_count - self.success_count} failure){size_str}."
+            f" ({self.success_count} success / {self.demo_count - self.success_count} failure)."
             " Scene reset; press Play or match the start pose."
         )
 
@@ -990,15 +1037,18 @@ def serve_align(flow: EpisodeFlow, aligner, head_pose_fn) -> bool:
     return aligner.align(head)
 
 
-def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) -> tuple[str, tuple]:
+def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple, fleet=None) -> tuple[str, tuple]:
     """Drive the env from XR hand tracking for one scene (see :class:`EpisodeFlow`).
 
     Args:
         env: The environment (one scene of the list).
         labeler: The shared :class:`~voice_labeler.VoiceLabeler` (or None).
-        scene_name: Stamped on every exported demo as its ``scene`` HDF5 attr.
+        scene_name: Stamped on every exported demo as its ``scene`` HDF5 attr
+            (and used as the fleet scene id).
         anchor: ``(anchor_pos, anchor_rot)`` xyzw to start from, so "align"
             adjustments carry across scene switches.
+        fleet: The shared :class:`~fleet_client.FleetClient` (or None); every
+            labeled episode is queued for immediate upload through it.
 
     Returns:
         ``(reason, anchor)`` where reason is ``"next"`` (voice command: advance
@@ -1041,7 +1091,7 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
     apply_arm_visual(args_cli.arm_visual)
     markers = HandJointMarkers() if args_cli.visualize_hands else None
 
-    flow = EpisodeFlow(env, labeler, recording, scene_name=scene_name)
+    flow = EpisodeFlow(env, labeler, recording, scene_name=scene_name, fleet=fleet)
     if labeler is not None and not args_cli.no_voice_display:
         from task_display import MessageDisplay
 
@@ -1103,9 +1153,7 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
         )
 
     if recording:
-        print(
-            f"[INFO] Recording to {env.cfg.recorders.dataset_export_dir_path}/{env.cfg.recorders.dataset_filename}.hdf5"
-        )
+        print(f"[INFO] Recording to {env.cfg.recorders.dataset_export_dir_path} (one HDF5 file per labeled episode).")
     print(
         "[INFO] Teleop loop started. Headset: Play = start, Stop = pause, Reset = reset (discards episode). "
         "Say 'success'/'failure' to end, label, and export the episode. "
@@ -1224,7 +1272,7 @@ def run_smoke(env: ManagerBasedRLEnv, num_steps: int) -> None:
         raise SystemExit(1)
 
 
-def load_scene_list() -> list[tuple[str, str | None]]:
+def load_scene_list(fleet=None) -> list[tuple[str, str | None]]:
     """The ``(usda_path, task_description)`` pairs to teleop.
 
     From the --scene_list JSON if given (else just --scene_usda). Entries may be
@@ -1234,8 +1282,27 @@ def load_scene_list() -> list[tuple[str, str | None]]:
     that don't exist locally (authored on another machine) fall back to their
     basename next to the JSON. Descriptions not in the list itself are looked up
     in any instructions JSON sitting next to the scene file.
+
+    In fleet mode with no explicit scene selection, the server picks: the
+    ``--fleet_scenes`` most-needed scenes are downloaded (sha256-verified into
+    the scene cache) and cycled exactly like a local scene list.
     """
     from task_display import find_task_description
+
+    if fleet is not None and args_cli.scene_list is None and args_cli.scene_usda == parser.get_default("scene_usda"):
+        entries = fleet.suggest(args_cli.fleet_scenes)
+        if not entries:
+            raise SystemExit("[FLEET] Nothing to collect: every scene on the server is at its target (or retired).")
+        scenes = []
+        for entry in entries:
+            path = fleet.download_scene(entry["scene_id"], entry.get("sha256") or None)
+            workers = ", ".join(entry["active_workers"]) or "nobody else"
+            print(
+                f"[FLEET] Assigned {entry['scene_id']}:"
+                f" {entry['successes']}/{entry['target_successes']} successes, working: {workers}"
+            )
+            scenes.append((path, entry.get("task_description") or find_task_description(path)))
+        return scenes
 
     if args_cli.scene_list is None:
         return [(args_cli.scene_usda, find_task_description(args_cli.scene_usda))]
@@ -1268,13 +1335,36 @@ def load_scene_list() -> list[tuple[str, str | None]]:
 
 
 def main():
-    scenes = load_scene_list()
+    # Fleet mode: sync the collection status from the server before anything else.
+    fleet = None
+    if args_cli.fleet_server:
+        from fleet_client import FleetClient
+
+        fleet = FleetClient(
+            args_cli.fleet_server,
+            collector_id=args_cli.collector_id,
+            token=args_cli.fleet_token,
+            state_dir=os.path.abspath(args_cli.record_dir),
+        )
+        snapshot = fleet.check_in()  # fail fast here if the server is misconfigured/unreachable
+        totals = snapshot["totals"]
+        online = [c["collector_id"] for c in snapshot["collectors"] if c["online"]]
+        print(
+            f"[FLEET] Checked in as '{fleet.collector_id}' at {fleet.server_url}:"
+            f" {totals['successes_toward_target']}/{totals['target_successes']} successes"
+            f" across {totals['scenes']} scenes; online collectors: {', '.join(online) or 'just you'}."
+        )
+        fleet.start()
+
+    scenes = load_scene_list(fleet)
     if args_cli.smoke is not None:
         env = ManagerBasedRLEnv(cfg=build_env_cfg(scenes[0][0]))
         try:
             run_smoke(env, args_cli.smoke)
         finally:
             env.close()
+            if fleet is not None:
+                fleet.close()
         return
 
     # Everything that must SURVIVE scene switches lives here: the voice labeler
@@ -1309,6 +1399,16 @@ def main():
             print(f"[SCENE] {index + 1}/{len(scenes)}: {scene}")
             if task_description:
                 print(f"[TASK] {task_description}")
+            if fleet is not None:
+                # Presence only (never a lock); heartbeats keep it fresh, and a
+                # server outage here must not stop the operator from collecting.
+                try:
+                    row = fleet.declare_scene(os.path.basename(scene))
+                    others = [w for w in row["active_workers"] if w != fleet.collector_id]
+                    also = f" (also being collected by {', '.join(others)})" if others else ""
+                    print(f"[FLEET] Working on {row['scene_id']}: {row['successes']}/{row['target_successes']}{also}")
+                except Exception as exc:
+                    print(f"[FLEET] Could not declare the scene ({exc}); collecting anyway.")
             env = ManagerBasedRLEnv(cfg=build_env_cfg(scene))
             if task_description and not args_cli.no_task_display:
                 from scipy.spatial.transform import Rotation as R
@@ -1320,7 +1420,7 @@ def main():
                 panel_yaw = float(R.from_quat(args_cli.robot_rot).as_euler("ZYX", degrees=True)[0]) - 90.0
                 spawn_task_display(task_description, tuple(args_cli.task_display_pos), panel_yaw)
             try:
-                reason, anchor = run_teleop(env, labeler, os.path.basename(scene), anchor)
+                reason, anchor = run_teleop(env, labeler, os.path.basename(scene), anchor, fleet=fleet)
             finally:
                 env.close()
             if reason != "next":
@@ -1333,6 +1433,8 @@ def main():
             labeler.close()
         if launcher is not None:
             launcher.stop()
+        if fleet is not None:
+            fleet.close()  # drains the upload queue (bounded); leftovers sync next session
 
 
 if __name__ == "__main__":

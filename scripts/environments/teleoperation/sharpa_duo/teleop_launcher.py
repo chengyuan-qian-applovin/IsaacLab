@@ -10,14 +10,16 @@ A plain-tkinter launcher (no Isaac Sim involved until Start is pressed):
 - **Page 1 — Parameters**: the teleop knobs, grouped by concern (operator &
   voice, session start, domain randomization, control gains, visuals, advanced).
 - **Page 2 — Scenes & dataset**: pick a scene directory (scanned recursively
-  for ``*.usda``) and a dataset HDF5 file; a table lists every scene with the
-  number of success/failure trajectories already collected for it in that
-  dataset, and checkboxes select the scenes for this session.
+  for ``*.usda``) and a record directory (one HDF5 file per labeled episode);
+  a table lists every scene with the number of success/failure trajectories
+  already collected for it in that directory, and checkboxes select the
+  scenes for this session.
 - **Start teleop** writes the selection to a scene-list JSON and launches
-  ``make_teleop_scene.py`` with ``--dataset_file`` (demos from all scenes and
-  sessions append to the chosen file, each tagged with its scene) — cycle the
-  selected scenes with the "next" voice command. Console output stays in the
-  terminal the launcher was started from.
+  ``make_teleop_scene.py`` with ``--record_dir`` — cycle the selected scenes
+  with the "next" voice command. With a fleet server URL set (Fleet group on
+  page 1) episodes also upload to the fleet server as they are labeled, and
+  starting with NO scenes selected lets the server pick the scenes instead.
+  Console output stays in the terminal the launcher was started from.
 
 Run:
 
@@ -37,7 +39,7 @@ from tkinter import filedialog, messagebox, ttk
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _TELEOP_SCRIPT = os.path.join(_HERE, "make_teleop_scene.py")
 _DEFAULT_SCENE_DIR = os.path.join(_HERE, "scenes")
-_DEFAULT_DATASET = os.path.abspath(os.path.join(os.getcwd(), "datasets", "duo_teleop", "duo_teleop.hdf5"))
+_DEFAULT_RECORD_DIR = os.path.abspath(os.path.join(os.getcwd(), "datasets", "duo_teleop"))
 
 
 def scan_scene_dir(scene_dir: str) -> list[str]:
@@ -48,31 +50,38 @@ def scan_scene_dir(scene_dir: str) -> list[str]:
     return sorted(hits)
 
 
-def scan_dataset(dataset_path: str) -> dict[str, tuple[int, int]]:
-    """Per-scene ``(success, failure)`` demo counts in an HDF5 dataset.
+def scan_record_dir(record_dir: str) -> dict[str, tuple[int, int]]:
+    """Per-scene ``(success, failure)`` demo counts across the record directory.
 
-    Demos are grouped by their ``scene`` attribute (written by the teleop
-    script); demos without one are grouped under ``"<untagged>"``. Returns an
-    empty dict when the file does not exist or holds no demos.
+    Counts every demo in every ``*.hdf5`` under ``record_dir`` (one file per
+    episode nowadays; legacy multi-demo session files are counted the same
+    way). Demos are grouped by their ``scene`` attribute; demos without one
+    land under ``"<untagged>"``. Unreadable files (e.g. an episode being
+    written right now) are skipped.
     """
     import h5py
 
     counts: dict[str, list[int]] = {}
-    if not os.path.exists(dataset_path):
+    if not os.path.isdir(record_dir):
         return {}
-    try:
-        with h5py.File(dataset_path, "r") as f:
-            if "data" not in f:
-                return {}
-            for _name, group in f["data"].items():
-                scene = group.attrs.get("scene", "<untagged>")
-                if isinstance(scene, bytes):
-                    scene = scene.decode()
-                entry = counts.setdefault(str(scene), [0, 0])
-                entry[0 if bool(group.attrs.get("success", False)) else 1] += 1
-    except OSError as exc:
-        print(f"[LAUNCHER] Could not read {dataset_path}: {exc}")
-        return {}
+    for root, dirs, files in os.walk(record_dir):
+        dirs[:] = [d for d in dirs if d != "fleet_scenes"]  # scene cache holds no demos
+        for name in sorted(files):
+            if not name.endswith(".hdf5"):
+                continue
+            path = os.path.join(root, name)
+            try:
+                with h5py.File(path, "r") as f:
+                    if "data" not in f:
+                        continue
+                    for _name, group in f["data"].items():
+                        scene = group.attrs.get("scene", "<untagged>")
+                        if isinstance(scene, bytes):
+                            scene = scene.decode()
+                        entry = counts.setdefault(str(scene), [0, 0])
+                        entry[0 if bool(group.attrs.get("success", False)) else 1] += 1
+            except OSError as exc:
+                print(f"[LAUNCHER] Could not read {path}: {exc}")
     return {k: (v[0], v[1]) for k, v in counts.items()}
 
 
@@ -115,6 +124,10 @@ _PARAMS = [
     ("--episode_length_s", "Episode timeout [s]", 300.0, "float", "Advanced"),
     ("--render_frequency", "Render frequency [Hz]", 30.0, "float", "Advanced"),
     ("--no_record", "Disable recording", False, "bool", "Advanced"),
+    ("--fleet_server", "Fleet server URL (empty = standalone)", "", "str", "Fleet"),
+    ("--collector_id", "Collector name (default: hostname)", "", "str", "Fleet"),
+    ("--fleet_token", "Fleet token (default: $FLEET_TOKEN)", "", "str", "Fleet"),
+    ("--fleet_scenes", "Server-picked scenes per session", "8", "str", "Fleet"),
 ]
 
 # UI prefills that intentionally differ from the teleop script's argparse
@@ -314,11 +327,11 @@ class TeleopLauncher(tk.Tk):
         picker = ttk.Frame(page)
         picker.pack(fill="x", pady=self._px(8))
         self._scene_dir = tk.StringVar(value=_DEFAULT_SCENE_DIR)
-        self._dataset = tk.StringVar(value=_DEFAULT_DATASET)
+        self._record_dir = tk.StringVar(value=_DEFAULT_RECORD_DIR)
         for row_i, (label, var, browse) in enumerate(
             (
                 ("Scene directory", self._scene_dir, self._browse_scene_dir),
-                ("Dataset file (created if missing)", self._dataset, self._browse_dataset),
+                ("Record directory (one HDF5 per episode)", self._record_dir, self._browse_record_dir),
             )
         ):
             ttk.Label(picker, text=label).grid(row=row_i, column=0, sticky="w", pady=self._px(3))
@@ -366,15 +379,10 @@ class TeleopLauncher(tk.Tk):
             self._scene_dir.set(path)
             self.refresh_table()
 
-    def _browse_dataset(self) -> None:
-        path = filedialog.asksaveasfilename(
-            initialdir=os.path.dirname(self._dataset.get()) or os.getcwd(),
-            defaultextension=".hdf5",
-            filetypes=[("HDF5 datasets", "*.hdf5")],
-            confirmoverwrite=False,
-        )
+    def _browse_record_dir(self) -> None:
+        path = filedialog.askdirectory(initialdir=self._record_dir.get() or os.getcwd())
         if path:
-            self._dataset.set(path)
+            self._record_dir.set(path)
             self.refresh_table()
 
     def _row_tags(self, name: str) -> tuple[str, ...]:
@@ -383,11 +391,11 @@ class TeleopLauncher(tk.Tk):
         return tags if row["selected"].get() else (*tags, "off")
 
     def refresh_table(self) -> None:
-        """Re-scan the scene directory and the dataset counts."""
+        """Re-scan the scene directory and the recorded episode counts."""
         previous = {name: row["selected"].get() for name, row in self._scene_rows.items()}
         self._table.delete(*self._table.get_children())
         self._scene_rows.clear()
-        counts = scan_dataset(self._dataset.get())
+        counts = scan_record_dir(self._record_dir.get())
         for i, path in enumerate(scan_scene_dir(self._scene_dir.get())):
             name = os.path.basename(path)
             success, failure = counts.get(name, (0, 0))
@@ -474,26 +482,37 @@ class TeleopLauncher(tk.Tk):
 
     def start_teleop(self) -> None:
         selected = [row["path"] for row in self._scene_rows.values() if row["selected"].get()]
-        if not selected:
+        fleet_server = str(self._param_vars["--fleet_server"][0].get()).strip()
+        record_dir = os.path.abspath(self._record_dir.get())
+        os.makedirs(record_dir, exist_ok=True)
+        scene_args = []
+        if selected:
+            scene_list_path = os.path.join(record_dir, "launcher.scene_list.json")
+            with open(scene_list_path, "w") as f:
+                json.dump({"scenes": selected}, f, indent=2)
+            scene_args = ["--scene_list", scene_list_path]
+        elif fleet_server:
+            # No local selection + a fleet server: the server picks the scenes.
+            if not messagebox.askokcancel(
+                "Fleet-picked scenes", "No scenes selected — let the fleet server pick what needs collecting?"
+            ):
+                return
+        else:
             messagebox.showerror("No scenes", "Select at least one scene to collect.")
             return
-        dataset = os.path.abspath(self._dataset.get())
-        os.makedirs(os.path.dirname(dataset), exist_ok=True)
-        scene_list_path = os.path.splitext(dataset)[0] + ".scene_list.json"
-        with open(scene_list_path, "w") as f:
-            json.dump({"scenes": selected}, f, indent=2)
 
         command = [
             sys.executable,
             _TELEOP_SCRIPT,
-            "--scene_list", scene_list_path,
-            "--dataset_file", dataset,
+            *scene_args,
+            "--record_dir", record_dir,
             "--headless",
             *self._collect_args(),
         ]  # fmt: skip
         print("[LAUNCHER] " + " ".join(command))
         self._proc = subprocess.Popen(command)
-        self._running_label.config(text=f"Teleop running (pid {self._proc.pid}), {len(selected)} scene(s) selected.")
+        scenes_str = f"{len(selected)} scene(s) selected" if selected else "scenes picked by the fleet server"
+        self._running_label.config(text=f"Teleop running (pid {self._proc.pid}), {scenes_str}.")
         self._show("running")
         self.after(1000, self._poll_process)
 
