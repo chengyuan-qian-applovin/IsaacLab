@@ -19,18 +19,25 @@ When the operator hand-shape calibration is loaded, its rotation additionally
 composes into each wrist offset (``q_flange = q_wrist ⊗ q_corr ⊗ q_offset``) so
 the arm tilts the robot hand until its fingers align with the operator's.
 
-Wrist rotation offsets map the OpenXR wrist frame onto the ``panda_link8``
-flange frame so the SharpaWave hand aligns with the operator's hand. They were
-calibrated on the original ``feature/robolab-xr-teleop`` branch for the rig's
-factory ∓45° flange mounts — left ``(0, -0.924, 0.383, 0)``, right
-``(0, 0.383, -0.924, 0)`` (w,x,y,z). The hands are now re-clocked on the bolt
-circle to left ``Rz(-45°)`` / right ``Rz(-135°)`` (see the robot USD), and
-because ``hand = flange ⊗ Rz(mount)``, alignment is preserved by folding the
-re-clock into the offsets: ``offset_new = offset_calibrated ⊗ Rz(m_cal − m_new)``
-= ``⊗ Rz(+90°)`` on both sides. ``Se3RetargeterConfig`` takes
-intrinsic XYZ Euler angles in degrees and composes them wrist-side
-(``wrist ⊗ offset``, same convention as the calibration), so the quaternions
-convert exactly to the roll/pitch/yaw values below.
+Wrist rotation offsets map the OpenXR wrist frame onto the frame of the body
+each arm's IK commands, so the SharpaWave hand aligns with the operator's hand.
+They are per-embodiment (:attr:`duo_robot.Embodiment.wrist_offsets_xyzw`):
+
+- ``franka_duo`` commands the ``panda_link8`` flanges. Its offsets were
+  calibrated on the original ``feature/robolab-xr-teleop`` branch for the rig's
+  factory ∓45° flange mounts — left ``(0, -0.924, 0.383, 0)``, right
+  ``(0, 0.383, -0.924, 0)`` (w,x,y,z). The hands are now re-clocked on the bolt
+  circle to left ``Rz(-45°)`` / right ``Rz(-135°)`` (see the robot USD), and
+  because ``hand = flange ⊗ Rz(mount)``, alignment is preserved by folding the
+  re-clock into the offsets: ``offset_new = offset_calibrated ⊗ Rz(m_cal −
+  m_new)`` = ``⊗ Rz(+90°)`` on both sides.
+- ``yam_duo`` commands the hands' own wrist bodies, so its offsets are the pure
+  OpenXR-wrist→SharpaWave-wrist rotation (the flange offsets above with the
+  mount clocking folded back in), independent of the hand's mount on the arm.
+
+``Se3RetargeterConfig`` takes intrinsic XYZ Euler angles in degrees and
+composes them wrist-side (``wrist ⊗ offset``, same convention as the
+calibration), so the quaternions convert exactly to roll/pitch/yaw.
 
 Quaternion order: ``Se3AbsRetargeter`` emits ``[pos, quat xyzw]``, which is
 exactly what this Isaac Lab release's math utilities and IK actions consume
@@ -40,21 +47,16 @@ pass through the reorderer unchanged.
 
 from __future__ import annotations
 
-from duo_robot import FINGER_JOINTS, sided
+from duo_robot import EMBODIMENTS, FINGER_JOINTS, sided
 from scipy.spatial.transform import Rotation as R
 from sharpa_retargeting import load_hand_calibration, make_sharpa_dex_node, wrist_correction
 
-# Calibrated wrist→flange offsets for the re-clocked Rz(-45°)/Rz(-135°) hand
-# mounts (offset_new = offset_calibrated ⊗ Rz(m_cal − m_new); see module
-# docstring), as xyzw quaternions. Equivalent to intrinsic XYZ Euler degrees
-# left (-180, 0, 135) / right (180, 0, -135).
-_WRIST_OFFSET_XYZW = {
-    "left": (-0.3826834, 0.9238795, 0.0, 0.0),
-    "right": (-0.3826834, -0.9238795, 0.0, 0.0),
-}
 
-
-def build_duo_pipeline(include_xr_hands: bool = False, hand_calibration: str | None = "hand_calibration.yml"):
+def build_duo_pipeline(
+    include_xr_hands: bool = False,
+    hand_calibration: str | None = "hand_calibration.yml",
+    wrist_offsets_xyzw: dict[str, tuple[float, float, float, float]] | None = None,
+):
     """Build the duo teleop retargeting pipeline.
 
     Args:
@@ -67,6 +69,10 @@ def build_duo_pipeline(include_xr_hands: bool = False, hand_calibration: str | N
             :mod:`sharpa_retargeting`), resolved against the vendored
             ``assets/dex_retargeting`` directory. None or "" disables it; a
             missing file is announced and ignored.
+        wrist_offsets_xyzw: Per-side ("left"/"right") rotation offsets, as xyzw
+            quaternions, mapping the OpenXR wrist frame onto the frame of the
+            body the arms' IK commands (``Embodiment.wrist_offsets_xyzw``).
+            Defaults to the Franka duo flange offsets.
 
     Returns:
         A tuple ``(pipeline, retargeters)``: the ``OutputCombiner`` with the
@@ -78,6 +84,8 @@ def build_duo_pipeline(include_xr_hands: bool = False, hand_calibration: str | N
     from isaacteleop.retargeting_engine.interface import OutputCombiner, ValueInput
     from isaacteleop.retargeting_engine.tensor_types import TransformMatrix
 
+    if wrist_offsets_xyzw is None:
+        wrist_offsets_xyzw = EMBODIMENTS["franka_duo"].wrist_offsets_xyzw
     calibration = load_hand_calibration(hand_calibration) if hand_calibration else None
     if hand_calibration and calibration is None:
         print(f"[WARNING] Hand calibration '{hand_calibration}' not found; retargeting uncalibrated.")
@@ -106,7 +114,7 @@ def build_duo_pipeline(include_xr_hands: bool = False, hand_calibration: str | N
         # q_flange = q_wrist ⊗ q_corr ⊗ q_offset: the wrist-side calibration
         # rotation composes into the constant wrist→flange offset, so the arm
         # tilts the robot hand until its FINGERS align with the operator's.
-        offset = R.from_quat(_WRIST_OFFSET_XYZW[side])
+        offset = R.from_quat(wrist_offsets_xyzw[side])
         cal = (calibration or {}).get(side)
         if cal is not None:
             offset = R.from_matrix(wrist_correction(cal["rotation"])) * offset

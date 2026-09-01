@@ -36,18 +36,32 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(description="Kinematic replay of duo teleop recordings.")
 parser.add_argument("--scene_usda", type=str, required=True, help="The scene USD/USDA the episodes were recorded in.")
 parser.add_argument(
+    "--embodiment",
+    type=str,
+    choices=("franka_duo", "yam_duo"),
+    default=None,
+    help=(
+        "Robot embodiment the demos were recorded with (see duo_robot.py). Defaults to the"
+        " 'embodiment' attribute stamped on the first selected demo (franka_duo for datasets"
+        " recorded before the attribute existed)."
+    ),
+)
+parser.add_argument(
     "--robot_pos",
     type=float,
     nargs=3,
-    default=(0.0, -0.8, 1.3),
-    help="Rig torso position in the scene frame [m]; must match the recording session.",
+    default=None,
+    help=(
+        "Rig root position in the scene frame [m]; must match the recording session."
+        " Defaults to the embodiment's standard placement."
+    ),
 )
 parser.add_argument(
     "--robot_rot",
     type=float,
     nargs=4,
-    default=(0.0, 0.0, 0.7071068, 0.7071068),
-    help="Rig torso orientation quaternion (x y z w); must match the recording session.",
+    default=None,
+    help="Rig root orientation quaternion (x y z w); must match the recording session.",
 )
 parser.add_argument(
     "--dataset",
@@ -96,7 +110,7 @@ from isaaclab.utils import configclass
 from isaaclab_physx.physics import PhysxCfg
 
 from duo_env import DuoEnvCfg, DuoSceneCfg
-from duo_robot import duo_robot_cfg
+from duo_robot import EMBODIMENTS
 from usda_scene import add_usda_scene
 
 # 45° vertical FOV at the output aspect ratio, on the standard 20.955 mm aperture:
@@ -281,11 +295,20 @@ def main():
         if not selected:
             raise SystemExit(f"--episodes {args_cli.episodes!r} selected nothing.")
         episodes = {demo: load_episode(f, demo) for demo in selected}
+        recorded_embodiment = str(f[f"data/{selected[0]}"].attrs.get("embodiment", "franka_duo"))
     print(f"[INFO] Replaying {len(selected)} demo(s): {selected}")
+
+    embodiment = args_cli.embodiment or recorded_embodiment
+    if embodiment not in EMBODIMENTS:
+        raise SystemExit(f"Unknown embodiment {embodiment!r} (recorded attribute?); pass --embodiment.")
+    spec = EMBODIMENTS[embodiment]
+    print(f"[INFO] Embodiment: {embodiment}")
+    robot_pos = tuple(args_cli.robot_pos) if args_cli.robot_pos is not None else spec.default_robot_pos
+    robot_rot = tuple(args_cli.robot_rot) if args_cli.robot_rot is not None else spec.default_robot_rot
 
     env_cfg = DuoReplayEnvCfg()
     env_cfg.sim.device = args_cli.device
-    env_cfg.scene.robot = duo_robot_cfg(pos=tuple(args_cli.robot_pos), rot=tuple(args_cli.robot_rot))
+    env_cfg.scene.robot = spec.robot_cfg(pos=robot_pos, rot=robot_rot)
     add_usda_scene(env_cfg.scene, args_cli.scene_usda)
     env = ManagerBasedRLEnv(cfg=env_cfg)
     env.reset()

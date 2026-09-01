@@ -79,6 +79,7 @@ def scan_dataset(dataset_path: str) -> dict[str, tuple[int, int]]:
 # Parameter schema: (flag, label, default, kind, group). Kind: str|float|bool|choice:<a,b,c>.
 # Defaults mirror make_teleop_scene.py's argparse defaults.
 _PARAMS = [
+    ("--embodiment", "Robot embodiment", "franka_duo", "choice:franka_duo,yam_duo", "Operator & voice"),
     ("--user", "User name (hand calibration)", "", "str", "Operator & voice"),
     ("--mic_device", "Microphone (quest / default / ALSA name)", "default", "str", "Operator & voice"),
     ("--whisper_model", "Whisper model", "base.en", "str", "Operator & voice"),

@@ -1,6 +1,6 @@
 # SharpaWave Duo USDA Teleop
 
-Load any scene USDA, drop the FR3 Duo + SharpaWave rig into it, and teleoperate
+Load any scene USDA, drop a bimanual SharpaWave rig into it, and teleoperate
 the rig with XR hand tracking:
 
 ```bash
@@ -8,10 +8,29 @@ the rig with XR hand tracking:
     --scene_usda ~/sim_benchmark/scene/taco_hoi_178_023.usda --headless
 ```
 
+## Robot embodiments
+
+`--embodiment` selects the robot (default `franka_duo`); both embodiments carry
+two 22-DoF SharpaWave hands and share the same 58-D action space, recording
+format, and voice/auto-start flow:
+
+- `franka_duo` — the FR3 Duo: a fixed torso with two 7-DoF Panda arms. Default
+  placement stands the torso south of the table facing +y.
+- `yam_duo` — two 6-DoF [I2RT YAM Ultra (v2)](https://i2rt.com) arms on a slim
+  mounting rail, bases 56.5 cm apart. Default placement puts the rail ON the
+  tabletop at the table's near edge (`(0, -0.55, 1.0)` on the raised TACO
+  table), arms reaching over the table. The wrist IK commands the SharpaWave
+  wrist bodies directly, so hand alignment is independent of the arm mount.
+  Rebuild the robot USD from the vendored I2RT URDF with
+  `assets/robots/yam_ultra/make_yam_duo_assets.py`.
+
+Recorded demos are stamped with an `embodiment` HDF5 attribute; the replay
+script reads it back automatically.
+
 Put the headset on, open the CloudXR client (Quest/Pico: the CloudXR.js web
 client, e.g. `https://nvidia.github.io/IsaacTeleop/client/release-1.3.x`; Apple
 Vision Pro: pass `--cloudxr_env avp` and use the Isaac XR Teleop Sample Client),
-connect, and press **Play**. Your wrists drive the two Panda arms through
+connect, and press **Play**. Your wrists drive the two arms through
 differential IK and all ten fingers are retargeted onto the SharpaWave hands.
 The arms render 5% transparent by default so they don't block your view
 (`--arm_visual normal|hidden` to change; `--visualize_hands` draws markers on
