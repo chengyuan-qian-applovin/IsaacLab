@@ -181,15 +181,74 @@ On by default (`--no_dr` disables), applied at every episode reset:
   you match the robot wherever it actually is.
 - **Object placement**: each tracked object gets a uniform xy offset within
   `--dr_object_xy` (5 cm) and a yaw within `--dr_object_yaw` (180°) around
-  its authored pose — after the whole randomization center is shifted
-  `--dr_object_bias` (30 cm, 0 disables) horizontally toward the robot base
-  (never past it), bringing the objects within easier reach.
+  its authored pose. `--dr_object_bias` additionally shifts the whole
+  randomization center that many metres horizontally toward the robot base
+  (never past it), to bring objects within easier reach; it is **0 by default**
+  so a scene's authored layout — including one saved by "adjust object" — is
+  used as the center as-is. Turn it on only for scenes authored out of reach,
+  and be aware that it compounds: adjust mode saves where objects currently
+  are, so re-saving a shifted layout shifts it again on the next run.
   Draws are rejection-sampled against bounding-circle
   overlap (footprints from the USD bounds + 1 cm margin — the collision model
   of sim_benchmark's scenegen solvers), never demanding more clearance than
   the authored layout had; after 50 failed draws the authored poses are kept.
   Stacked arrangements (xy-coincident objects, e.g. the ARCTIC box lid on its
   base) move as one group and skip yaw so they are never knocked apart.
+
+### Adjusting where objects start
+
+Saying **"adjust object"** opens a pose-authoring mode that lets you re-author
+a scene's object layout from inside the headset, without editing the USDA.
+
+On entry the arm rig is parked out of sight and two **free-floating SharpaWave
+hands** appear on your wrists instead: their bases follow your tracked wrists
+directly (full 6-DoF — no arm kinematics limiting how far you can turn an
+object), while the fingers keep the ordinary retargeting, contacts, and
+actuator force limits, so objects still move only through compliant robot-hand
+contact. Tracking starts immediately on entry; nothing is recorded, and
+whatever the recorder held is thrown away — authoring a layout never leaves a
+demo behind. Saying "done" restores the rig exactly where it stood. (An
+earlier version let your tracked hand drive objects directly. That put a rigid
+body on the end of a noisy 240 Hz position signal with no mass, damping or
+force limit in between, and objects were flung on contact; going through a
+robot hand keeps the compliance that makes teleop stable.)
+
+While the mode is open, a translucent blue square on the tabletop previews the
+XY randomization region per object (the yaw range is shown only as a number on
+the range panel). It follows the objects as you move them and resizes live as
+you retune the ranges (no overlay with `--no_dr`). Saying "reset" stows the
+hands together with restoring the objects; they reappear once your wrists are
+clear of the restored layout, so the returning hands can never knock it apart.
+
+- **"done"** stops teleop, lets the scene settle, and writes the resting poses
+  to a sidecar `<scene>.usda.poses.json` next to the scene file. The USDA is
+  never modified, and the next load picks the sidecar up automatically. The
+  saved poses also become the centre of the randomization for the rest of the
+  session.
+- **"reset"** means *undo* while the mode is open: every object goes back to
+  where it stood when you entered. It does not reset the scene.
+
+A floating range panel appears alongside showing both values (`xy` in meters,
+`yaw` in **degrees**), its `-`/`+` keys tapped with a thumb-index pinch
+(±1 cm / ±5°). Holding a **Quest controller** (which replaces hand tracking on
+that side — that hand freezes in place until you put the controller down) is
+the quickest way to retune: the thumbstick steps the ranges directly —
+left/right = `xy_range` −/+, up/down = `yaw_range` +/− — auto-repeating while
+held, with the panel updating live; the trigger with the controller tip at a
+panel key also works as a tap. Exact values can be typed at the terminal
+(`xy_range=0.08` / `yaw_range=45`, degrees). The floating hands' finger
+torques are capped by `--adjust_hand_effort` (default 2 N·m) so repositioning
+stays gentle, and `--no_adjust` disables the whole mode — no floating hands,
+panels, or controller plumbing, leaving teleop exactly as it was without the
+feature.
+
+The panel is placed within arm's reach at your station, just above the
+tabletop — it must be physically reachable, because a tap is a pinch at the
+key's world position (tight in the panel plane, ~12 cm of slack in depth). The
+last step lights its key up on the panel; a pinch that lands near a key but
+misses prints the miss distance on the console, and `--debug_adjust_buttons`
+draws a sphere at every key's true hit center. `--range_panel_pos` moves the
+panel if the default lands badly in an unusual scene.
 
 Audio can come from two places:
 
@@ -230,7 +289,10 @@ Sanity-check an installation or a new scene without a headset:
 
 This creates the environment, holds the rig's ready pose for 120 control steps,
 then commands both flanges 3 cm up and verifies the IK follows (it fails loudly
-if the action space or IK wiring is broken).
+if the action space or IK wiring is broken). `--smoke_adjust 120` validates the
+adjust mode the same way: it parks the rig, sweeps synthetic wrists through the
+floating hands, and checks the tracking, the exact robot restore, and the
+panel placement.
 
 ## What the robot is
 
@@ -314,14 +376,17 @@ never shifts pinch timing.
 
 | File | Role |
 |---|---|
-| `make_teleop_scene.py` | CLI entrypoint: builds the env from a USDA + CLI args, runs the XR teleop loop (or `--smoke`/`--voice_test`). |
+| `make_teleop_scene.py` | CLI entrypoint: builds the env from a USDA + CLI args, runs the XR teleop loop (or `--smoke`/`--smoke_adjust`/`--voice_test`). |
 | `replay_teleop_scene.py` | Kinematic replay of recorded demos in the same USDA scene, one camera to MP4. |
 | `duo_env.py` | Env config shared by teleop and replay (scene skeleton + managers). |
 | `duo_robot.py` | The rig: articulation config (actuators, ready pose) and the 58-D action space, including the once-per-step IK optimization. |
 | `duo_teleop_pipeline.py` | The IsaacTeleop retargeting pipeline (hand tracking → 58-D action). |
 | `sharpa_retargeting.py` | Calibrated DexPilot finger retargeting (hand-shape calibration, raw-distance pinch hysteresis). |
 | `usda_scene.py` | References the scene USDA into the env and registers its rigid bodies so resets restore their poses. |
-| `assets/robots/` | Vendored robot USD (torso + arms + hands + skin material). |
+| `adjust_mode.py` | The "adjust object" pose-authoring mode: snapshot/undo, sidecar save, and panel pinch-taps. |
+| `floating_hands.py` | Adjust mode's embodiment swap: parks the rig, drives two free-floating SharpaWave hands from the tracked wrists. |
+| `region_overlay.py` | Adjust mode's in-headset preview of the object-randomization region (XY square + yaw bars per object). |
+| `assets/robots/` | Vendored robot USD (torso + arms + hands + skin material), plus the floating-hand wrappers. |
 | `assets/dex_retargeting/` | Vendored SharpaWave URDFs + DexPilot YAMLs for the finger retargeting. |
 
 ## Vendored example scenes

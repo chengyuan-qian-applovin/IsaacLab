@@ -318,3 +318,164 @@ class MessageDisplay:
         if self._hide_at is not None and time.monotonic() >= self._hide_at:
             self._imageable.MakeInvisible()
             self._hide_at = None
+
+
+#: Fixed pixel layout for :class:`RangePanel`. Each entry names the button and
+#: gives the (px, py) pixel center on the 1024-wide canvas at aspect
+#: :data:`_RANGE_PANEL_ASPECT`. :meth:`RangePanel.button_positions_world`
+#: turns these into world-space hit spheres for pinch-tap detection.
+_RANGE_PANEL_BUTTONS_PX: dict[str, tuple[int, int]] = {
+    "xy_dec": (700, 90),
+    "xy_inc": (900, 90),
+    "yaw_dec": (700, 240),
+    "yaw_inc": (900, 240),
+}
+
+_RANGE_PANEL_CANVAS_W = 1024
+_RANGE_PANEL_ASPECT = 0.32
+
+
+def _panel_normal(yaw_rad: float) -> tuple[float, float, float]:
+    """World-frame unit normal of a billboard at ``yaw_rad`` (faces -y at yaw 0)."""
+    import math as _math
+
+    return (_math.sin(yaw_rad), -_math.cos(yaw_rad), 0.0)
+
+
+def _render_range_png(xy_range_m: float, yaw_range_deg: float, pressed: str | None = None) -> str:
+    """Draw the two rows + four pinch buttons; return the PNG path.
+
+    Args:
+        xy_range_m: The xy half-range [m] shown on the first row.
+        yaw_range_deg: The yaw half-range [deg] shown on the second row.
+        pressed: Button kind to draw highlighted (tap feedback), if any. The
+            highlight persists until the next redraw, marking the last tap.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    font_big = None
+    for candidate in _FONT_CANDIDATES:
+        if os.path.exists(candidate):
+            font_big = ImageFont.truetype(candidate, 52)
+            break
+    if font_big is None:
+        font_big = ImageFont.load_default(size=52)
+
+    width = _RANGE_PANEL_CANVAS_W
+    height = int(round(width * _RANGE_PANEL_ASPECT))
+    img = Image.new("RGB", (width, height), (18, 20, 26))
+    draw = ImageDraw.Draw(img)
+
+    # Labels on the left. The ± makes the half-range semantics explicit: a
+    # reset draws uniformly in [-range, +range] around the authored pose.
+    draw.text((32, 60), f"xy:  ±{xy_range_m:.3f} m", font=font_big, fill=(240, 240, 245))
+    draw.text((32, 210), f"yaw: ±{yaw_range_deg:.1f} deg", font=font_big, fill=(240, 240, 245))
+
+    # Buttons on the right. Each is a rounded 88x88 rect with a "-" or "+" glyph.
+    button_half = 44
+    for kind, (px, py) in _RANGE_PANEL_BUTTONS_PX.items():
+        if kind == pressed:
+            fill, outline, outline_w = (90, 110, 150), (240, 240, 245), 6
+        else:
+            fill, outline, outline_w = (52, 60, 78), (150, 160, 180), 3  # muted slate
+        draw.rounded_rectangle(
+            (px - button_half, py - button_half, px + button_half, py + button_half),
+            radius=14, fill=fill, outline=outline, width=outline_w,
+        )  # fmt: skip
+        glyph = "-" if kind.endswith("_dec") else "+"
+        glyph_px = measurer_text_length(draw, glyph, font_big)
+        draw.text((px - glyph_px // 2, py - 40), glyph, font=font_big, fill=(240, 240, 245))
+
+    png_path = os.path.join(_MESSAGE_DIR, f"range_{next(_MESSAGE_COUNTER)}.png")
+    img.save(png_path)
+    return png_path
+
+
+def measurer_text_length(draw, text: str, font) -> int:
+    """PIL ``textlength`` shim — Draw exposes it directly on newer versions."""
+    return int(draw.textlength(text, font=font))
+
+
+class RangePanel:
+    """A billboard that shows the current xy_range / yaw_range with pinch buttons.
+
+    The panel is a static USD quad; texture is swapped on each :meth:`set_ranges`.
+    Four pinch-tap "buttons" (rendered as rounded rects with ``-`` / ``+`` glyphs)
+    live at fixed pixel positions on the texture. :meth:`button_positions_world`
+    maps those pixels through the panel's world pose to 3D sphere centers, which
+    :class:`~adjust_mode.ObjectAdjuster` hit-tests against the pinch midpoint.
+    """
+
+    HIT_RADIUS_M = 0.08
+    """Sphere radius [m] around each button center for pinch-tap hit-testing."""
+
+    def __init__(
+        self,
+        position: tuple[float, float, float],
+        yaw_deg: float,
+        width: float = 1.2,
+        aspect: float = _RANGE_PANEL_ASPECT,
+        prim_path: str = "/World/RangePanel",
+    ):
+        """Author the (initially hidden) panel."""
+        import math as _math
+
+        from pxr import UsdGeom
+
+        import isaaclab.sim as sim_utils
+
+        self._center = tuple(float(v) for v in position)
+        self._yaw_rad = _math.radians(float(yaw_deg))
+        self._half_w = float(width) / 2.0
+        self._half_h = float(width) * float(aspect) / 2.0
+        self._pngs = [_render_range_png(0.0, 0.0)]
+        self._texture = _build_billboard(prim_path, self._pngs[0], position, yaw_deg, self._half_w, self._half_h)
+        self._imageable = UsdGeom.Imageable(sim_utils.get_current_stage().GetPrimAtPath(prim_path))
+        self._imageable.MakeInvisible()
+
+    def set_ranges(self, xy_range_m: float, yaw_range_deg: float, pressed: str | None = None) -> None:
+        """Rewrite the panel to show ``xy_range`` [m] and ``yaw_range`` [deg].
+
+        ``pressed`` highlights that button until the next redraw (tap feedback).
+        """
+        from pxr import Sdf
+
+        png = _render_range_png(float(xy_range_m), float(yaw_range_deg), pressed)
+        self._texture.GetInput("file").Set(Sdf.AssetPath(png))
+        self._pngs.append(png)
+        # Retire old textures a couple of updates late (see MessageDisplay.show).
+        while len(self._pngs) > 3:
+            with contextlib.suppress(OSError):
+                os.remove(self._pngs.pop(0))
+
+    def show(self) -> None:
+        """Make the panel visible."""
+        self._imageable.MakeVisible()
+
+    def hide(self) -> None:
+        """Hide the panel."""
+        self._imageable.MakeInvisible()
+
+    def button_positions_world(self) -> list[tuple]:
+        """``(kind, (x, y, z), hit_radius, normal)`` for the four pinch buttons, world frame.
+
+        ``kind`` is one of ``xy_dec`` / ``xy_inc`` / ``yaw_dec`` / ``yaw_inc``.
+        The normal lets the hit test tolerate more slack perpendicular to the
+        panel than across it (see :meth:`adjust_mode.ObjectAdjuster.step`).
+        """
+        import math as _math
+
+        cos_y, sin_y = _math.cos(self._yaw_rad), _math.sin(self._yaw_rad)
+        canvas_h = _RANGE_PANEL_CANVAS_W * _RANGE_PANEL_ASPECT
+        normal = _panel_normal(self._yaw_rad)
+        out: list[tuple] = []
+        for kind, (px, py) in _RANGE_PANEL_BUTTONS_PX.items():
+            # Pixel → panel-local (u along panel-x, v along panel-z; image Y is
+            # top-down, panel Z is up, so flip Y).
+            u = (px / _RANGE_PANEL_CANVAS_W - 0.5) * 2.0 * self._half_w
+            v = (0.5 - py / canvas_h) * 2.0 * self._half_h
+            wx = self._center[0] + u * cos_y
+            wy = self._center[1] + u * sin_y
+            wz = self._center[2] + v
+            out.append((kind, (wx, wy, wz), self.HIT_RADIUS_M, normal))
+        return out

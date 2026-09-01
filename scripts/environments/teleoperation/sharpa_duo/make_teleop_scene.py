@@ -43,6 +43,7 @@ Validation without a headset:
 import argparse
 import functools
 import os
+import sys
 
 print = functools.partial(print, flush=True)  # noqa: A001
 
@@ -53,7 +54,7 @@ parser.add_argument(
     "--embodiment",
     type=str,
     choices=("franka_duo", "yam_duo"),
-    default="franka_duo",
+    default="yam_duo",
     help=(
         "Robot embodiment: 'franka_duo' (fixed torso + two 7-DoF Panda arms, default) or 'yam_duo'"
         " (two 6-DoF I2RT YAM Ultra arms on a table-edge rail, bases 0.565 m apart). Both carry"
@@ -140,10 +141,12 @@ parser.add_argument(
 parser.add_argument(
     "--dr_object_bias",
     type=float,
-    default=0.3,
+    default=0.0,
     help=(
         "DR: fixed shift [m] moving every object's randomization center horizontally toward the robot"
-        " base (never past it), bringing objects within easier reach; 0 disables."
+        " base (never past it), bringing objects within easier reach. Off by default, so a scene's"
+        " authored layout (including one saved by 'adjust object') is used as the center as-is;"
+        " note that a nonzero shift compounds if you then re-save the shifted layout."
     ),
 )
 parser.add_argument(
@@ -184,6 +187,41 @@ parser.add_argument(
     type=float,
     default=4.0,
     help="How long a voice message stays on the headset panel before it hides.",
+)
+parser.add_argument(
+    "--range_panel_pos",
+    type=float,
+    nargs=3,
+    default=None,
+    help=(
+        "World position [m] of the adjust-mode range panel. Defaults to within arm's reach at the"
+        " operator's station, above the tabletop (derived from --align_head_xy and the scene)."
+    ),
+)
+parser.add_argument(
+    "--no_adjust",
+    action="store_true",
+    help=(
+        "Disable the 'adjust object' mode entirely: no floating hands in the scene, no controller"
+        " block in the pipeline, no panels. Normal teleop runs exactly as before the feature existed."
+    ),
+)
+parser.add_argument(
+    "--adjust_hand_effort",
+    type=float,
+    default=2.0,
+    help=(
+        "Effort limit [N·m] for the floating adjust-mode hands' finger joints. Lower is gentler on"
+        " the objects being repositioned; the teleop rig's own hands are unaffected."
+    ),
+)
+parser.add_argument(
+    "--debug_adjust_buttons",
+    action="store_true",
+    help=(
+        "Draw a small sphere at every adjust-panel key's world-space hit center while the panels are"
+        " shown, so a mismatch between where a key LOOKS and where its pinch target IS becomes visible."
+    ),
 )
 parser.add_argument(
     "--render_frequency",
@@ -350,6 +388,16 @@ parser.add_argument(
     metavar="N",
     help="No-XR validation: hold the ready pose for N control steps, report flange drift, exit.",
 )
+parser.add_argument(
+    "--smoke_adjust",
+    type=int,
+    default=None,
+    metavar="N",
+    help=(
+        "No-XR validation of the adjust mode: park the robot, sweep synthetic wrists through the"
+        " floating hands for N control steps, check tracking and the exact robot restore, exit."
+    ),
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -379,7 +427,7 @@ if args_cli.voice_test is not None:
     labeler.close()
     raise SystemExit(0)
 
-if args_cli.smoke is None:
+if args_cli.smoke is None and args_cli.smoke_adjust is None:
     args_cli.xr = True
     if not args_cli.headless and not os.environ.get("DISPLAY"):
         print("[WARNING] XR in GUI mode without a DISPLAY: the AR session will never start. Add --headless.")
@@ -412,6 +460,9 @@ if args_cli.robot_pos is None:
     args_cli.robot_pos = list(SPEC.default_robot_pos)
 if args_cli.robot_rot is None:
     args_cli.robot_rot = list(SPEC.default_robot_rot)
+print(
+    f"[INFO] Embodiment: {SPEC.name} (--embodiment) at pos {tuple(args_cli.robot_pos)}, rot {tuple(args_cli.robot_rot)}"
+)
 
 
 # -- Environment config -----------------------------------------------------------
@@ -447,13 +498,26 @@ def build_env_cfg(scene_usda: str) -> ManagerBasedRLEnvCfg:
         hand_stiffness=args_cli.hand_kp,
         hand_damping=args_cli.hand_kd,
     )
-    add_usda_scene(env_cfg.scene, scene_usda, track_objects=not args_cli.no_track_objects)
+    tracked = add_usda_scene(env_cfg.scene, scene_usda, track_objects=not args_cli.no_track_objects)
+    if tracked and not args_cli.no_adjust:
+        # Adjust mode's free-floating SharpaWave hands (see floating_hands.py).
+        # Spawned parked and hidden; asleep (and near-free) until the mode opens.
+        from duo_robot import floating_hand_cfg
+
+        env_cfg.scene.float_hand_left = floating_hand_cfg(
+            "left", args_cli.hand_kp, args_cli.hand_kd, args_cli.adjust_hand_effort
+        )
+        env_cfg.scene.float_hand_right = floating_hand_cfg(
+            "right", args_cli.hand_kp, args_cli.hand_kd, args_cli.adjust_hand_effort
+        )
     # Render every Nth physics substep, as close to the requested rate as the dt allows.
     interval = max(1, round(1.0 / (env_cfg.sim.dt * args_cli.render_frequency)))
     env_cfg.sim.render_interval = interval
     print(f"[INFO] render interval {interval} substeps -> {1.0 / (env_cfg.sim.dt * interval):.1f} Hz")
     if args_cli.arm_visual == "transparent":
         # Opacity needs translucency support in the renderer; must be set pre-sim-context.
+        # (The DR-region overlay renders solid without it — cosmetic only, so it does
+        # not force the flag on; normal teleop's renderer setup stays exactly as-is.)
         env_cfg.sim.render.enable_translucency = True
     if not args_cli.no_dr:
         # Domain randomization on every episode reset: jitter the arms' start
@@ -484,7 +548,7 @@ def build_env_cfg(scene_usda: str) -> ManagerBasedRLEnvCfg:
                 "bias_dist": args_cli.dr_object_bias,
             },
         )
-    if args_cli.smoke is None and not args_cli.no_record:
+    if args_cli.smoke is None and args_cli.smoke_adjust is None and not args_cli.no_record:
         from recording import AppendableHDF5DatasetFileHandler, DuoRecorderManagerCfg
 
         env_cfg.recorders = DuoRecorderManagerCfg()
@@ -536,6 +600,28 @@ def settle_scene(env: ManagerBasedRLEnv) -> None:
     if env.cfg.recorders is not None:
         env.recorder_manager.reset()
         env.recorder_manager.record_post_reset([0])
+
+
+def _settle_adjust(env: ManagerBasedRLEnv) -> None:
+    """Run physics until the just-adjusted objects come to rest.
+
+    Adjust mode saves what the operator left behind, so the snapshot has to be
+    taken at rest: an object still rocking after the robot let go would
+    otherwise be written to the sidecar mid-motion and then become the centre of
+    every future randomization. Mirrors :func:`settle_scene`'s pinned-robot tick
+    loop but leaves the recorder alone, since adjust mode discards its buffer.
+    """
+    seconds = args_cli.settle_time if args_cli.settle_time > 0.0 else 1.0
+    robot = env.scene["robot"]
+    robot.set_joint_position_target_index(target=robot.data.joint_pos.torch.clone())
+    steps = max(1, round(seconds / env.physics_dt))
+    render_interval = max(1, int(env.cfg.sim.render_interval))
+    for i in range(steps):
+        env.scene.write_data_to_sim()
+        env.sim.step(render=False)
+        if (i + 1) % render_interval == 0:
+            env.sim.render()
+        env.scene.update(env.physics_dt)
 
 
 def to_root_frame(env: ManagerBasedRLEnv, action: torch.Tensor) -> torch.Tensor:
@@ -629,6 +715,16 @@ class AutoStartMatcher:
             )
         except Exception as exc:
             print(f"[WARNING] Auto-start axis frames unavailable ({exc}); matching still works.")
+
+    def suspend_frames(self) -> None:
+        """Hide the alignment axis frames immediately.
+
+        Adjust mode calls this on entry: :meth:`update` stops running there, so
+        without it the frames would stay frozen mid-air at their last drawn
+        spot — floating arrows over the hands and the table.
+        """
+        self._show_frames(None, None)
+        self._match_since = None
 
     def _show_frames(self, wrist_poses: torch.Tensor | None, targets: torch.Tensor | None) -> None:
         """Draw frames on the hand wrists (large) and wrist targets (small); None-None hides them."""
@@ -763,6 +859,23 @@ class EpisodeFlow:
         self.suppress_active_frames = 0  # ignore the client's stale "playing" state after a host stop
         self.demo_count = 0
         self.success_count = 0
+        # --- "adjust object" mode state (see :mod:`adjust_mode`). --------------
+        # ``adjuster`` and ``range_panel`` are bound after they are spawned in
+        # :func:`run_teleop`; ``dr_object_params`` is the live event-term param
+        # dict for :func:`randomize_tracked_objects`, mutated by the stdin
+        # reader while adjust mode is active (None when DR is disabled).
+        self.adjust_requested = False
+        self.exit_adjust_requested = False
+        self.adjust_reset_requested = False
+        self.adjust_mode = False
+        self.adjuster = None
+        self.range_panel = None
+        self.dr_object_params = None
+        # The floating-hand embodiment swap and the DR-region overlay, bound in
+        # run_teleop when the scene has tracked objects (overlay: DR only).
+        self.floating_hands = None
+        self.region_overlay = None
+        self.button_markers = None  # --debug_adjust_buttons spheres
 
     # -- device callbacks ---------------------------------------------------
 
@@ -782,6 +895,16 @@ class EpisodeFlow:
 
     def episode_has_data(self) -> bool:
         return self.recording and not self.env.recorder_manager.get_episode(0).is_empty()
+
+    def discard_episode(self) -> None:
+        """Drop whatever the recorder has buffered, without exporting it.
+
+        Adjust mode runs the full teleop stack, so the recorder fills up as
+        usual; authoring object poses must not leave a demo behind.
+        """
+        if self.recording:
+            self.env.recorder_manager.reset()
+        self.awaiting_label = False
 
     def _request_client_toggle(self, action: str) -> None:
         """Drive the teleop state machine, as if the operator pressed Play/Stop.
@@ -913,6 +1036,12 @@ class EpisodeFlow:
             print("[VOICE] Teleop paused. Resume with 'play', the client button, or the start pose.")
             return "stop - teleop paused"
         if label == "reset":
+            if self.adjust_mode:
+                # While adjusting, "reset" undoes the edits rather than discarding
+                # an episode. The episode reset is skipped in this mode anyway, so
+                # setting that flag here would only fire it on the way out.
+                self.adjust_reset_requested = True
+                return "reset - reverting objects to their poses at entry"
             self.reset_requested = True  # same as the client button: discards the episode
             return "reset - discarding the episode"
         if label == "next":
@@ -923,6 +1052,21 @@ class EpisodeFlow:
                 print("[SCENE] Switching scenes: the unlabeled in-flight episode is discarded.")
             self.next_requested = True
             return "next - switching scene"
+        if label == "adjust":
+            # Pose-authoring mode: the rig is parked and free-floating hands
+            # move the objects; nothing is recorded, and the final object
+            # poses become the scene's authored ones.
+            if self.adjuster is None:
+                return "adjust ignored - no tracked objects in this scene"
+            if self.adjust_mode:
+                return "adjust ignored - already adjusting"
+            self.adjust_requested = True
+            return "adjust - grab objects with the floating hands"
+        if label == "done":
+            if not self.adjust_mode:
+                return "done ignored - not in adjust mode"
+            self.exit_adjust_requested = True
+            return "done - saving authored poses"
         if not self.recording:
             return f"{label} ignored - recording is disabled"
         if not self.awaiting_label and self.episode_has_data():
@@ -989,7 +1133,255 @@ def serve_align(flow: EpisodeFlow, aligner, head_pose_fn) -> bool:
     return aligner.align(head)
 
 
-def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) -> tuple[str, tuple]:
+def _cap_object_depenetration(env: ManagerBasedRLEnv, tracked_names: list[str], cap: float = 1.5) -> None:
+    """Cap how fast the solver may eject a tracked object out of a penetration.
+
+    The floating hands' base is kinematic, so any overlap is resolved entirely
+    on the object's side, and the PhysX default ejection speed launches light
+    objects. Authored on the object prims post-parse; PhysX picks rigid-body
+    property changes up at runtime.
+    """
+    import isaaclab.sim as sim_utils
+    from isaaclab.sim import schemas
+
+    try:
+        for name in tracked_names:
+            for prim_path in sim_utils.find_matching_prim_paths(env.scene[f"object_{name}"].cfg.prim_path):
+                schemas.modify_rigid_body_properties(
+                    prim_path, sim_utils.RigidBodyPropertiesCfg(max_depenetration_velocity=cap)
+                )
+        print(f"[ADJUST] Object depenetration velocity capped at {cap} m/s ({len(tracked_names)} object(s)).")
+    except Exception as exc:
+        print(f"[ADJUST] Could not cap object depenetration velocity: {exc}")
+
+
+def _adjust_panel_layout() -> tuple[tuple[float, float, float], float]:
+    """Placement of the adjust-mode range panel: ``(range_pos, yaw_deg)``.
+
+    An interaction panel must be REACHABLE — pinch-taps are hit-tested at the
+    keys' world positions — unlike the read-only task/voice billboards, which
+    sit beyond the table. The panel goes within arm's reach of the operator's
+    station (``--align_head_xy``), just above the tabletop (from the scene's
+    tracked objects, ``usda_scene.SUPPORT_SURFACE_Z``), slightly to the
+    operator's left so the workspace stays clear. ``--range_panel_pos``
+    overrides it.
+    """
+    from scipy.spatial.transform import Rotation as R
+
+    import usda_scene
+
+    tabletop = usda_scene.SUPPORT_SURFACE_Z
+    if tabletop is None:
+        tabletop = float(args_cli.robot_pos[2])
+    robot_yaw_deg = float(R.from_quat(args_cli.robot_rot).as_euler("ZYX", degrees=True)[0])
+    yaw_rad = math.radians(robot_yaw_deg)
+    fwd = (math.cos(yaw_rad), math.sin(yaw_rad))
+    right = (math.sin(yaw_rad), -math.cos(yaw_rad))
+    head = tuple(args_cli.align_head_xy)
+    lateral = -0.35
+    range_pos = (
+        head[0] + 0.55 * fwd[0] + lateral * right[0],
+        head[1] + 0.55 * fwd[1] + lateral * right[1],
+        tabletop + 0.55,
+    )
+    if args_cli.range_panel_pos is not None:
+        range_pos = tuple(args_cli.range_panel_pos)
+    # Same convention as the other billboards: at yaw 0 a panel faces -y, so
+    # this keeps it square to an operator facing along the robot's forward.
+    return range_pos, robot_yaw_deg - 90.0
+
+
+def _current_ranges(flow) -> tuple[float, float]:
+    """(xy_range [m], yaw_range [deg]) — from the live DR params if present, else CLI defaults."""
+    params = flow.dr_object_params
+    xy_m = float(params["xy_range"]) if params is not None else float(args_cli.dr_object_xy)
+    yaw_rad = float(params["yaw_range"]) if params is not None else math.radians(args_cli.dr_object_yaw)
+    return xy_m, math.degrees(yaw_rad)
+
+
+def _show_range_panel(flow) -> None:
+    """Refresh the RangePanel with the current ranges and show it."""
+    if flow.range_panel is None:
+        return
+    xy_m, yaw_deg = _current_ranges(flow)
+    flow.range_panel.set_ranges(xy_m, yaw_deg)
+    flow.range_panel.show()
+    if flow.button_markers is not None:
+        # --debug_adjust_buttons: mark every key's actual pinch-hit center.
+        positions = [entry[1] for entry in flow.range_panel.button_positions_world()]
+        flow.button_markers.set_visibility(True)
+        flow.button_markers.visualize(translations=torch.tensor(positions, dtype=torch.float32))
+
+
+def _hide_range_panel(flow) -> None:
+    """Hide the RangePanel."""
+    if flow.range_panel is not None:
+        flow.range_panel.hide()
+    if flow.button_markers is not None:
+        flow.button_markers.set_visibility(False)
+
+
+#: In-VR pinch-tap step sizes and clamps for the RangePanel buttons.
+_XY_STEP_M = 0.01
+_XY_CLAMP_M = (0.0, 0.5)
+_YAW_STEP_RAD = math.radians(5.0)
+_YAW_CLAMP_RAD = (0.0, math.pi)
+
+
+def _on_range_button(flow, kind: str) -> None:
+    """Handle a pinch-tap on one of the four RangePanel buttons.
+
+    Mutates :attr:`EpisodeFlow.dr_object_params` in place so the next reset
+    picks up the new range; refreshes the panel texture so the operator sees
+    the update.
+    """
+    params = flow.dr_object_params
+    if params is None:
+        print("[ADJUST] Panel button ignored: DR is disabled (--no_dr).")
+        return
+    if kind == "xy_dec":
+        params["xy_range"] = max(_XY_CLAMP_M[0], float(params["xy_range"]) - _XY_STEP_M)
+    elif kind == "xy_inc":
+        params["xy_range"] = min(_XY_CLAMP_M[1], float(params["xy_range"]) + _XY_STEP_M)
+    elif kind == "yaw_dec":
+        params["yaw_range"] = max(_YAW_CLAMP_RAD[0], float(params["yaw_range"]) - _YAW_STEP_RAD)
+    elif kind == "yaw_inc":
+        params["yaw_range"] = min(_YAW_CLAMP_RAD[1], float(params["yaw_range"]) + _YAW_STEP_RAD)
+    else:
+        return
+    xy_m, yaw_deg = _current_ranges(flow)
+    print(f"[ADJUST] {kind}: xy_range={xy_m:.3f} m, yaw_range={yaw_deg:.1f} deg")
+    if flow.range_panel is not None:
+        # ``pressed`` lights the key up, so panel taps AND controller-thumbstick
+        # steps (which dispatch the same kinds) both give visible feedback.
+        flow.range_panel.set_ranges(xy_m, yaw_deg, pressed=kind)
+
+
+class _AdjustStdinReader:
+    """Daemon thread that consumes ``xy_range=<m>`` / ``yaw_range=<deg>`` from stdin.
+
+    Only reads while adjust mode is active — starts on ``enter``, stops on
+    ``exit`` — and mutates the reset-time DR params dict in place so subsequent
+    resets pick the new values up. Also refreshes the in-headset RangePanel.
+    """
+
+    def __init__(self, flow):
+        import threading
+
+        self._flow = flow
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        import threading
+
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="adjust-stdin-reader", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        import select
+
+        while not self._stop.is_set():
+            # Poll so the loop can exit promptly when adjust mode ends.
+            r, _, _ = select.select([sys.stdin], [], [], 0.25)
+            if not r:
+                continue
+            line = sys.stdin.readline()
+            if not line:
+                return  # stdin closed
+            self._apply(line.strip())
+
+    def _apply(self, line: str) -> None:
+        if "=" not in line:
+            return
+        key, _, raw = line.partition("=")
+        key = key.strip().lower()
+        try:
+            value = float(raw.strip())
+        except ValueError:
+            print(f"[ADJUST] Ignored input '{line}': value is not a number")
+            return
+        params = self._flow.dr_object_params
+        if params is None:
+            print("[ADJUST] Ignored input: DR is disabled (--no_dr), so ranges have no effect.")
+            return
+        if key == "xy_range":
+            params["xy_range"] = value
+        elif key == "yaw_range":
+            params["yaw_range"] = math.radians(value)  # accept degrees, store radians
+        else:
+            print(f"[ADJUST] Unknown key '{key}'; expected 'xy_range' or 'yaw_range'.")
+            return
+        xy_m, yaw_deg = _current_ranges(self._flow)
+        print(f"[ADJUST] xy_range={xy_m:.4f} m, yaw_range={yaw_deg:.2f} deg")
+        if self._flow.range_panel is not None:
+            self._flow.range_panel.set_ranges(xy_m, yaw_deg)
+
+
+def _serve_adjust_transitions(flow: "EpisodeFlow", env: ManagerBasedRLEnv, stdin_reader, auto_start) -> None:
+    """Serve pending adjust-mode enter / undo / exit requests (voice-driven flags)."""
+    if flow.adjust_requested and flow.adjuster is not None:
+        flow.adjust_requested = False
+        flow.adjust_mode = True
+        flow.adjuster.enter()
+        if flow.floating_hands is not None:
+            flow.floating_hands.enter()  # park the rig; hands appear on first track
+        if auto_start is not None:
+            auto_start.suspend_frames()  # no rig to match; drop the frozen arrows
+        flow.discard_episode()  # nothing authored should become a demo
+        flow.request_client_start()  # move objects straight away
+        _show_range_panel(flow)
+        if flow.region_overlay is not None:
+            flow.region_overlay.show()
+        if stdin_reader is not None:
+            stdin_reader.start()
+        flow.show_voice_message("Adjust: grab objects with the floating hands. 'reset' undoes, 'done' saves.")
+        print(
+            "[ADJUST] Entered adjust mode — the rig is parked and nothing is recorded."
+            " Grab and place objects with the floating hands. Retune xy_range and"
+            " yaw_range (degrees) with a controller thumbstick (left/right = xy,"
+            " up/down = yaw), by pinching the panel's '-' / '+' keys, or by typing"
+            " 'xy_range=0.08' / 'yaw_range=45' at the terminal. Say 'reset' to undo"
+            " every change since entering, 'done' to settle and save."
+        )
+    if flow.adjust_reset_requested and flow.adjust_mode:
+        flow.adjust_reset_requested = False
+        if flow.floating_hands is not None:
+            # Stow the hands first, so no object is teleported back into the
+            # space a hand occupies (depenetration kick).
+            flow.floating_hands.park_hands()
+        restored = flow.adjuster.reset()
+        _settle_adjust(env)
+        print(
+            f"[ADJUST] Reverted {restored} object(s) to their poses at mode entry. The hands are"
+            " stowed and return once your wrists are clear of the restored objects."
+        )
+    if flow.exit_adjust_requested and flow.adjust_mode:
+        flow.exit_adjust_requested = False
+        flow.stop_teleop()  # let go before the poses are frozen
+        if flow.floating_hands is not None:
+            flow.floating_hands.park_hands()
+        _settle_adjust(env)
+        flow.adjuster.exit()
+        if flow.floating_hands is not None:
+            flow.floating_hands.exit()  # rig returns exactly where it was
+        flow.discard_episode()
+        flow.adjust_mode = False
+        _hide_range_panel(flow)
+        if flow.region_overlay is not None:
+            flow.region_overlay.hide()
+        if stdin_reader is not None:
+            stdin_reader.stop()
+        print("[ADJUST] Exited adjust mode; teleop stopped. Press Play or say 'play' to resume.")
+
+
+def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple, scene_usda: str) -> tuple[str, tuple]:
     """Drive the env from XR hand tracking for one scene (see :class:`EpisodeFlow`).
 
     Args:
@@ -998,6 +1390,8 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
         scene_name: Stamped on every exported demo as its ``scene`` HDF5 attr.
         anchor: ``(anchor_pos, anchor_rot)`` xyzw to start from, so "align"
             adjustments carry across scene switches.
+        scene_usda: Absolute path to the scene USDA — the "adjust object" mode
+            writes edited poses to ``<scene_usda>.poses.json`` next to it.
 
     Returns:
         ``(reason, anchor)`` where reason is ``"next"`` (voice command: advance
@@ -1013,6 +1407,7 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
     from duo_teleop_pipeline import build_duo_pipeline
     from recording import XrHandsRecorder
     from xr_extras import (
+        XR_CONTROLLERS_DIM,
         XR_EXTRAS_DIM,
         AnchorAligner,
         HandJointMarkers,
@@ -1052,13 +1447,70 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
         )
 
     # --user selects the per-user calibration from calibrate_hand_shape.py; an
-    # explicitly overridden --hand_calibration wins over it.
+    # explicitly overridden --hand_calibration wins over it. Resolved before
+    # the adjust-mode block: the floating hands fold it into their wrist mapping.
     hand_calibration = args_cli.hand_calibration
     if args_cli.user and hand_calibration == parser.get_default("hand_calibration"):
         hand_calibration = f"hand_calibration_{args_cli.user}.yml"
         print(f"[INFO] Using user '{args_cli.user}' hand calibration: {hand_calibration}")
+
+    # "adjust object" mode: park the rig and hand-edit tracked object poses
+    # with the free-floating SharpaWave hands. Spawn the panels + wire the
+    # ObjectAdjuster only if the scene actually has tracked objects; otherwise
+    # leave flow.adjuster None so the voice dispatcher explains the no-op.
+    tracked_names = [n.removeprefix("object_") for n in env.scene.rigid_objects.keys() if n.startswith("object_")]
+    if tracked_names and not args_cli.no_adjust:
+        from adjust_mode import ObjectAdjuster
+        from floating_hands import FloatingHands
+        from task_display import RangePanel
+
+        flow.adjuster = ObjectAdjuster(env, tracked_names, scene_usda)
+        flow.floating_hands = FloatingHands(env, hand_calibration, tracked_names)
+        range_pos, range_panel_yaw = _adjust_panel_layout()
+        flow.range_panel = RangePanel(range_pos, range_panel_yaw)
+        print(f"[ADJUST] RangePanel at {tuple(round(v, 2) for v in range_pos)} (--range_panel_pos to move)")
+        _cap_object_depenetration(env, tracked_names)
+        # Live handle to the reset-time DR params — pinch-tap buttons on the
+        # panel, the controller thumbstick, and the stdin reader all mutate
+        # this dict in place — plus the in-headset overlay that draws what the
+        # xy range means on the table.
+        if not args_cli.no_dr and hasattr(env.cfg.events, "dr_objects"):
+            from region_overlay import RegionOverlay
+
+            flow.dr_object_params = env.cfg.events.dr_objects.params
+            flow.region_overlay = RegionOverlay(env, tracked_names)
+        # Wire pinch-tap dispatch onto the panel: hit-test every key each
+        # frame, fire :func:`_on_range_button` on the rising edge (see
+        # :meth:`ObjectAdjuster.step`). The panel reports per-key radii and
+        # its plane normal, so the hit test is tight on the panel and slack
+        # in depth; the dispatch radius below is only the legacy fallback.
+        flow.adjuster.set_button_dispatch(
+            buttons_fn=lambda _flow=flow: _flow.range_panel.button_positions_world(),
+            on_press=lambda kind, _flow=flow: _on_range_button(_flow, kind),
+            hit_radius=RangePanel.HIT_RADIUS_M,
+        )
+        if args_cli.debug_adjust_buttons:
+            import isaaclab.sim as sim_utils
+            from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+
+            flow.button_markers = VisualizationMarkers(
+                VisualizationMarkersCfg(
+                    prim_path="/Visuals/adjust_button_spheres",
+                    markers={
+                        "hit": sim_utils.SphereCfg(
+                            radius=0.02,
+                            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 0.2, 0.8), opacity=0.5),
+                        )
+                    },
+                )
+            )
+            flow.button_markers.set_visibility(False)
+
     pipeline, retargeters = build_duo_pipeline(
-        include_xr_hands=True, hand_calibration=hand_calibration, wrist_offsets_xyzw=SPEC.wrist_offsets_xyzw
+        include_xr_hands=True,
+        include_xr_controllers=not args_cli.no_adjust,
+        hand_calibration=hand_calibration,
+        wrist_offsets_xyzw=SPEC.wrist_offsets_xyzw,
     )
     teleop_cfg = IsaacTeleopCfg(
         xr_cfg=XrCfg(anchor_pos=tuple(anchor[0]), anchor_rot=tuple(anchor[1])),
@@ -1105,6 +1557,7 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
         "Say 'success'/'failure' to end, label, and export the episode. "
         "Episode timeout discards without export."
     )
+    stdin_reader = _AdjustStdinReader(flow) if flow.adjuster is not None else None
     with teleop, torch.inference_mode():
         env.reset()
         settle_scene(env)
@@ -1119,10 +1572,14 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
                 flow.handle_voice_label()
                 if flow.voice_display is not None:
                     flow.voice_display.update()  # hides the panel once its message ages out
+                # Adjust-mode transitions: served BEFORE handle_reset so a stray
+                # reset request doesn't fire while the operator is repositioning.
+                _serve_adjust_transitions(flow, env, stdin_reader, auto_start)
                 if flow.next_requested:
                     flow.request_client_stop()
                     break
-                flow.handle_reset()
+                if not flow.adjust_mode:
+                    flow.handle_reset()
                 action = teleop.advance()
                 flow.handle_control_events(poll_control_events)
 
@@ -1133,12 +1590,34 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
                     env.sim.render()
                     continue
 
+                # Slice the ride-along blocks off the 58-D robot action, in
+                # reverse order of how the pipeline appended them (the
+                # controllers block exists only when adjust mode is available).
+                xr_controllers = None
+                if not args_cli.no_adjust:
+                    xr_controllers = action[-XR_CONTROLLERS_DIM:].reshape(2, 11)
+                    action = action[:-XR_CONTROLLERS_DIM]
                 xr_hands = action[-XR_EXTRAS_DIM:].reshape(2, 26, 7)
                 action = action[:-XR_EXTRAS_DIM]
                 XrHandsRecorder.latest = xr_hands
                 if markers is not None:
                     markers.update(xr_hands)
 
+                if flow.adjust_mode:
+                    # Adjust mode owns its own stepping: panel pinch-taps, the
+                    # DR-region overlay, and the floating hands' substep loop.
+                    # env.step never runs here, so the recorder stays empty and
+                    # the episode timeout cannot fire mid-adjust; auto-start is
+                    # skipped because entering the mode already pressed Play.
+                    flow.adjuster.step(xr_hands)
+                    flow.adjuster.step_controllers(xr_controllers)  # trigger-taps, if a controller is held
+                    if flow.region_overlay is not None and flow.dr_object_params is not None:
+                        flow.region_overlay.update(flow.dr_object_params)
+                    if flow.teleop_active and flow.floating_hands is not None:
+                        flow.floating_hands.step(xr_hands, action, xr_controllers)
+                    else:
+                        env.sim.render()
+                    continue
                 if auto_start is not None:
                     auto_start.update(action)
                 if not flow.teleop_active:
@@ -1153,6 +1632,8 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple) 
                     "the XR session stays alive. Press Play to retry or Reset to reset."
                 )
                 flow.teleop_active = False
+        if stdin_reader is not None:
+            stdin_reader.stop()
     # Carry any "align" adjustment into the next scene's device.
     xr_cfg = teleop._anchor_manager._xr_cfg
     anchor_out = (tuple(xr_cfg.anchor_pos), tuple(xr_cfg.anchor_rot))
@@ -1218,6 +1699,121 @@ def run_smoke(env: ManagerBasedRLEnv, num_steps: int) -> None:
         raise SystemExit(1)
 
 
+def run_adjust_smoke(env: ManagerBasedRLEnv, num_steps: int) -> None:
+    """No-XR adjust-mode check: hand tracking, robot park/restore, panels, overlay.
+
+    Parks the robot through :class:`floating_hands.FloatingHands`, sweeps two
+    synthetic wrists above the table for ``num_steps`` control steps, and
+    asserts that (a) the hands' wrist bodies track the synthetic wrists, (b)
+    the robot sat parked with its joints untouched meanwhile, (c) exiting puts
+    the robot back exactly, and (d) the adjust panels land reachable and above
+    the tabletop. Exercises the DR-region overlay when DR is enabled.
+    """
+    from duo_robot import _SHARPA_WRIST_OFFSETS
+    from floating_hands import _ROBOT_PARK_LIFT_M, FloatingHands
+    from task_display import RangePanel
+
+    import usda_scene
+
+    from isaaclab.utils.math import quat_error_magnitude
+
+    env.reset()
+    settle_scene(env)
+    tracked = [n.removeprefix("object_") for n in env.scene.rigid_objects.keys() if n.startswith("object_")]
+    if not tracked:
+        print("[SMOKE-ADJUST] Scene has no tracked objects; nothing to validate.")
+        return
+    robot = env.scene["robot"]
+    before_root = torch.cat([robot.data.root_pos_w.torch[0], robot.data.root_quat_w.torch[0]]).clone()
+    before_joints = robot.data.joint_pos.torch.clone()
+    tabletop = usda_scene.SUPPORT_SURFACE_Z
+    if tabletop is None:
+        tabletop = float(args_cli.robot_pos[2])
+    ok = True
+
+    # Same post-parse object depenetration cap run_teleop applies (validates
+    # that the live USD property write does not raise on this stack).
+    _cap_object_depenetration(env, tracked)
+
+    hands = FloatingHands(env, hand_calibration=None, tracked_object_names=tracked)
+    overlay = None
+    if not args_cli.no_dr and hasattr(env.cfg.events, "dr_objects"):
+        from region_overlay import RegionOverlay
+
+        overlay = RegionOverlay(env, tracked)
+        overlay.show()
+
+    # Sweep two synthetic wrists (identity orientation) above the table center.
+    xr_hands = torch.zeros(2, 26, 7)
+    action = torch.zeros(58)
+    targets = torch.zeros(2, 3)
+    with torch.inference_mode():
+        hands.enter()
+        parked_lift = float(robot.data.root_pos_w.torch[0, 2]) - float(before_root[2])
+        for step in range(num_steps):
+            phase = 2.0 * math.pi * step / max(num_steps, 1)
+            # Sweep clear of the objects at the table center: the attach guard
+            # keeps a hand parked while its wrist target is inside an object's
+            # clearance sphere, and a blocked attach would fail the tracking check.
+            for i, x0 in enumerate((-0.25, 0.25)):
+                targets[i] = torch.tensor([x0 + 0.10 * math.sin(phase), -0.20, tabletop + 0.35])
+                xr_hands[i, 1, :3] = targets[i]
+                xr_hands[i, 1, 3:7] = torch.tensor([0.0, 0.0, 0.0, 1.0])
+            hands.step(xr_hands, action)
+            if overlay is not None:
+                overlay.update(env.cfg.events.dr_objects.params)
+
+        # (a) tracking: the wrist bodies sit at the synthetic wrists.
+        for i, side in enumerate(("left", "right")):
+            hand = env.scene[f"float_hand_{side}"]
+            wrist_id = hand.body_names.index(f"{side}_hand_wrist")
+            pos_err = float((hand.data.body_pos_w.torch[0, wrist_id] - targets[i].to(env.device)).norm())
+            expected_quat = torch.tensor(_SHARPA_WRIST_OFFSETS[side], device=env.device).unsqueeze(0)
+            rot_err = float(
+                quat_error_magnitude(hand.data.body_quat_w.torch[0, wrist_id].unsqueeze(0), expected_quat)[0]
+            )
+            print(
+                f"[SMOKE-ADJUST] {side} hand: wrist pos err {pos_err * 1000:.2f} mm,"
+                f" rot err {math.degrees(rot_err):.2f} deg"
+            )
+            ok = ok and pos_err < 0.01 and rot_err < math.radians(5.0)
+
+        # (b) the robot sat parked, joints untouched.
+        held_err = float((robot.data.joint_pos.torch - before_joints).abs().max())
+        print(f"[SMOKE-ADJUST] robot parked +{parked_lift:.2f} m, joint drift {held_err:.4f} rad while parked")
+        ok = ok and abs(parked_lift - _ROBOT_PARK_LIFT_M) < 1e-3 and held_err < 0.05
+
+        # (c) exit restores the robot exactly.
+        hands.exit()
+        after_root = torch.cat([robot.data.root_pos_w.torch[0], robot.data.root_quat_w.torch[0]])
+        root_err = float((after_root[:3] - before_root[:3]).norm())
+        joint_err = float((robot.data.joint_pos.torch - before_joints).abs().max())
+        print(f"[SMOKE-ADJUST] restore: root err {root_err * 1000:.3f} mm, joint err {joint_err:.5f} rad")
+        ok = ok and root_err < 1e-4 and joint_err < 1e-3
+
+        # No object was flung to NaN/infinity by the kinematic hands.
+        for name in tracked:
+            ok = ok and bool(torch.isfinite(env.scene[f"object_{name}"].data.root_pos_w.torch[0]).all())
+
+    # (d) panel placement: every key above the tabletop and within reach.
+    range_pos, panel_yaw = _adjust_panel_layout()
+    panel = RangePanel(range_pos, panel_yaw)
+    head = tuple(args_cli.align_head_xy)
+    worst_reach, lowest_key = 0.0, float("inf")
+    for kind, pos, radius, normal in panel.button_positions_world():
+        worst_reach = max(worst_reach, math.hypot(pos[0] - head[0], pos[1] - head[1]))
+        lowest_key = min(lowest_key, pos[2])
+    print(
+        f"[SMOKE-ADJUST] panels: lowest key {lowest_key:.2f} m (tabletop {tabletop:.2f}),"
+        f" farthest key {worst_reach:.2f} m from the operator"
+    )
+    ok = ok and lowest_key > tabletop + 0.02 and worst_reach < 0.95
+
+    print("[SMOKE-ADJUST] OK" if ok else "[SMOKE-ADJUST] FAILED")
+    if not ok:
+        raise SystemExit(1)
+
+
 def load_scene_list() -> list[tuple[str, str | None]]:
     """The ``(usda_path, task_description)`` pairs to teleop.
 
@@ -1270,6 +1866,13 @@ def main():
         finally:
             env.close()
         return
+    if args_cli.smoke_adjust is not None:
+        env = ManagerBasedRLEnv(cfg=build_env_cfg(scenes[0][0]))
+        try:
+            run_adjust_smoke(env, args_cli.smoke_adjust)
+        finally:
+            env.close()
+        return
 
     # Everything that must SURVIVE scene switches lives here: the voice labeler
     # (Whisper model + microphone stream) and the CloudXR runtime (stopping it
@@ -1314,7 +1917,7 @@ def main():
                 panel_yaw = float(R.from_quat(args_cli.robot_rot).as_euler("ZYX", degrees=True)[0]) - 90.0
                 spawn_task_display(task_description, tuple(args_cli.task_display_pos), panel_yaw)
             try:
-                reason, anchor = run_teleop(env, labeler, os.path.basename(scene), anchor)
+                reason, anchor = run_teleop(env, labeler, os.path.basename(scene), anchor, scene)
             finally:
                 env.close()
             if reason != "next":

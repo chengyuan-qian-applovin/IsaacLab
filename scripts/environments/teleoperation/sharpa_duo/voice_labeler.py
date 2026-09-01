@@ -47,14 +47,17 @@ _COMMAND_RES = (
     ("stop", re.compile(r"\b(stop|pause)\b")),
     ("reset", re.compile(r"\breset\w*\b")),
     ("next", re.compile(r"\b(next|skip)\b")),
+    ("adjust", re.compile(r"\b(adjust|edit)\s+(objects?|poses?)\b")),
+    ("done", re.compile(r"\b(done|finish\w*)\b")),
 )
 
 
 def parse_label(text: str) -> str | None:
-    """Map a transcription to a command: success / failure / align / play / stop / reset / next, or None.
+    """Map a transcription to a command word, or None.
 
-    Returns None when nothing matches or the utterance is contradictory
-    (more than one command recognized at once).
+    Recognized commands: success, failure, align, play, stop, reset, next,
+    adjust, done. Returns None when nothing matches or the utterance is
+    contradictory (more than one command recognized at once).
     """
     text = text.lower()
     matches = [name for name, regex in _COMMAND_RES if regex.search(text)]
@@ -72,7 +75,7 @@ class VoiceEvent:
         text: The transcription, or ``""`` when audio was captured but Whisper
             found no intelligible speech.
         command: The parsed command (success / failure / align / play / stop /
-            reset / next), or None when the utterance matched none of them (or
+            reset / next / adjust / done), or None when the utterance matched none of them (or
             matched several, which is treated as contradictory).
     """
 

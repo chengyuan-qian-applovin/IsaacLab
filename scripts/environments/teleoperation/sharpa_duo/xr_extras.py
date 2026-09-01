@@ -33,6 +33,18 @@ XR_HAND_ELEMENTS = [
 ]
 """Element names of the appended block, for the pipeline's TensorReorderer."""
 
+XR_CONTROLLERS_DIM = 2 * 11
+"""Elements appended after the hands block by the controllers passthrough:
+``[controller, (aim px, py, pz, qx, qy, qz, qw, valid, trigger, thumb_x, thumb_y)]``
+per side."""
+
+XR_CONTROLLER_ELEMENTS = [
+    f"xr_ctrl_{side}_{c}"
+    for side in ("left", "right")
+    for c in ("px", "py", "pz", "qx", "qy", "qz", "qw", "valid", "trigger", "thumb_x", "thumb_y")
+]
+"""Element names of the controllers block, for the pipeline's TensorReorderer."""
+
 
 def make_hands_passthrough(name: str = "xr_hands_passthrough"):
     """Build the raw-hands passthrough pipeline node (see module docstring).
@@ -70,6 +82,55 @@ def make_hands_passthrough(name: str = "xr_hands_passthrough"):
                 out[i] = float(v)
 
     return HandsXrPassthrough(name=name)
+
+
+def make_controllers_passthrough(name: str = "xr_controllers_passthrough"):
+    """Build a raw-controllers passthrough pipeline node.
+
+    Emits both Quest controllers' aim pose, validity, trigger value, and
+    thumbstick axes as :data:`XR_CONTROLLERS_DIM` named scalars, in whatever
+    frame the input controllers are expressed in (wire it after a
+    ``ControllerTransform`` with ``world_T_anchor`` for sim-world poses). An
+    absent or untracked controller reads as all zeros. Factory for the same
+    reason as :func:`make_hands_passthrough`.
+    """
+    from isaacteleop.retargeting_engine.interface import BaseRetargeter
+    from isaacteleop.retargeting_engine.interface.tensor_group_type import OptionalType, TensorGroupType
+    from isaacteleop.retargeting_engine.tensor_types import ControllerInput, ControllerInputIndex, FloatType
+
+    class ControllersXrPassthrough(BaseRetargeter):
+        """Emits both controllers' aim pose, trigger, and thumbstick as 22 named scalars."""
+
+        def input_spec(self):
+            return {
+                "controller_left": OptionalType(ControllerInput()),
+                "controller_right": OptionalType(ControllerInput()),
+            }
+
+        def output_spec(self):
+            return {"xr_controllers": TensorGroupType("xr_controllers", [FloatType(n) for n in XR_CONTROLLER_ELEMENTS])}
+
+        def _compute_fn(self, inputs, outputs, context) -> None:
+            out = outputs["xr_controllers"]
+            flat = np.zeros(XR_CONTROLLERS_DIM, dtype=np.float64)
+            for i, key in enumerate(("controller_left", "controller_right")):
+                group = inputs[key]
+                if group.is_none:
+                    continue
+                if float(group[ControllerInputIndex.AIM_IS_VALID]) < 0.5:
+                    continue
+                pos = np.from_dlpack(group[ControllerInputIndex.AIM_POSITION])  # (3,)
+                quat = np.from_dlpack(group[ControllerInputIndex.AIM_ORIENTATION])  # (4,) xyzw
+                flat[11 * i : 11 * i + 3] = pos
+                flat[11 * i + 3 : 11 * i + 7] = quat
+                flat[11 * i + 7] = 1.0
+                flat[11 * i + 8] = float(group[ControllerInputIndex.TRIGGER_VALUE])
+                flat[11 * i + 9] = float(group[ControllerInputIndex.THUMBSTICK_X])
+                flat[11 * i + 10] = float(group[ControllerInputIndex.THUMBSTICK_Y])
+            for j, v in enumerate(flat):
+                out[j] = float(v)
+
+    return ControllersXrPassthrough(name=name)
 
 
 class HandJointMarkers:

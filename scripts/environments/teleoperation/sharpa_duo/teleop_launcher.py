@@ -93,7 +93,7 @@ _PARAMS = [
     ("--dr_arm_jitter", "Arm start-pose jitter [rad]", 0.08, "float", "Domain randomization"),
     ("--dr_object_xy", "Object position range [m]", 0.05, "float", "Domain randomization"),
     ("--dr_object_yaw", "Object yaw range [deg]", 180.0, "float", "Domain randomization"),
-    ("--dr_object_bias", "Shift objects toward the robot [m]", 0.3, "float", "Domain randomization"),
+    ("--dr_object_bias", "Shift objects toward the robot [m]", 0.0, "float", "Domain randomization"),
     ("--settle_time", "Object settling time after reset [s]", 1.0, "float", "Domain randomization"),
     ("--arm_kp", "Arm kp (stiffness) [N·m/rad]", 400.0, "float", "Control gains"),
     ("--arm_kd", "Arm kd (damping) [N·m·s/rad]", 80.0, "float", "Control gains"),

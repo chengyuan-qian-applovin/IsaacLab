@@ -54,6 +54,7 @@ from sharpa_retargeting import load_hand_calibration, make_sharpa_dex_node, wris
 
 def build_duo_pipeline(
     include_xr_hands: bool = False,
+    include_xr_controllers: bool = True,
     hand_calibration: str | None = "hand_calibration.yml",
     wrist_offsets_xyzw: dict[str, tuple[float, float, float, float]] | None = None,
 ):
@@ -65,6 +66,9 @@ def build_duo_pipeline(
             the 58 action elements. The teleop loop slices them off before
             ``env.step`` and uses them for the hand markers and the
             ``obs/xr_hands`` recording.
+        include_xr_controllers: Also append the raw controller block
+            (``XR_CONTROLLERS_DIM`` elements) after the hands — consumed only
+            by the adjust mode. Ignored when ``include_xr_hands`` is False.
         hand_calibration: Operator hand-shape calibration yml (see
             :mod:`sharpa_retargeting`), resolved against the vendored
             ``assets/dex_retargeting`` directory. None or "" disables it; a
@@ -186,6 +190,35 @@ def build_duo_pipeline(
         output_order = output_order + list(XR_HAND_ELEMENTS)
         input_types["xr_hands"] = "scalar"
         connections["xr_hands"] = connected_passthrough.output("xr_hands")
+
+    if include_xr_hands and include_xr_controllers:
+        # Raw controller aim poses, trigger, and thumbstick ride along after
+        # the hands block, also in the sim world frame — the adjust mode's
+        # value input (thumbstick range steps, trigger-taps; see adjust_mode).
+        from isaacteleop.retargeting_engine.deviceio_source_nodes import ControllersSource
+        from isaacteleop.retargeting_engine.utilities import ControllerTransform
+        from xr_extras import XR_CONTROLLER_ELEMENTS, make_controllers_passthrough
+
+        controllers = ControllersSource("xr_controllers_source")
+        controller_xform = ControllerTransform("xr_controllers_world")
+        transformed_controllers = controller_xform.connect(
+            {
+                ControllerTransform.LEFT: controllers.output(ControllersSource.LEFT),
+                ControllerTransform.RIGHT: controllers.output(ControllersSource.RIGHT),
+                "transform": transform_input.output(ValueInput.VALUE),
+            }
+        )
+        controllers_passthrough = make_controllers_passthrough()
+        connected_controllers = controllers_passthrough.connect(
+            {
+                "controller_left": transformed_controllers.output(ControllerTransform.LEFT),
+                "controller_right": transformed_controllers.output(ControllerTransform.RIGHT),
+            }
+        )
+        input_config["xr_controllers"] = list(XR_CONTROLLER_ELEMENTS)
+        output_order = output_order + list(XR_CONTROLLER_ELEMENTS)
+        input_types["xr_controllers"] = "scalar"
+        connections["xr_controllers"] = connected_controllers.output("xr_controllers")
 
     reorderer = TensorReorderer(
         input_config=input_config,

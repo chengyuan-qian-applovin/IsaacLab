@@ -190,6 +190,83 @@ def duo_robot_cfg(
     )
 
 
+# -- Floating hands (adjust mode) -------------------------------------------------
+
+FLOATING_HAND_USD = {
+    side: os.path.join(_ASSETS_DIR, "robots", f"{side}_floating_sharpa_wave.usda") for side in ("left", "right")
+}
+"""Wrapper USDAs exposing each SharpaWave hand as a floating-base articulation."""
+
+FLOATING_HAND_PARK = {"left": (-4.0, -4.0, 0.3), "right": (4.0, -4.0, 0.3)}
+"""Parking position [m] per floating hand while adjust mode is closed.
+
+Far outside any tabletop workspace but ABOVE z=0: scene floors are PhysX
+half-space planes, so anything parked below them would be depenetrated back
+out. The hands are also render-hidden while parked (see floating_hands.py).
+"""
+
+
+def floating_hand_cfg(
+    side: str,
+    hand_stiffness: float = 400.0,
+    hand_damping: float = 4.0,
+    finger_effort_limit: float | None = None,
+) -> ArticulationCfg:
+    """Build one free-floating SharpaWave hand articulation config (adjust mode).
+
+    The hand spawns parked at :data:`FLOATING_HAND_PARK` and is driven only
+    while adjust mode is open: the 6-DoF base kinematically follows the
+    operator's tracked wrist and the fingers run the same PD drives as the
+    mounted hands, optionally with a tighter effort limit so repositioning is
+    gentler on the objects than a demo-grade grasp.
+
+    Args:
+        side: ``"left"`` or ``"right"``.
+        hand_stiffness: Joint drive stiffness kp [N·m/rad] for the 22 finger joints.
+        hand_damping: Joint drive damping kd [N·m·s/rad] for the 22 finger joints.
+        finger_effort_limit: Effort limit [N·m] for the finger joints; None
+            keeps the USD-authored limits (the mounted hands' behavior).
+
+    Returns:
+        The articulation config, ready to drop into an :class:`~isaaclab.scene.InteractiveSceneCfg`.
+    """
+    if side not in ("left", "right"):
+        raise ValueError(f"side must be 'left' or 'right', got {side!r}")
+    return ArticulationCfg(
+        prim_path="{ENV_REGEX_NS}/float_hand_" + side,
+        spawn=sim_utils.UsdFileCfg(
+            usd_path=FLOATING_HAND_USD[side],
+            activate_contact_sensors=True,
+            # No gravity on the hand's own links (the kinematic base carries it
+            # anyway). Depenetration is capped far tighter than on the rigs:
+            # the base is kinematic, so any interpenetration is resolved
+            # entirely by pushing the OBJECT out, and 5 m/s launches it.
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                disable_gravity=True,
+                max_depenetration_velocity=1.0,
+            ),
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                enabled_self_collisions=False,
+                solver_position_iteration_count=64,
+                solver_velocity_iteration_count=0,
+            ),
+        ),
+        init_state=ArticulationCfg.InitialStateCfg(
+            pos=FLOATING_HAND_PARK[side],
+            joint_pos={f"{side}_(thumb|index|middle|ring|pinky)_.*": 0.0},
+        ),
+        soft_joint_pos_limit_factor=1.05,
+        actuators={
+            "fingers": ImplicitActuatorCfg(
+                joint_names_expr=[f"{side}_(thumb|index|middle|ring|pinky)_.*"],
+                effort_limit_sim=finger_effort_limit,
+                stiffness=hand_stiffness,
+                damping=hand_damping,
+            ),
+        },
+    )
+
+
 # -- Actions --------------------------------------------------------------------
 
 

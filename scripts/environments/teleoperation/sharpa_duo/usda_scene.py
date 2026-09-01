@@ -24,6 +24,7 @@ Import only after AppLauncher.
 
 from __future__ import annotations
 
+import json
 import os
 
 import torch
@@ -36,6 +37,48 @@ from isaaclab.sim import UsdFileCfg
 #: :func:`add_usda_scene` from the composed USD bounds; consumed by
 #: :func:`randomize_tracked_objects` for its collision check.
 FOOTPRINT_RADII: dict[str, float] = {}
+
+#: Offset [m] from each tracked object's root origin down to its AABB bottom
+#: (``aabb_min_z - authored_root_z``, usually negative), filled alongside
+#: :data:`FOOTPRINT_RADII`; used to place visuals on the surface an object
+#: rests on (see ``region_overlay``).
+FOOTPRINT_BOTTOM_OFFSETS: dict[str, float] = {}
+
+#: Height [m] of the support surface the tracked objects rest on (the min of
+#: their AABB bottoms — objects sit ON the tabletop, so its top is where their
+#: bottoms are; a stacked object's bottom sits higher). None until a scene with
+#: tracked objects is loaded; used to place the in-headset panels above the table.
+SUPPORT_SURFACE_Z: float | None = None
+
+
+def sidecar_path(usda_path: str) -> str:
+    """Path of the pose-override sidecar for ``usda_path`` — ``<scene>.usda.poses.json``."""
+    return os.path.abspath(usda_path) + ".poses.json"
+
+
+def load_pose_overrides(usda_path: str) -> dict[str, dict[str, list[float]]]:
+    """Load ``{name: {"pos": [x,y,z], "rot": [x,y,z,w]}}`` from ``<scene>.usda.poses.json``.
+
+    Returns an empty dict when the sidecar is absent. Rotations are stored in
+    ``(x, y, z, w)`` order to match :attr:`RigidObjectCfg.InitialStateCfg.rot`.
+    """
+    path = sidecar_path(usda_path)
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        data = json.load(f)
+    return data.get("objects", {}) or {}
+
+
+def save_pose_overrides(usda_path: str, overrides: dict[str, dict[str, list[float]]]) -> str:
+    """Write ``overrides`` to the pose sidecar next to ``usda_path`` and return the path.
+
+    ``overrides`` maps tracked-object name to ``{"pos": [x,y,z], "rot": [x,y,z,w]}``.
+    """
+    path = sidecar_path(usda_path)
+    with open(path, "w") as f:
+        json.dump({"objects": overrides}, f, indent=2)
+    return path
 
 
 def add_usda_scene(scene_cfg: InteractiveSceneCfg, usda_path: str, track_objects: bool = True) -> list[str]:
@@ -71,8 +114,14 @@ def add_usda_scene(scene_cfg: InteractiveSceneCfg, usda_path: str, track_objects
     if not root:
         raise ValueError(f"{usda_path} has no default prim; UsdFileCfg cannot reference it")
 
+    global SUPPORT_SURFACE_Z
     objects: list[str] = []
     FOOTPRINT_RADII.clear()  # one scene is loaded at a time; drop the previous scene's entries
+    FOOTPRINT_BOTTOM_OFFSETS.clear()
+    SUPPORT_SURFACE_Z = None
+    # <scene>.usda.poses.json overrides the authored pose per tracked object; the
+    # in-headset "adjust object" mode writes it. Absent → the USDA is authoritative.
+    overrides = load_pose_overrides(usda_path)
     bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_], useExtentsHint=True)
     it = iter(Usd.PrimRange(root, Usd.PrimAllPrimsPredicate))
     for prim in it:
@@ -96,19 +145,30 @@ def add_usda_scene(scene_cfg: InteractiveSceneCfg, usda_path: str, track_objects
         aabb = bbox_cache.ComputeWorldBound(prim).ComputeAlignedBox()
         size = aabb.GetMax() - aabb.GetMin()
         FOOTPRINT_RADII[name] = max(float(size[0]), float(size[1])) / 2.0 if not aabb.IsEmpty() else 0.05
+        if not aabb.IsEmpty():
+            bottom_z = float(aabb.GetMin()[2])
+            FOOTPRINT_BOTTOM_OFFSETS[name] = bottom_z - float(t[2])
+            # Objects rest on the support surface, so the LOWEST AABB bottom is
+            # the tabletop (a stacked object's bottom sits above it, hence min).
+            SUPPORT_SURFACE_Z = bottom_z if SUPPORT_SURFACE_Z is None else min(SUPPORT_SURFACE_Z, bottom_z)
+        else:
+            FOOTPRINT_BOTTOM_OFFSETS[name] = 0.0
         # init_state repeats the authored pose because reset_scene_to_default
         # writes it back to the sim on every reset. NOTE: InitialStateCfg.rot is
         # (x, y, z, w) on this Isaac Lab release, while Gf stores w separately.
+        pos = (float(t[0]), float(t[1]), float(t[2]))
+        rot = (float(imag[0]), float(imag[1]), float(imag[2]), float(q.GetReal()))
+        if name in overrides:
+            ovr = overrides[name]
+            pos = tuple(float(v) for v in ovr["pos"])
+            rot = tuple(float(v) for v in ovr["rot"])
         setattr(
             scene_cfg,
             f"object_{name}",
             RigidObjectCfg(
                 prim_path="{ENV_REGEX_NS}/scene" + rel_path,
                 spawn=None,
-                init_state=RigidObjectCfg.InitialStateCfg(
-                    pos=(float(t[0]), float(t[1]), float(t[2])),
-                    rot=(float(imag[0]), float(imag[1]), float(imag[2]), float(q.GetReal())),
-                ),
+                init_state=RigidObjectCfg.InitialStateCfg(pos=pos, rot=rot),
             ),
         )
         objects.append(name)
