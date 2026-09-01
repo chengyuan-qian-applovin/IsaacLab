@@ -171,6 +171,10 @@ class FleetClient:
         path = f"/api/suggest?n={int(n)}&collector_id={urllib.parse.quote(self.collector_id)}"
         return self._request("GET", path)["scenes"]
 
+    def list_scenes(self) -> list[dict]:
+        """Every scene row on the server, with progress counts and live worker lists."""
+        return self._request("GET", "/api/scenes")["scenes"]
+
     def declare_scene(self, scene_id: str) -> dict:
         """Declare presence on a scene (informational, never exclusive); returns the scene row."""
         self.current_scene_id = scene_id

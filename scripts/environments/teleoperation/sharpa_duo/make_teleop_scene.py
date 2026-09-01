@@ -246,7 +246,22 @@ parser.add_argument(
     "--fleet_scenes",
     type=int,
     default=8,
-    help="Fleet mode: how many server-suggested scenes to download and cycle through with 'next'.",
+    help=(
+        "Fleet mode: how many server-suggested scenes to download and cycle through with 'next'"
+        " (only when neither --fleet_scene_ids nor a local scene selection is given)."
+    ),
+)
+parser.add_argument(
+    "--fleet_scene_ids",
+    type=str,
+    nargs="+",
+    default=None,
+    help=(
+        "Fleet mode: collect exactly these server scenes (ids are the USDA basenames known to the"
+        " server); they are downloaded from --fleet_server (sha256-verified) and cycled with 'next'."
+        " Requires --fleet_server; mutually exclusive with --scene_list. This is what the launcher's"
+        " 'Fleet server' scene source passes."
+    ),
 )
 parser.add_argument("--no_record", action="store_true", help="Disable episode recording entirely.")
 parser.add_argument(
@@ -379,6 +394,14 @@ parser.add_argument(
 )
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+
+# The two scene sources are exclusive: a scene list names local files, scene
+# ids name server scenes — mixing them would leave the actual source ambiguous.
+if args_cli.fleet_scene_ids is not None:
+    if not args_cli.fleet_server:
+        parser.error("--fleet_scene_ids requires --fleet_server")
+    if args_cli.scene_list is not None:
+        parser.error("--fleet_scene_ids and --scene_list are mutually exclusive (pick one scene source)")
 
 if args_cli.voice_test is not None:
     # Standalone mic + Whisper check; the simulator never starts.
@@ -1283,11 +1306,27 @@ def load_scene_list(fleet=None) -> list[tuple[str, str | None]]:
     basename next to the JSON. Descriptions not in the list itself are looked up
     in any instructions JSON sitting next to the scene file.
 
-    In fleet mode with no explicit scene selection, the server picks: the
-    ``--fleet_scenes`` most-needed scenes are downloaded (sha256-verified into
+    Fleet scene sources (exclusive with a local scene list): with
+    ``--fleet_scene_ids`` exactly those server scenes are used; otherwise, with
+    no explicit local selection, the server picks the ``--fleet_scenes``
+    most-needed ones. Either way the files are downloaded (sha256-verified into
     the scene cache) and cycled exactly like a local scene list.
     """
     from task_display import find_task_description
+
+    if fleet is not None and args_cli.fleet_scene_ids:
+        rows = {row["scene_id"]: row for row in fleet.list_scenes()}
+        missing = [sid for sid in args_cli.fleet_scene_ids if sid not in rows]
+        if missing:
+            raise SystemExit(f"[FLEET] Scenes not on the server: {missing} (push them with fleet_push_scenes.py)")
+        scenes = []
+        for sid in args_cli.fleet_scene_ids:
+            row = rows[sid]
+            path = fleet.download_scene(sid, row.get("sha256") or None)
+            workers = ", ".join(w for w in row["active_workers"] if w != fleet.collector_id) or "nobody else"
+            print(f"[FLEET] Selected {sid}: {row['successes']}/{row['target_successes']} successes, working: {workers}")
+            scenes.append((path, row.get("task_description") or find_task_description(path)))
+        return scenes
 
     if fleet is not None and args_cli.scene_list is None and args_cli.scene_usda == parser.get_default("scene_usda"):
         entries = fleet.suggest(args_cli.fleet_scenes)

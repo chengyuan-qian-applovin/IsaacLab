@@ -91,12 +91,13 @@ What fleet mode does, in the order it happens:
 
 1. **Startup sync**: the collector checks in and prints the fleet-wide status
    (progress toward targets, who else is online).
-2. **Scene download**: with no explicit `--scene_list`/`--scene_usda`, the
-   server picks the `--fleet_scenes` most-needed scenes (highest priority,
-   fewest active collectors, most demos remaining) and they are downloaded
-   into `<record_dir>/fleet_scenes/`, sha256-verified. Cycle them with "next"
-   as usual. An explicit scene selection still works — the server then just
-   tracks it.
+2. **Scene download**: the scenes to work on come from the server —
+   `--fleet_scene_ids` names them explicitly (what the launcher's "Fleet
+   server" source passes; mutually exclusive with `--scene_list`), or with no
+   selection at all the server picks the `--fleet_scenes` most-needed ones
+   (highest priority, fewest active collectors, most demos remaining). Either
+   way they are downloaded into `<record_dir>/fleet_scenes/`, sha256-verified,
+   and cycled with "next" as usual.
 3. **Presence**: entering a scene declares "this collector works here" — pure
    information, never a lock: any number of collectors may share a scene, and
    a crashed collector can never block anyone (its presence just goes stale
@@ -175,26 +176,26 @@ command is ignored.
 
 A two-page launcher (plain tkinter; Isaac Sim only starts when you press
 Start): page 1 groups the teleop parameters by concern (operator & voice,
-session start, domain randomization, control gains, visuals, advanced, fleet);
-page 2 picks a scene directory and a record directory and shows a table of
-every scene with the success/failure trajectory counts already collected for
-it in that directory — tick the scenes to collect this session (click toggles
-one scene, dragging paints the toggle over consecutive rows, and Shift+Click
-extends the last toggle over the whole range, Excel-style). Start writes the
-selection to a scene-list JSON and runs the teleop with `--record_dir`: every
-labeled episode lands there as its own HDF5 file, so the table's counts
-accumulate across sessions. The scenes are always your selection — with a
-fleet server configured, episodes upload as they are labeled, but the launcher
-never hands scene choice to the server (that mode exists only on the CLI, via
-`--fleet_scenes` with no explicit scene selection).
+session start, domain randomization, control gains, visuals, advanced);
+page 2 picks the record directory and the **scene source** — a radio choice
+between two mutually exclusive modes:
 
-Page 2 also connects to the fleet server directly: enter the URL (same field
-as the Fleet parameter group) and press **Connect** — the table gains live
-**Fleet progress** (`successes/target`, green when the target is met) and
-**Working now** (which collectors are on that scene right now) columns,
-auto-refreshed every 15 s; scenes that exist only on the server are listed
-too. **Select needed** ticks exactly the local scenes the fleet still needs
-(under target, not retired), so "collect what's missing" is one click.
+- **Local directory** (default): scan a directory recursively for `*.usda`
+  and tick the scenes to collect. The run is fully standalone — no fleet
+  server is involved at all.
+- **Fleet server**: enter the server URL (plus optional collector id/token)
+  and press **Connect**. The table then lists the *server's* scenes with live
+  **Fleet progress** (`successes/target`, green when met) and **Working now**
+  (who is collecting each scene right now) columns, auto-refreshed every
+  15 s; newly listed scenes come pre-ticked when the fleet still needs them,
+  and **Select needed** re-derives that ticking on demand. Start passes the
+  ticked scene ids as `--fleet_scene_ids`: the run downloads them from the
+  server (sha256-verified) and uploads every labeled episode as it happens.
+
+In both modes the table shows the success/failure demo counts already
+recorded under the record directory, and selection works the same way (click
+toggles one scene, dragging paints the toggle over consecutive rows, and
+Shift+Click extends the last toggle over the whole range, Excel-style).
 Cycle the selected scenes with the "next" voice command; when the run exits,
 the launcher returns to the table with refreshed counts.
 

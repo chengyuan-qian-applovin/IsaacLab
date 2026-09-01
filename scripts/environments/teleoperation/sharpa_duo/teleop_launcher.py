@@ -9,17 +9,27 @@ A plain-tkinter launcher (no Isaac Sim involved until Start is pressed):
 
 - **Page 1 — Parameters**: the teleop knobs, grouped by concern (operator &
   voice, session start, domain randomization, control gains, visuals, advanced).
-- **Page 2 — Scenes & dataset**: pick a scene directory (scanned recursively
-  for ``*.usda``) and a record directory (one HDF5 file per labeled episode);
-  a table lists every scene with the number of success/failure trajectories
-  already collected for it in that directory, and checkboxes select the
-  scenes for this session.
-- **Start teleop** writes the selection to a scene-list JSON and launches
-  ``make_teleop_scene.py`` with ``--record_dir`` — cycle the selected scenes
-  with the "next" voice command. With a fleet server URL set (Fleet group on
-  page 1, or the Connect row on page 2) episodes also upload to the fleet
-  server as they are labeled — the scenes themselves are always picked here.
-  Console output stays in the terminal the launcher was started from.
+- **Page 2 — Scenes & dataset**: pick a record directory (one HDF5 file per
+  labeled episode) and a **scene source** — a radio choice between two
+  mutually exclusive modes:
+
+  - **Local directory**: scan a directory recursively for ``*.usda`` and tick
+    the scenes to collect. The run is fully standalone — no fleet server is
+    involved at all.
+  - **Fleet server**: connect to the fleet coordination server (URL, optional
+    collector id and token); the table then lists the SERVER's scenes with
+    live progress (``successes/target``, who is collecting each scene right
+    now, auto-refreshed every 15 s), and you tick which of those to collect.
+    The run downloads the ticked scenes from the server and uploads every
+    labeled episode as it happens.
+
+  In both modes the table shows the success/failure demo counts already
+  recorded under the record directory.
+- **Start teleop** launches ``make_teleop_scene.py`` with the active source's
+  arguments — a local scene-list JSON, or ``--fleet_server`` +
+  ``--fleet_scene_ids``, never both — and the scenes cycle with the "next"
+  voice command. Console output stays in the terminal the launcher was
+  started from.
 
 Run:
 
@@ -125,9 +135,6 @@ _PARAMS = [
     ("--episode_length_s", "Episode timeout [s]", 300.0, "float", "Advanced"),
     ("--render_frequency", "Render frequency [Hz]", 30.0, "float", "Advanced"),
     ("--no_record", "Disable recording", False, "bool", "Advanced"),
-    ("--fleet_server", "Fleet server URL (empty = standalone)", "", "str", "Fleet"),
-    ("--collector_id", "Collector name (default: hostname)", "", "str", "Fleet"),
-    ("--fleet_token", "Fleet token (default: $FLEET_TOKEN)", "", "str", "Fleet"),
 ]
 
 # UI prefills that intentionally differ from the teleop script's argparse
@@ -332,30 +339,75 @@ class TeleopLauncher(tk.Tk):
 
         picker = ttk.Frame(page)
         picker.pack(fill="x", pady=self._px(8))
-        self._scene_dir = tk.StringVar(value=_DEFAULT_SCENE_DIR)
         self._record_dir = tk.StringVar(value=_DEFAULT_RECORD_DIR)
-        for row_i, (label, var, browse) in enumerate(
-            (
-                ("Scene directory", self._scene_dir, self._browse_scene_dir),
-                ("Record directory (one HDF5 per episode)", self._record_dir, self._browse_record_dir),
-            )
-        ):
-            ttk.Label(picker, text=label).grid(row=row_i, column=0, sticky="w", pady=self._px(3))
-            ttk.Entry(picker, textvariable=var).grid(row=row_i, column=1, sticky="ew", padx=self._px(8))
-            ttk.Button(picker, text="Browse", command=browse).grid(row=row_i, column=2, pady=self._px(3))
-        # Fleet server row: the entry edits the SAME variable as the Fleet
-        # parameter group on page 1 (so Start passes it as --fleet_server), and
-        # Connect polls the server's live per-scene progress into the table.
-        fleet_row = 2  # after the scene-dir and record-dir rows
-        ttk.Label(picker, text="Fleet server").grid(row=fleet_row, column=0, sticky="w", pady=self._px(3))
-        ttk.Entry(picker, textvariable=self._param_vars["--fleet_server"][0]).grid(
-            row=fleet_row, column=1, sticky="ew", padx=self._px(8)
+        ttk.Label(picker, text="Record directory (one HDF5 per episode)").grid(
+            row=0, column=0, sticky="w", pady=self._px(3)
         )
-        self._fleet_btn = ttk.Button(picker, text="Connect", command=self.connect_fleet)
-        self._fleet_btn.grid(row=fleet_row, column=2, pady=self._px(3))
+        ttk.Entry(picker, textvariable=self._record_dir).grid(row=0, column=1, sticky="ew", padx=self._px(8))
+        ttk.Button(picker, text="Browse", command=self._browse_record_dir).grid(row=0, column=2, pady=self._px(3))
         picker.columnconfigure(1, weight=1)
-        self._fleet_status = ttk.Label(picker, text="Fleet: not connected.", style="Muted.TLabel")
-        self._fleet_status.grid(row=fleet_row + 1, column=0, columnspan=3, sticky="w", pady=(0, self._px(3)))
+
+        # -- scene source: local directory XOR fleet server ---------------------
+        # The two modes are exclusive by construction: the radio button decides
+        # which pane is shown, which rows the table lists, and which arguments
+        # Start passes (a local scene list, or server scene ids + fleet flags —
+        # never both).
+        source_box = ttk.LabelFrame(page, text=" Scene source ")
+        source_box.pack(fill="x", pady=self._px(4))
+        self._scene_source = tk.StringVar(value="local")
+        radios = ttk.Frame(source_box, style="Panel.TFrame")
+        radios.pack(fill="x")
+        for value, label in (("local", "Local directory"), ("server", "Fleet server")):
+            ttk.Radiobutton(
+                radios, text=label, value=value, variable=self._scene_source,
+                style="Panel.TCheckbutton", command=self._on_source_change,
+            ).pack(side="left", padx=(0, self._px(24)))  # fmt: skip
+
+        # Both panes live in the same grid cell; _on_source_change shows one.
+        panes = ttk.Frame(source_box, style="Panel.TFrame")
+        panes.pack(fill="x", pady=(self._px(6), 0))
+        panes.columnconfigure(0, weight=1)
+
+        self._local_pane = ttk.Frame(panes, style="Panel.TFrame")
+        self._local_pane.grid(row=0, column=0, sticky="ew")
+        self._scene_dir = tk.StringVar(value=_DEFAULT_SCENE_DIR)
+        ttk.Label(self._local_pane, text="Scene directory", style="Panel.TLabel").grid(
+            row=0, column=0, sticky="w", pady=self._px(3)
+        )
+        ttk.Entry(self._local_pane, textvariable=self._scene_dir).grid(row=0, column=1, sticky="ew", padx=self._px(8))
+        ttk.Button(self._local_pane, text="Browse", command=self._browse_scene_dir).grid(row=0, column=2)
+        self._local_pane.columnconfigure(1, weight=1)
+
+        self._server_pane = ttk.Frame(panes, style="Panel.TFrame")
+        self._server_pane.grid(row=0, column=0, sticky="ew")
+        self._fleet_server_var = tk.StringVar(value="")
+        self._collector_id_var = tk.StringVar(value="")
+        self._fleet_token_var = tk.StringVar(value="")
+        ttk.Label(self._server_pane, text="Server URL", style="Panel.TLabel").grid(
+            row=0, column=0, sticky="w", pady=self._px(3)
+        )
+        ttk.Entry(self._server_pane, textvariable=self._fleet_server_var).grid(
+            row=0, column=1, columnspan=3, sticky="ew", padx=self._px(8)
+        )
+        self._fleet_btn = ttk.Button(self._server_pane, text="Connect", command=self.connect_fleet)
+        self._fleet_btn.grid(row=0, column=4)
+        ttk.Label(self._server_pane, text="Collector ID (default: hostname)", style="Panel.TLabel").grid(
+            row=1, column=0, sticky="w", pady=self._px(3)
+        )
+        ttk.Entry(self._server_pane, textvariable=self._collector_id_var, width=16).grid(
+            row=1, column=1, sticky="w", padx=self._px(8)
+        )
+        ttk.Label(self._server_pane, text="Token (default: $FLEET_TOKEN)", style="Panel.TLabel").grid(
+            row=1, column=2, sticky="e"
+        )
+        ttk.Entry(self._server_pane, textvariable=self._fleet_token_var, width=16, show="*").grid(
+            row=1, column=3, sticky="w", padx=self._px(8)
+        )
+        self._fleet_status = ttk.Label(self._server_pane, text="Not connected.", style="Panel.TLabel")
+        self._fleet_status.config(foreground=_MUTED)
+        self._fleet_status.grid(row=2, column=0, columnspan=5, sticky="w", pady=(self._px(3), 0))
+        self._server_pane.columnconfigure(1, weight=1)
+        self._server_pane.grid_remove()  # local mode is the default
 
         self._table = ttk.Treeview(page, columns=("sel", "success", "failure", "fleet", "workers"), height=14)
         self._table.heading("#0", text="Scene")
@@ -372,6 +424,7 @@ class TeleopLauncher(tk.Tk):
         self._table.tag_configure("odd", background=_STRIPE)
         self._table.tag_configure("off", foreground=_MUTED)
         self._table.tag_configure("fleet_done", foreground="#1a7f4e")
+        self._table.configure(displaycolumns=("sel", "success", "failure"))  # fleet columns appear in server mode
         self._table.pack(fill="both", expand=True, pady=self._px(8))
         # Excel-style toggling: click one row, drag to paint a run, Shift+Click
         # to extend the last toggle over a range (see _on_table_press).
@@ -412,12 +465,26 @@ class TeleopLauncher(tk.Tk):
             self._record_dir.set(path)
             self.refresh_table()
 
+    def _on_source_change(self) -> None:
+        """Swap the visible source pane, the table columns, and the helper buttons."""
+        server_mode = self._scene_source.get() == "server"
+        if server_mode:
+            self._local_pane.grid_remove()
+            self._server_pane.grid()
+            self._table.configure(displaycolumns=("sel", "success", "failure", "fleet", "workers"))
+        else:
+            self._server_pane.grid_remove()
+            self._local_pane.grid()
+            self._table.configure(displaycolumns=("sel", "success", "failure"))
+        self._select_needed_btn.config(state="normal" if server_mode and self._fleet_connected else "disabled")
+        self.refresh_table()
+
     def _row_tags(self, name: str) -> tuple[str, ...]:
         row = self._scene_rows[name]
         tags = ("odd",) if row["odd"] else ()
         if not row["selected"].get():
             return (*tags, "off")
-        if self._fleet_cells(name)[2]:  # at target on the server
+        if self._scene_source.get() == "server" and self._fleet_cells(name)[2]:  # at target on the server
             tags = (*tags, "fleet_done")
         return tags
 
@@ -425,56 +492,70 @@ class TeleopLauncher(tk.Tk):
         """The (fleet progress, working now) cells for a scene, and whether it is at target."""
         row = self._fleet_scenes.get(name)
         if row is None:
-            return ("-" if self._fleet_connected else "", "", False)
+            return ("", "", False)
         done = row["successes"] >= row["target_successes"]
         progress = f"{row['successes']}/{row['target_successes']}" + (" (retired)" if row["retired"] else "")
         return (progress, ", ".join(row["active_workers"]), done and not row["retired"])
 
     def refresh_table(self) -> None:
-        """Re-render the table: local scenes + episode counts + fleet progress."""
+        """Re-render the table for the active scene source.
+
+        Local mode lists the ``*.usda`` files under the scene directory; server
+        mode lists the fleet server's scenes (from the last status poll). Both
+        show the success/failure demo counts already recorded under the record
+        directory, keyed by the scene basename.
+        """
         previous = {name: row["selected"].get() for name, row in self._scene_rows.items()}
         self._table.delete(*self._table.get_children())
         self._scene_rows.clear()
         counts = scan_record_dir(self._record_dir.get())
-        for i, path in enumerate(scan_scene_dir(self._scene_dir.get())):
-            name = os.path.basename(path)
-            success, failure = counts.get(name, (0, 0))
-            selected = tk.BooleanVar(value=previous.get(name, True))
-            self._scene_rows[name] = {"path": path, "selected": selected, "odd": i % 2 == 1}
-            fleet, workers, _done = self._fleet_cells(name)
-            self._table.insert(
-                "", "end", iid=name, text=name, tags=self._row_tags(name),
-                values=("Yes" if selected.get() else "", success, failure, fleet, workers),
-            )  # fmt: skip
+        server_mode = self._scene_source.get() == "server"
+        if server_mode:
+            if not self._fleet_connected:
+                self._table.insert(
+                    "", "end", iid="<hint>", text="(press Connect to list the fleet server's scenes)",
+                    tags=("off",), values=("", "", "", "", ""),
+                )  # fmt: skip
+                return
+            for i, name in enumerate(sorted(self._fleet_scenes)):
+                row = self._fleet_scenes[name]
+                success, failure = counts.get(name, (0, 0))
+                # New rows default to "the fleet still needs this scene".
+                needed = not row["retired"] and row["successes"] < row["target_successes"]
+                selected = tk.BooleanVar(value=previous.get(name, needed))
+                self._scene_rows[name] = {"path": None, "selected": selected, "odd": i % 2 == 1}
+                fleet, workers, _done = self._fleet_cells(name)
+                self._table.insert(
+                    "", "end", iid=name, text=name, tags=self._row_tags(name),
+                    values=("Yes" if selected.get() else "", success, failure, fleet, workers),
+                )  # fmt: skip
+        else:
+            for i, path in enumerate(scan_scene_dir(self._scene_dir.get())):
+                name = os.path.basename(path)
+                success, failure = counts.get(name, (0, 0))
+                selected = tk.BooleanVar(value=previous.get(name, True))
+                self._scene_rows[name] = {"path": path, "selected": selected, "odd": i % 2 == 1}
+                self._table.insert(
+                    "", "end", iid=name, text=name, tags=self._row_tags(name),
+                    values=("Yes" if selected.get() else "", success, failure, "", ""),
+                )  # fmt: skip
         untagged = counts.get("<untagged>")
         if untagged:
             self._table.insert(
                 "", "end", iid="<untagged>", text="(demos without a scene tag)", tags=("off",), values=("", *untagged)
             )
-        # Scenes that exist on the fleet server but not in the local scene dir:
-        # visible for awareness (fleet mode downloads them), not selectable.
-        local = set(self._scene_rows)
-        for name in sorted(self._fleet_scenes):
-            if name in local:
-                continue
-            fleet, workers, _done = self._fleet_cells(name)
-            self._table.insert(
-                "", "end", iid=f"<server>{name}", text=f"{name} (server only)", tags=("off",),
-                values=("", "", "", fleet, workers),
-            )  # fmt: skip
 
     # -- fleet connection -------------------------------------------------------
 
     def connect_fleet(self) -> None:
-        """Connect to (or immediately re-poll) the fleet server from the Fleet parameters."""
-        var = self._param_vars["--fleet_server"][0]
-        server = str(var.get()).strip()
+        """Connect to (or immediately re-poll) the fleet server named in the server pane."""
+        server = str(self._fleet_server_var.get()).strip()
         if not server:
             messagebox.showerror("No fleet server", "Enter the fleet server URL first (e.g. http://fleet-host:8080).")
             return
         if not server.startswith(("http://", "https://")):
             server = f"http://{server}"
-            var.set(server)
+            self._fleet_server_var.set(server)
         self._poll_fleet(manual=True)
 
     def _poll_fleet(self, manual: bool = False) -> None:
@@ -487,15 +568,15 @@ class TeleopLauncher(tk.Tk):
         self._fleet_poll_id = None
         if self._fleet_busy:
             return
-        server = str(self._param_vars["--fleet_server"][0].get()).strip()
+        server = str(self._fleet_server_var.get()).strip()
         if not server:
             return
-        token = str(self._param_vars["--fleet_token"][0].get()).strip() or None
+        token = str(self._fleet_token_var.get()).strip() or None
         self._fleet_busy = True
         self._fleet_result: tuple[dict | None, str | None] | None = None
         if manual:
             self._fleet_btn.config(state="disabled")
-            self._fleet_status.config(text=f"Fleet: connecting to {server} ...", foreground=_MUTED)
+            self._fleet_status.config(text=f"Connecting to {server} ...", foreground=_MUTED)
 
         def worker() -> None:
             from fleet_client import fetch_status
@@ -521,13 +602,12 @@ class TeleopLauncher(tk.Tk):
         self._fleet_busy = False
         self._fleet_btn.config(state="normal")
         if error is not None:
-            self._fleet_status.config(text=f"Fleet: unreachable — {error}", foreground=_DANGER)
+            self._fleet_status.config(text=f"Unreachable — {error}", foreground=_DANGER)
             if not self._fleet_connected:
                 return  # never connected: stay manual, no auto-poll loop
         else:
             self._fleet_connected = True
             self._fleet_btn.config(text="Refresh now")
-            self._select_needed_btn.config(state="normal")
             self._fleet_scenes = {s["scene_id"]: s for s in snapshot["scenes"]}
             self._fleet_totals = snapshot["totals"]
             self._fleet_online = [c["collector_id"] for c in snapshot["collectors"] if c["online"]]
@@ -536,21 +616,23 @@ class TeleopLauncher(tk.Tk):
             self._fleet_status.config(
                 foreground=_MUTED,
                 text=(
-                    f"Fleet: {t['successes_toward_target']}/{t['target_successes']} successes across"
+                    f"Connected: {t['successes_toward_target']}/{t['target_successes']} successes across"
                     f" {t['scenes']} scenes — online: {online} (auto-refreshes every 15 s)"
                 ),
             )
-            self.refresh_table()
+            if self._scene_source.get() == "server":
+                self._select_needed_btn.config(state="normal")
+                self.refresh_table()
         if self._fleet_poll_id is not None:
             self.after_cancel(self._fleet_poll_id)
         self._fleet_poll_id = self.after(15000, self._poll_fleet)
 
     def _select_needed(self) -> None:
-        """Tick exactly the local scenes the fleet still needs (under target, not retired)."""
+        """Tick exactly the server scenes the fleet still needs (under target, not retired)."""
         for name in self._scene_rows:
             row = self._fleet_scenes.get(name)
             if row is None:
-                continue  # unknown to the server: leave the operator's choice alone
+                continue
             self._set_row(name, not row["retired"] and row["successes"] < row["target_successes"])
 
     def _set_row(self, name: str, value: bool) -> None:
@@ -623,27 +705,53 @@ class TeleopLauncher(tk.Tk):
         )
 
     def start_teleop(self) -> None:
-        selected = [row["path"] for row in self._scene_rows.values() if row["selected"].get()]
+        """Launch the teleop with the active scene source's (exclusive) arguments.
+
+        Local mode passes a scene-list JSON of the selected files and NO fleet
+        flags (fully standalone). Server mode passes the selected server scene
+        ids plus the connection flags and NO local scene list — the collector
+        downloads the scenes from the server and uploads every labeled episode.
+        """
+        selected = [name for name, row in self._scene_rows.items() if row["selected"].get()]
         if not selected:
             messagebox.showerror("No scenes", "Select at least one scene to collect.")
             return
         record_dir = os.path.abspath(self._record_dir.get())
         os.makedirs(record_dir, exist_ok=True)
-        scene_list_path = os.path.join(record_dir, "launcher.scene_list.json")
-        with open(scene_list_path, "w") as f:
-            json.dump({"scenes": selected}, f, indent=2)
+        if self._scene_source.get() == "server":
+            if not self._fleet_connected:
+                messagebox.showerror("Not connected", "Connect to the fleet server before starting.")
+                return
+            scene_args = [
+                "--fleet_server", str(self._fleet_server_var.get()).strip(),
+                "--fleet_scene_ids", *selected,
+            ]  # fmt: skip
+            collector_id = str(self._collector_id_var.get()).strip()
+            if collector_id:
+                scene_args += ["--collector_id", collector_id]
+            token = str(self._fleet_token_var.get()).strip()
+            if token:
+                scene_args += ["--fleet_token", token]
+            scenes_str = f"{len(selected)} fleet scene(s)"
+        else:
+            paths = [self._scene_rows[name]["path"] for name in selected]
+            scene_list_path = os.path.join(record_dir, "launcher.scene_list.json")
+            with open(scene_list_path, "w") as f:
+                json.dump({"scenes": paths}, f, indent=2)
+            scene_args = ["--scene_list", scene_list_path]
+            scenes_str = f"{len(selected)} local scene(s)"
 
         command = [
             sys.executable,
             _TELEOP_SCRIPT,
-            "--scene_list", scene_list_path,
+            *scene_args,
             "--record_dir", record_dir,
             "--headless",
             *self._collect_args(),
         ]  # fmt: skip
         print("[LAUNCHER] " + " ".join(command))
         self._proc = subprocess.Popen(command)
-        self._running_label.config(text=f"Teleop running (pid {self._proc.pid}), {len(selected)} scene(s) selected.")
+        self._running_label.config(text=f"Teleop running (pid {self._proc.pid}), {scenes_str} selected.")
         self._show("running")
         self.after(1000, self._poll_process)
 
