@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 
+import numpy as np
 import torch
 
 from isaaclab.assets import AssetBaseCfg, RigidObjectCfg
@@ -49,6 +50,18 @@ FOOTPRINT_BOTTOM_OFFSETS: dict[str, float] = {}
 #: bottoms are; a stacked object's bottom sits higher). None until a scene with
 #: tracked objects is loaded; used to place the in-headset panels above the table.
 SUPPORT_SURFACE_Z: float | None = None
+
+#: Absolute USD asset path per tracked object (the reference/payload the scene
+#: prim brings in), filled by :func:`add_usda_scene`; used by the adjust mode to
+#: spawn translucent ghost copies. Objects whose arc cannot be resolved are absent.
+OBJECT_ASSET_PATHS: dict[str, str] = {}
+
+#: Convex-hull vertices of each tracked object's meshes, in the object's own
+#: frame [m], shape (N, 3) float32, filled by :func:`add_usda_scene`. The adjust
+#: mode rotates them to find the object's lowest point under any orientation,
+#: so an edited pose can be clamped to keep the whole mesh on or above the
+#: tabletop. Falls back to the 8 local-AABB corners when hulling fails.
+OBJECT_SUPPORT_POINTS: dict[str, np.ndarray] = {}
 
 
 def sidecar_path(usda_path: str) -> str:
@@ -79,6 +92,79 @@ def save_pose_overrides(usda_path: str, overrides: dict[str, dict[str, list[floa
     with open(path, "w") as f:
         json.dump({"objects": overrides}, f, indent=2)
     return path
+
+
+def _object_asset_path(prim, stage) -> str | None:
+    """Absolute path of the USD asset a tracked object prim references/payloads.
+
+    Walks the prim's composition arcs for the first reference or payload and
+    resolves its asset path against the introducing layer; falls back to the
+    root layer's authored payload/reference list. Returns None (with a warning
+    upstream) when no arc is resolvable — such objects simply get no ghost.
+    """
+    from pxr import Pcp, Usd
+
+    try:
+        query = Usd.PrimCompositionQuery(prim)
+        for arc in query.GetCompositionArcs():
+            if arc.GetArcType() not in (Pcp.ArcTypePayload, Pcp.ArcTypeReference):
+                continue
+            _, entry = arc.GetIntroducingListEditor()
+            layer = arc.GetIntroducingLayer()
+            if entry is not None and layer is not None and entry.assetPath:
+                return layer.ComputeAbsolutePath(entry.assetPath)
+    except Exception:
+        pass
+    try:
+        spec = stage.GetRootLayer().GetPrimAtPath(prim.GetPath())
+        if spec is not None:
+            for items in (spec.payloadList, spec.referenceList):
+                for entry in [*items.prependedItems, *items.explicitItems, *items.appendedItems]:
+                    if entry.assetPath:
+                        return stage.GetRootLayer().ComputeAbsolutePath(entry.assetPath)
+    except Exception:
+        pass
+    return None
+
+
+def _object_support_points(prim, bbox_cache) -> np.ndarray:
+    """Convex-hull vertices of ``prim``'s meshes, in the prim's own frame [m].
+
+    Rotating these and taking the minimum z gives the object's lowest point
+    under any orientation — how the adjust editor keeps a dragged mesh on or
+    above the tabletop. Falls back to the 8 corners of the local AABB when the
+    meshes yield no points or hulling fails (both conservative directions:
+    the AABB box contains the mesh, so its corners can only over-clamp).
+    """
+    from pxr import Usd, UsdGeom
+
+    points: list[np.ndarray] = []
+    try:
+        world_to_obj = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).GetInverse()
+        for child in Usd.PrimRange(prim, Usd.TraverseInstanceProxies()):
+            if not child.IsA(UsdGeom.Mesh) or UsdGeom.Imageable(child).ComputePurpose() == UsdGeom.Tokens.guide:
+                continue
+            pts = UsdGeom.Mesh(child).GetPointsAttr().Get()
+            if not pts:
+                continue
+            # USD matrices are row-vector convention: p' = p @ M[:3,:3] + M[3,:3].
+            m = np.array(UsdGeom.Xformable(child).ComputeLocalToWorldTransform(Usd.TimeCode.Default()) * world_to_obj)
+            points.append(np.asarray(pts, dtype=np.float64) @ m[:3, :3] + m[3, :3])
+        if points:
+            pts = np.concatenate(points)
+            if len(pts) > 50000:  # hulling cost cap; a subsample is plenty for support
+                pts = pts[np.random.default_rng(0).choice(len(pts), 50000, replace=False)]
+            from scipy.spatial import ConvexHull
+
+            hull = ConvexHull(pts)
+            return pts[hull.vertices].astype(np.float32)
+    except Exception as exc:
+        print(f"[WARNING] {prim.GetPath()}: support-point hull failed ({exc}); using the AABB corners.")
+    box = bbox_cache.ComputeUntransformedBound(prim).ComputeAlignedBox()
+    lo, hi = box.GetMin(), box.GetMax()
+    return np.array(
+        [[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])], dtype=np.float32
+    )
 
 
 def add_usda_scene(scene_cfg: InteractiveSceneCfg, usda_path: str, track_objects: bool = True) -> list[str]:
@@ -118,6 +204,8 @@ def add_usda_scene(scene_cfg: InteractiveSceneCfg, usda_path: str, track_objects
     objects: list[str] = []
     FOOTPRINT_RADII.clear()  # one scene is loaded at a time; drop the previous scene's entries
     FOOTPRINT_BOTTOM_OFFSETS.clear()
+    OBJECT_ASSET_PATHS.clear()
+    OBJECT_SUPPORT_POINTS.clear()
     SUPPORT_SURFACE_Z = None
     # <scene>.usda.poses.json overrides the authored pose per tracked object; the
     # in-headset "adjust object" mode writes it. Absent → the USDA is authoritative.
@@ -153,6 +241,10 @@ def add_usda_scene(scene_cfg: InteractiveSceneCfg, usda_path: str, track_objects
             SUPPORT_SURFACE_Z = bottom_z if SUPPORT_SURFACE_Z is None else min(SUPPORT_SURFACE_Z, bottom_z)
         else:
             FOOTPRINT_BOTTOM_OFFSETS[name] = 0.0
+        asset_path = _object_asset_path(prim, stage)
+        if asset_path is not None:
+            OBJECT_ASSET_PATHS[name] = asset_path
+        OBJECT_SUPPORT_POINTS[name] = _object_support_points(prim, bbox_cache)
         # init_state repeats the authored pose because reset_scene_to_default
         # writes it back to the sim on every reset. NOTE: InitialStateCfg.rot is
         # (x, y, z, w) on this Isaac Lab release, while Gf stores w separately.

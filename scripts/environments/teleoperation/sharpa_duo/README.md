@@ -200,47 +200,57 @@ On by default (`--no_dr` disables), applied at every episode reset:
 Saying **"adjust object"** opens a pose-authoring mode that lets you re-author
 a scene's object layout from inside the headset, without editing the USDA.
 
-On entry the arm rig is parked out of sight and two **free-floating SharpaWave
-hands** appear on your wrists instead: their bases follow your tracked wrists
-directly (full 6-DoF — no arm kinematics limiting how far you can turn an
-object), while the fingers keep the ordinary retargeting, contacts, and
-actuator force limits, so objects still move only through compliant robot-hand
-contact. Tracking starts immediately on entry; nothing is recorded, and
-whatever the recorder held is thrown away — authoring a layout never leaves a
-demo behind. Saying "done" restores the rig exactly where it stood. (An
-earlier version let your tracked hand drive objects directly. That put a rigid
-body on the end of a noisy 240 Hz position signal with no mass, damping or
-force limit in between, and objects were flung on contact; going through a
-robot hand keeps the compliance that makes teleop stable.)
+It is a **kinematic pose editor** — nothing is simulated while it is open, so
+nothing can be flung, topple, or drift. On entry the arm rig parks out of
+sight, the desk turns translucent, a translucent green **ghost** of every
+object marks where it stood, and your tracked hand becomes the cursor (small
+red joint spheres). **Pinch directly on an object to grab it**: it is
+**welded to your hand 1:1** like a real object held at the pinch point — the
+grabbed spot stays under your fingers, turning your hand pivots it about the
+grip with the natural lever arm (large turns: re-grab and keep turning, as in
+real life), tilting leans it (e.g. a brush resting only its head on the
+table) — and it stays exactly where you release it, verbatim:
+nothing settles or snaps, so what you place is what is saved. The one
+constraint is the **tabletop, which is a hard floor**: no part of a mesh can
+be dragged below it, so pushing down rests the object exactly on the surface —
+the easiest way to place something flat. A pinch registers when thumb and
+index tips close within 1 cm and releases past 3 cm. One object per hand; a
+pinch on a panel key is a tap, anywhere else near an object is a grab.
+**Pinching empty air with both hands grabs the world**: move your hands to
+pan the view, turn them to rotate it (full 3-DoF — say "align" to re-level if
+you lose the horizon), and spread/close them to zoom (a dolly toward/away
+from you). Pure view motion: objects never move, and "done" restores the
+original view exactly so teleop alignment is untouched. Nothing is recorded,
+and whatever the recorder held is thrown away — authoring a layout never
+leaves a demo behind.
 
 While the mode is open, a translucent blue square on the tabletop previews the
 XY randomization region per object (the yaw range is shown only as a number on
 the range panel). It follows the objects as you move them and resizes live as
-you retune the ranges (no overlay with `--no_dr`). Saying "reset" stows the
-hands together with restoring the objects; they reappear once your wrists are
-clear of the restored layout, so the returning hands can never knock it apart.
+you retune the ranges (no overlay with `--no_dr`).
 
-- **"done"** stops teleop, lets the scene settle, and writes the resting poses
-  to a sidecar `<scene>.usda.poses.json` next to the scene file. The USDA is
-  never modified, and the next load picks the sidecar up automatically. The
+- **"done"** writes the edited poses to a sidecar `<scene>.usda.poses.json`
+  next to the scene file and restores the rig exactly where it stood. The USDA
+  is never modified, and the next load picks the sidecar up automatically. The
   saved poses also become the centre of the randomization for the rest of the
-  session.
-- **"reset"** means *undo* while the mode is open: every object goes back to
-  where it stood when you entered. It does not reset the scene.
+  session. (Poses are saved exactly as placed: an object left hovering will
+  drop on the next reset, and deliberately overlapped objects get separated by
+  stock physics there — delete the sidecar to fall back to the USDA's authored
+  poses.)
+- **"reset"** means *undo* while the mode is open: every object snaps back
+  onto its ghost. It does not reset the scene.
 
 A floating range panel appears alongside showing both values (`xy` in meters,
 `yaw` in **degrees**), its `-`/`+` keys tapped with a thumb-index pinch
 (±1 cm / ±5°). Holding a **Quest controller** (which replaces hand tracking on
-that side — that hand freezes in place until you put the controller down) is
-the quickest way to retune: the thumbstick steps the ranges directly —
-left/right = `xy_range` −/+, up/down = `yaw_range` +/− — auto-repeating while
-held, with the panel updating live; the trigger with the controller tip at a
-panel key also works as a tap. Exact values can be typed at the terminal
-(`xy_range=0.08` / `yaw_range=45`, degrees). The floating hands' finger
-torques are capped by `--adjust_hand_effort` (default 2 N·m) so repositioning
-stays gentle, and `--no_adjust` disables the whole mode — no floating hands,
-panels, or controller plumbing, leaving teleop exactly as it was without the
-feature.
+that side) is the quickest way to retune: the thumbstick steps the ranges
+directly — left/right = `xy_range` −/+, up/down = `yaw_range` +/− —
+auto-repeating while held, with the panel updating live; the trigger with the
+controller tip at a panel key also works as a tap. Exact values can be typed
+at the terminal (`xy_range=0.08` / `yaw_range=45`, degrees). `--no_adjust`
+disables the whole mode — no panels or controller plumbing, leaving teleop
+exactly as it was without the feature. Full desk/ghost transparency needs the
+default `--arm_visual transparent`; other modes render them solid.
 
 The panel is placed within arm's reach at your station, just above the
 tabletop — it must be physically reachable, because a tap is a pinch at the
@@ -290,9 +300,11 @@ Sanity-check an installation or a new scene without a headset:
 This creates the environment, holds the rig's ready pose for 120 control steps,
 then commands both flanges 3 cm up and verifies the IK follows (it fails loudly
 if the action space or IK wiring is broken). `--smoke_adjust 120` validates the
-adjust mode the same way: it parks the rig, sweeps synthetic wrists through the
-floating hands, and checks the tracking, the exact robot restore, and the
-panel placement.
+adjust-mode pose editor the same way: it grabs an object with a synthetic
+pinch, drags it through a full 6-DoF motion (translate, lift, yaw, roll), and
+checks the final pose, that no other object moved, the exact robot restore,
+and the panel placement (the scene's pose sidecar is backed up and restored,
+so a smoke never re-authors it).
 
 ## What the robot is
 

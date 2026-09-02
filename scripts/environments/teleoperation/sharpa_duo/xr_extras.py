@@ -158,6 +158,10 @@ class HandJointMarkers:
         pos[pos.norm(dim=-1) < 1e-6, 2] = -1000.0
         self._markers.visualize(translations=pos)
 
+    def set_visibility(self, visible: bool) -> None:
+        """Show or hide the joint spheres (hidden markers ignore :meth:`update`)."""
+        self._markers.set_visibility(visible)
+
 
 def apply_arm_visual(mode: str) -> None:
     """Make the arms' render geometry 5% transparent or invisible (physics untouched).
