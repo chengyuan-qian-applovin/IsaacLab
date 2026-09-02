@@ -86,7 +86,7 @@ def scan_record_dir(record_dir: str) -> dict[str, tuple[int, int]]:
     if not os.path.isdir(record_dir):
         return {}
     for root, dirs, files in os.walk(record_dir):
-        dirs[:] = [d for d in dirs if d != "fleet_scenes"]  # scene cache holds no demos
+        dirs[:] = [d for d in dirs if d not in ("fleet_cache", "fleet_scenes")]  # scene/asset caches hold no demos
         for name in sorted(files):
             if not name.endswith(".hdf5"):
                 continue

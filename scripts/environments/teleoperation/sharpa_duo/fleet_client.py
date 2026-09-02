@@ -132,8 +132,15 @@ class FleetClient:
         self.collector_id = collector_id or socket.gethostname()
         self.token = token if token is not None else os.environ.get("FLEET_TOKEN")
         self.state_dir = os.path.abspath(state_dir)
-        self.scene_cache_dir = os.path.join(self.state_dir, "fleet_scenes")
+        # Local mirror of the server's data layout: scene files reference their
+        # assets as ../assets/<path> (the server's convention), so scenes/ and
+        # assets/ MUST sit side by side; the loose task-doc JSONs live in
+        # scenes/ next to the scene files, where find_task_description looks.
+        self.cache_dir = os.path.join(self.state_dir, "fleet_cache")
+        self.scene_cache_dir = os.path.join(self.cache_dir, "scenes")
+        self.asset_cache_dir = os.path.join(self.cache_dir, "assets")
         os.makedirs(self.scene_cache_dir, exist_ok=True)
+        os.makedirs(self.asset_cache_dir, exist_ok=True)
         self._outbox_path = os.path.join(self.state_dir, "fleet_outbox.sqlite3")
         with self._outbox() as conn:
             conn.executescript(_OUTBOX_SCHEMA)
@@ -197,6 +204,73 @@ class FleetClient:
             if got != sha256:
                 raise FleetError(f"scene {scene_id}: downloaded sha256 {got[:12]} != expected {sha256[:12]}")
         return path
+
+    def sync_docs(self) -> list[str]:
+        """Fetch every loose JSON document from the server's scenes/ into the scene cache.
+
+        These docs (e.g. ``scene_instruct.json``) carry per-scene task
+        descriptions; placed next to the cached scene files they are exactly
+        where ``task_display.find_task_description`` looks. They are small and
+        ``/api/docs`` reports no content hash, so they are always re-downloaded
+        — the local copies are the latest by construction. Returns the names.
+        """
+        names = []
+        for doc in self._request("GET", "/api/docs")["docs"]:
+            name = doc["name"]
+            out_path = os.path.join(self.scene_cache_dir, os.path.basename(name))
+            self._request("GET", f"/api/docs/{urllib.parse.quote(name)}", out_path=out_path, timeout=120.0)
+            names.append(name)
+        return names
+
+    def scene_assets(self, scene_id: str) -> list[dict]:
+        """The asset files one scene references: ``{path, size_bytes, sha256, missing}`` each.
+
+        ``path`` is relative to the server's ``assets/`` tree AND the location
+        to store the file at under the local asset cache — the layout is the
+        contract that makes the scene's ``../assets/...`` references resolve.
+        """
+        return self._request("GET", f"/api/scenes/{urllib.parse.quote(scene_id)}/assets")["assets"]
+
+    def download_asset(self, path: str, sha256: str | None = None) -> str:
+        """Fetch one asset into the local mirror (skipped when the hash already matches).
+
+        Same freshness contract as :meth:`download_scene`: the server's sha256
+        decides whether the cached copy is current, and a downloaded file that
+        does not match it raises instead of being used.
+        """
+        local = os.path.normpath(os.path.join(self.asset_cache_dir, path))
+        if not local.startswith(self.asset_cache_dir + os.sep):
+            raise FleetError(f"asset path {path!r} escapes the asset cache")
+        if os.path.exists(local) and sha256 and self._sha256(local) == sha256:
+            return local
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        self._request("GET", f"/api/assets/{urllib.parse.quote(path)}", out_path=local, timeout=600.0)
+        if sha256:
+            got = self._sha256(local)
+            if got != sha256:
+                raise FleetError(f"asset {path}: downloaded sha256 {got[:12]} != expected {sha256[:12]}")
+        return local
+
+    def sync_scene_assets(self, scene_id: str) -> tuple[int, int, list[str]]:
+        """Make every asset the scene references present and current in the local mirror.
+
+        Returns ``(current, downloaded, missing)``: how many assets were already
+        up to date, how many were (re-)downloaded, and the referenced paths the
+        SERVER itself does not have (the scene cannot fully load anywhere until
+        those are pushed to the server).
+        """
+        current, downloaded, missing = 0, 0, []
+        for asset in self.scene_assets(scene_id):
+            if asset.get("missing"):
+                missing.append(asset["path"])
+                continue
+            local = os.path.normpath(os.path.join(self.asset_cache_dir, asset["path"]))
+            if os.path.exists(local) and self._sha256(local) == asset["sha256"]:
+                current += 1
+            else:
+                self.download_asset(asset["path"], asset["sha256"])
+                downloaded += 1
+        return current, downloaded, missing
 
     def push_scene(
         self,

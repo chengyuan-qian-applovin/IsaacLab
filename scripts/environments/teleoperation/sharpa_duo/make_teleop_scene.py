@@ -1309,39 +1309,43 @@ def load_scene_list(fleet=None) -> list[tuple[str, str | None]]:
     Fleet scene sources (exclusive with a local scene list): with
     ``--fleet_scene_ids`` exactly those server scenes are used; otherwise, with
     no explicit local selection, the server picks the ``--fleet_scenes``
-    most-needed ones. Either way the files are downloaded (sha256-verified into
-    the scene cache) and cycled exactly like a local scene list.
+    most-needed ones. Either way each scene file AND every asset it references
+    are downloaded sha256-verified into the local mirror of the server layout
+    (``<record_dir>/fleet_cache/scenes|assets``) and cycled exactly like a
+    local scene list.
     """
     from task_display import find_task_description
+
+    def fetch_fleet_scene(row: dict, verb: str) -> tuple[str, str | None]:
+        """Bring one server scene fully local — file + referenced assets, all current."""
+        scene_id = row["scene_id"]
+        path = fleet.download_scene(scene_id, row.get("sha256") or None)
+        current, downloaded, missing = fleet.sync_scene_assets(scene_id)
+        workers = ", ".join(w for w in row["active_workers"] if w != fleet.collector_id) or "nobody else"
+        print(
+            f"[FLEET] {verb} {scene_id}: {row['successes']}/{row['target_successes']} successes,"
+            f" {current + downloaded} asset(s) current ({downloaded} downloaded), working: {workers}"
+        )
+        if missing:
+            print(
+                f"[FLEET] WARNING: {scene_id} references {len(missing)} file(s) the SERVER does not have"
+                f" ({', '.join(missing[:3])}{', ...' if len(missing) > 3 else ''}) — the scene may not load"
+                " fully; push the assets to the server's assets/ tree."
+            )
+        return path, row.get("task_description") or find_task_description(path)
 
     if fleet is not None and args_cli.fleet_scene_ids:
         rows = {row["scene_id"]: row for row in fleet.list_scenes()}
         missing = [sid for sid in args_cli.fleet_scene_ids if sid not in rows]
         if missing:
             raise SystemExit(f"[FLEET] Scenes not on the server: {missing} (push them with fleet_push_scenes.py)")
-        scenes = []
-        for sid in args_cli.fleet_scene_ids:
-            row = rows[sid]
-            path = fleet.download_scene(sid, row.get("sha256") or None)
-            workers = ", ".join(w for w in row["active_workers"] if w != fleet.collector_id) or "nobody else"
-            print(f"[FLEET] Selected {sid}: {row['successes']}/{row['target_successes']} successes, working: {workers}")
-            scenes.append((path, row.get("task_description") or find_task_description(path)))
-        return scenes
+        return [fetch_fleet_scene(rows[sid], "Selected") for sid in args_cli.fleet_scene_ids]
 
     if fleet is not None and args_cli.scene_list is None and args_cli.scene_usda == parser.get_default("scene_usda"):
         entries = fleet.suggest(args_cli.fleet_scenes)
         if not entries:
             raise SystemExit("[FLEET] Nothing to collect: every scene on the server is at its target (or retired).")
-        scenes = []
-        for entry in entries:
-            path = fleet.download_scene(entry["scene_id"], entry.get("sha256") or None)
-            workers = ", ".join(entry["active_workers"]) or "nobody else"
-            print(
-                f"[FLEET] Assigned {entry['scene_id']}:"
-                f" {entry['successes']}/{entry['target_successes']} successes, working: {workers}"
-            )
-            scenes.append((path, entry.get("task_description") or find_task_description(path)))
-        return scenes
+        return [fetch_fleet_scene(entry, "Assigned") for entry in entries]
 
     if args_cli.scene_list is None:
         return [(args_cli.scene_usda, find_task_description(args_cli.scene_usda))]
@@ -1393,6 +1397,11 @@ def main():
             f" {totals['successes_toward_target']}/{totals['target_successes']} successes"
             f" across {totals['scenes']} scenes; online collectors: {', '.join(online) or 'just you'}."
         )
+        # The loose scene-doc JSONs (task descriptions) are always re-fetched so
+        # the local copies, sitting next to the cached scene files, are current.
+        docs = fleet.sync_docs()
+        if docs:
+            print(f"[FLEET] Synced {len(docs)} scene doc(s): {', '.join(docs)}")
         fleet.start()
 
     scenes = load_scene_list(fleet)

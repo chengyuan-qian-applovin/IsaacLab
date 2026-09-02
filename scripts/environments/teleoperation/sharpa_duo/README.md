@@ -90,14 +90,23 @@ export FLEET_TOKEN=change-me   # or pass --fleet_token
 What fleet mode does, in the order it happens:
 
 1. **Startup sync**: the collector checks in and prints the fleet-wide status
-   (progress toward targets, who else is online).
-2. **Scene download**: the scenes to work on come from the server —
+   (progress toward targets, who else is online). The loose scene-doc JSONs
+   from the server's `scenes/` (e.g. `scene_instruct.json` with the task
+   descriptions) are always re-downloaded into the local cache, so the copies
+   next to the cached scene files are the latest by construction.
+2. **Scene + asset download**: the scenes to work on come from the server —
    `--fleet_scene_ids` names them explicitly (what the launcher's "Fleet
    server" source passes; mutually exclusive with `--scene_list`), or with no
    selection at all the server picks the `--fleet_scenes` most-needed ones
-   (highest priority, fewest active collectors, most demos remaining). Either
-   way they are downloaded into `<record_dir>/fleet_scenes/`, sha256-verified,
-   and cycled with "next" as usual.
+   (highest priority, fewest active collectors, most demos remaining). Each
+   selected scene is brought fully local into a mirror of the server's layout
+   under `<record_dir>/fleet_cache/` — the scene file into `scenes/`, then
+   every asset it references (from `GET /api/scenes/{id}/assets`) into the
+   sibling `assets/` tree, so the scene's `../assets/...` references resolve.
+   Everything is sha256-verified: files whose hash already matches the
+   server's are skipped, changed ones are re-downloaded, and a hash mismatch
+   after download is a hard error. Assets a scene references that the server
+   itself lacks are warned about loudly. Scenes cycle with "next" as usual.
 3. **Presence**: entering a scene declares "this collector works here" — pure
    information, never a lock: any number of collectors may share a scene, and
    a crashed collector can never block anyone (its presence just goes stale
