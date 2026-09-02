@@ -13,10 +13,11 @@ A plain-tkinter launcher (no Isaac Sim involved until Start is pressed):
   labeled episode) and a **scene source** — a radio choice between two
   mutually exclusive modes:
 
-  - **Local directory**: scan a directory recursively for ``*.usda`` and tick
-    the scenes to collect; the table shows the per-machine success/failure
-    demo counts recorded under the record directory. The run is fully
-    standalone — no fleet server is involved at all.
+  - **Local directory**: scan a directory recursively for scene files
+    (``*.usdz``, ``*.usda``, ``*.usd``) and tick the scenes to collect; the
+    table shows the per-machine success/failure demo counts recorded under
+    the record directory. The run is fully standalone — no fleet server is
+    involved at all.
   - **Fleet server**: connect to the fleet coordination server (URL, optional
     collector id and token); the table then lists the SERVER's scenes with
     the server's numbers only — fleet-wide progress (``successes/target``)
@@ -63,11 +64,14 @@ _SETTINGS_PATH = os.environ.get(
 )
 
 
+SCENE_SUFFIXES = (".usdz", ".usda", ".usd")
+
+
 def scan_scene_dir(scene_dir: str) -> list[str]:
-    """All ``*.usda`` scene files under ``scene_dir``, recursively, sorted."""
+    """All scene files (``*.usdz``, ``*.usda``, ``*.usd``) under ``scene_dir``, recursively, sorted."""
     hits = []
     for root, _dirs, files in os.walk(scene_dir):
-        hits += [os.path.join(root, f) for f in files if f.endswith(".usda")]
+        hits += [os.path.join(root, f) for f in files if f.endswith(SCENE_SUFFIXES)]
     return sorted(hits)
 
 
@@ -86,7 +90,7 @@ def scan_record_dir(record_dir: str) -> dict[str, tuple[int, int]]:
     if not os.path.isdir(record_dir):
         return {}
     for root, dirs, files in os.walk(record_dir):
-        dirs[:] = [d for d in dirs if d not in ("fleet_cache", "fleet_scenes")]  # scene/asset caches hold no demos
+        dirs[:] = [d for d in dirs if d not in ("fleet_cache", "fleet_scenes")]  # scene caches hold no demos
         for name in sorted(files):
             if not name.endswith(".hdf5"):
                 continue
@@ -582,7 +586,7 @@ class TeleopLauncher(tk.Tk):
     def refresh_table(self) -> None:
         """Re-render the table for the active scene source.
 
-        Local mode lists the ``*.usda`` files under the scene directory with the
+        Local mode lists the scene files under the scene directory with the
         per-machine success/failure demo counts recorded under the record
         directory. Server mode lists the fleet server's scenes (from the last
         status poll) with the SERVER's numbers only — fleet-wide progress and

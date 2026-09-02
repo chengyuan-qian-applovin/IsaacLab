@@ -132,15 +132,12 @@ class FleetClient:
         self.collector_id = collector_id or socket.gethostname()
         self.token = token if token is not None else os.environ.get("FLEET_TOKEN")
         self.state_dir = os.path.abspath(state_dir)
-        # Local mirror of the server's data layout: scene files reference their
-        # assets as ../assets/<path> (the server's convention), so scenes/ and
-        # assets/ MUST sit side by side; the loose task-doc JSONs live in
-        # scenes/ next to the scene files, where find_task_description looks.
+        # Local mirror of the server's scenes/: every scene is a self-contained
+        # .usdz package (no asset tree anywhere), and the loose task-doc JSONs
+        # sit next to the scene files, where find_task_description looks.
         self.cache_dir = os.path.join(self.state_dir, "fleet_cache")
         self.scene_cache_dir = os.path.join(self.cache_dir, "scenes")
-        self.asset_cache_dir = os.path.join(self.cache_dir, "assets")
         os.makedirs(self.scene_cache_dir, exist_ok=True)
-        os.makedirs(self.asset_cache_dir, exist_ok=True)
         self._outbox_path = os.path.join(self.state_dir, "fleet_outbox.sqlite3")
         with self._outbox() as conn:
             conn.executescript(_OUTBOX_SCHEMA)
@@ -189,11 +186,13 @@ class FleetClient:
         return out["scene"]
 
     def download_scene(self, scene_id: str, sha256: str | None = None) -> str:
-        """Fetch a scene file into the local cache (skipped when the hash already matches).
+        """Fetch a scene package into the local cache (skipped when the hash already matches).
 
-        Returns the local path. The expected ``sha256`` (from the server's scene
-        row) pins the scene version: a cached file that does not match is
-        re-downloaded, and a downloaded file that does not match raises.
+        Scenes are self-contained ``.usdz`` packages, so this one download is
+        everything the scene needs. Returns the local path. The expected
+        ``sha256`` (from the server's scene row) pins the scene version: a
+        cached file that does not match is re-downloaded, and a downloaded
+        file that does not match raises.
         """
         path = os.path.join(self.scene_cache_dir, os.path.basename(scene_id))
         if os.path.exists(path) and sha256 and self._sha256(path) == sha256:
@@ -222,56 +221,6 @@ class FleetClient:
             names.append(name)
         return names
 
-    def scene_assets(self, scene_id: str) -> list[dict]:
-        """The asset files one scene references: ``{path, size_bytes, sha256, missing}`` each.
-
-        ``path`` is relative to the server's ``assets/`` tree AND the location
-        to store the file at under the local asset cache — the layout is the
-        contract that makes the scene's ``../assets/...`` references resolve.
-        """
-        return self._request("GET", f"/api/scenes/{urllib.parse.quote(scene_id)}/assets")["assets"]
-
-    def download_asset(self, path: str, sha256: str | None = None) -> str:
-        """Fetch one asset into the local mirror (skipped when the hash already matches).
-
-        Same freshness contract as :meth:`download_scene`: the server's sha256
-        decides whether the cached copy is current, and a downloaded file that
-        does not match it raises instead of being used.
-        """
-        local = os.path.normpath(os.path.join(self.asset_cache_dir, path))
-        if not local.startswith(self.asset_cache_dir + os.sep):
-            raise FleetError(f"asset path {path!r} escapes the asset cache")
-        if os.path.exists(local) and sha256 and self._sha256(local) == sha256:
-            return local
-        os.makedirs(os.path.dirname(local), exist_ok=True)
-        self._request("GET", f"/api/assets/{urllib.parse.quote(path)}", out_path=local, timeout=600.0)
-        if sha256:
-            got = self._sha256(local)
-            if got != sha256:
-                raise FleetError(f"asset {path}: downloaded sha256 {got[:12]} != expected {sha256[:12]}")
-        return local
-
-    def sync_scene_assets(self, scene_id: str) -> tuple[int, int, list[str]]:
-        """Make every asset the scene references present and current in the local mirror.
-
-        Returns ``(current, downloaded, missing)``: how many assets were already
-        up to date, how many were (re-)downloaded, and the referenced paths the
-        SERVER itself does not have (the scene cannot fully load anywhere until
-        those are pushed to the server).
-        """
-        current, downloaded, missing = 0, 0, []
-        for asset in self.scene_assets(scene_id):
-            if asset.get("missing"):
-                missing.append(asset["path"])
-                continue
-            local = os.path.normpath(os.path.join(self.asset_cache_dir, asset["path"]))
-            if os.path.exists(local) and self._sha256(local) == asset["sha256"]:
-                current += 1
-            else:
-                self.download_asset(asset["path"], asset["sha256"])
-                downloaded += 1
-        return current, downloaded, missing
-
     def push_scene(
         self,
         path: str,
@@ -281,7 +230,10 @@ class FleetClient:
     ) -> dict:
         """Upload one scene file (its basename becomes the scene id); returns the scene row.
 
-        ``None`` fields keep the server-side value (or its default for a new scene).
+        The file must be a self-contained scene package (a flattened ``.usdz``
+        with its geometry and textures inside): collectors download exactly
+        this one file per scene, nothing else. ``None`` fields keep the
+        server-side value (or its default for a new scene).
         """
         params = {}
         if target_successes is not None:

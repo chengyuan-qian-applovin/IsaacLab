@@ -94,19 +94,19 @@ What fleet mode does, in the order it happens:
    from the server's `scenes/` (e.g. `scene_instruct.json` with the task
    descriptions) are always re-downloaded into the local cache, so the copies
    next to the cached scene files are the latest by construction.
-2. **Scene + asset download**: the scenes to work on come from the server —
+2. **Scene download**: the scenes to work on come from the server —
    `--fleet_scene_ids` names them explicitly (what the launcher's "Fleet
    server" source passes; mutually exclusive with `--scene_list`), or with no
    selection at all the server picks the `--fleet_scenes` most-needed ones
-   (highest priority, fewest active collectors, most demos remaining). Each
-   selected scene is brought fully local into a mirror of the server's layout
-   under `<record_dir>/fleet_cache/` — the scene file into `scenes/`, then
-   every asset it references (from `GET /api/scenes/{id}/assets`) into the
-   sibling `assets/` tree, so the scene's `../assets/...` references resolve.
-   Everything is sha256-verified: files whose hash already matches the
-   server's are skipped, changed ones are re-downloaded, and a hash mismatch
-   after download is a hard error. Assets a scene references that the server
-   itself lacks are warned about loudly. Scenes cycle with "next" as usual.
+   (highest priority, fewest active collectors, most demos remaining). Every
+   scene on the server is one **self-contained `.usdz` package** (flattened,
+   geometry and textures inside, no external references except the
+   runtime-resolved `OmniPBR.mdl`), so a scene is exactly one download into
+   `<record_dir>/fleet_cache/scenes/` — there is no asset tree to mirror, on
+   the server or here. Downloads are sha256-verified against the server's
+   scene row: a cached file whose hash already matches is skipped, a changed
+   one is re-fetched, and a hash mismatch after download is a hard error.
+   Scenes cycle with "next" as usual.
 3. **Presence**: entering a scene declares "this collector works here" — pure
    information, never a lock: any number of collectors may share a scene, and
    a crashed collector can never block anyone (its presence just goes stale
@@ -123,10 +123,15 @@ Seed the server with scenes from any collector machine:
 
 ```bash
 ./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/fleet_push_scenes.py \
-    --fleet_server http://fleet-host:8080 --scene_list scenes/scene_list.json --target 20
+    --fleet_server http://fleet-host:8080 --scene_dir ~/scenes_usdz --target 20
 ```
 
-and watch the live dashboard at `http://fleet-host:8080/`.
+and watch the live dashboard at `http://fleet-host:8080/`. Push
+self-contained `.usdz` packages only: the generator's `.usda` scenes reference
+a separate `02_mesh/...` tree that collectors never receive, so convert them
+first (dependency closure → flatten → usdz, documented in the
+teleop-data-server README under "File organization convention"). The push
+script warns on any non-`.usdz` file.
 
 ## Replaying episodes
 
@@ -189,10 +194,10 @@ session start, domain randomization, control gains, visuals, advanced);
 page 2 picks the record directory and the **scene source** — a radio choice
 between two mutually exclusive modes:
 
-- **Local directory** (default): scan a directory recursively for `*.usda`
-  and tick the scenes to collect; the table shows the per-machine
-  success/failure demo counts recorded under the record directory. The run
-  is fully standalone — no fleet server is involved at all.
+- **Local directory** (default): scan a directory recursively for scene files
+  (`*.usdz`, `*.usda`, `*.usd`) and tick the scenes to collect; the table
+  shows the per-machine success/failure demo counts recorded under the record
+  directory. The run is fully standalone — no fleet server is involved at all.
 - **Fleet server**: enter the server URL (plus optional collector id/token)
   and press **Connect**. The table then lists the *server's* scenes with the
   server's numbers only: live **Fleet progress** (`successes/target`, green
@@ -407,7 +412,7 @@ never shifts pinch timing.
 | `usda_scene.py` | References the scene USDA into the env and registers its rigid bodies so resets restore their poses. |
 | `recording.py` | Recorder terms + the per-episode HDF5 handler (one file per labeled trajectory). |
 | `fleet_client.py` | Client for the duo-fleet-server: startup check-in, presence, scene download, crash-safe episode upload outbox. |
-| `fleet_push_scenes.py` | Seeds the fleet server with scene USDAs, targets, and task descriptions over HTTP. |
+| `fleet_push_scenes.py` | Seeds the fleet server with self-contained scene packages (`.usdz`), targets, and task descriptions over HTTP. |
 | `teleop_launcher.py` | Tkinter launcher UI: parameters, scene selection, per-scene collected counts. |
 | `voice_labeler.py` / `quest_audio.py` | Whisper voice commands; headset mic streaming + sound cues. |
 | `assets/robots/` | Vendored robot USD (torso + arms + hands + skin material). |

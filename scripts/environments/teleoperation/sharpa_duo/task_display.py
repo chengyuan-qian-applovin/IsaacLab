@@ -45,12 +45,24 @@ _MESSAGE_DIR = tempfile.mkdtemp(prefix="duo_message_display_")
 _MESSAGE_COUNTER = itertools.count()
 
 
+def _scene_key(path: str) -> str:
+    """The name a scene is matched by: its basename without the USD extension.
+
+    Instruction JSONs are authored against the generator's ``.usda`` files while
+    the fleet server distributes the same scenes repackaged as self-contained
+    ``.usdz``, so the extension must not take part in the match.
+    """
+    return os.path.splitext(os.path.basename(path))[0]
+
+
 def find_task_description(scene_path: str) -> str | None:
     """Task description for a scene file, from any instructions JSON in its directory.
 
     Every ``*.json`` next to the scene is scanned once (per directory) for the
-    scene-generation format: a ``scenes`` list of entries with ``scene`` (a path,
-    matched by basename — the authored paths come from another machine) and
+    scene-generation format: a list (top-level, or under a ``scenes`` or
+    ``episodes`` key) of entries with ``scene`` (a path, matched by basename
+    without extension — the authored paths come from another machine and may
+    name a ``.usda`` where the local file is a ``.usdz``) and
     ``task_description``. Returns None when no JSON describes this scene.
     """
     directory = os.path.dirname(os.path.abspath(scene_path))
@@ -62,16 +74,19 @@ def find_task_description(scene_path: str) -> str | None:
                     data = json.load(f)
             except (OSError, ValueError):
                 continue
-            entries = data.get("scenes") if isinstance(data, dict) else data
+            if isinstance(data, dict):
+                entries = next((data[k] for k in ("scenes", "episodes") if isinstance(data.get(k), list)), None)
+            else:
+                entries = data
             if not isinstance(entries, list):
                 continue
             for entry in entries:
                 if isinstance(entry, dict) and entry.get("scene") and entry.get("task_description"):
                     # Some descriptions arrive wrapped in stray quotes.
                     text = str(entry["task_description"]).strip().strip("'\"")
-                    mapping[os.path.basename(entry["scene"])] = text
+                    mapping[_scene_key(entry["scene"])] = text
         _DIR_CACHE[directory] = mapping
-    return _DIR_CACHE[directory].get(os.path.basename(scene_path))
+    return _DIR_CACHE[directory].get(_scene_key(scene_path))
 
 
 def _render_text_png(text: str, width_px: int = 1024) -> tuple[str, float]:

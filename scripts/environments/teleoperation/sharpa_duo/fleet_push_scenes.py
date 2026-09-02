@@ -3,11 +3,19 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Push scene USDAs (with targets and task descriptions) to the fleet server.
+"""Push scene packages (with targets and task descriptions) to the fleet server.
 
 Uploads over HTTP, so it works from any collector machine — no access to the
 server's disk needed. Re-pushing a scene replaces its file and keeps its
 collected-episode history. No simulator involved; runs with plain Python.
+
+The server's convention is one self-contained ``.usdz`` per scene (flattened
+composition, geometry and textures inside, no external references except the
+runtime-resolved ``OmniPBR.mdl``): collectors download exactly that one file.
+Generator output (``.usda`` referencing a ``02_mesh/...`` tree) is NOT
+self-contained — convert it first (see the teleop-data-server README, "File
+organization convention"). Pushing a non-``.usdz`` file is allowed but warned
+about, since the server does not check what it references.
 
 Examples:
 
@@ -15,9 +23,9 @@ Examples:
     ./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/fleet_push_scenes.py \\
         --fleet_server http://fleet-host:8080 --scene_list scenes/scene_list.json --target 20
 
-    # every .usda under a directory
+    # every .usdz (or .usda/.usd) under a directory
     ./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/fleet_push_scenes.py \\
-        --fleet_server http://fleet-host:8080 --scene_dir scenes/scenegen --target 10
+        --fleet_server http://fleet-host:8080 --scene_dir ~/scenes_usdz --target 10
 
     # individual files, higher priority (suggested to collectors first)
     ./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/fleet_push_scenes.py \\
@@ -34,12 +42,16 @@ from fleet_client import FleetClient, FleetError
 from task_display import find_task_description
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-parser.add_argument("scenes", nargs="*", help="Individual scene USDA files to push.")
+SCENE_SUFFIXES = (".usdz", ".usda", ".usd")
+
+parser.add_argument("scenes", nargs="*", help="Individual scene files (.usdz preferred) to push.")
 parser.add_argument("--fleet_server", type=str, required=True, help="Fleet server URL (e.g. http://fleet-host:8080).")
 parser.add_argument(
     "--fleet_token", type=str, default=None, help="Auth token (default: the FLEET_TOKEN environment variable)."
 )
-parser.add_argument("--scene_dir", type=str, default=None, help="Push every .usda under this directory (recursive).")
+parser.add_argument(
+    "--scene_dir", type=str, default=None, help="Push every .usdz/.usda/.usd under this directory (recursive)."
+)
 parser.add_argument(
     "--scene_list",
     type=str,
@@ -55,7 +67,7 @@ def collect_entries(args: argparse.Namespace) -> list[tuple[str, str | None]]:
     entries: list[tuple[str, str | None]] = []
     if args.scene_dir:
         for root, _dirs, files in os.walk(args.scene_dir):
-            entries += [(os.path.join(root, f), None) for f in sorted(files) if f.endswith(".usda")]
+            entries += [(os.path.join(root, f), None) for f in sorted(files) if f.endswith(SCENE_SUFFIXES)]
     if args.scene_list:
         base = os.path.dirname(os.path.abspath(args.scene_list))
         with open(args.scene_list) as f:
@@ -87,6 +99,11 @@ def main() -> None:
             print(f"[PUSH] MISSING {path} — skipped")
             continue
         scene_id = os.path.basename(path)
+        if not scene_id.endswith(".usdz"):
+            print(
+                f"[PUSH] WARNING {scene_id}: not a .usdz package — collectors download only this one file,"
+                " so any external asset reference in it will fail to resolve on their machines."
+            )
         description = description or find_task_description(path)
         try:
             row = client.push_scene(
