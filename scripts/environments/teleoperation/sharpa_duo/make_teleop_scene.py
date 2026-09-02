@@ -360,9 +360,12 @@ parser.add_argument(
     type=str,
     default="default",
     help=(
-        "Voice-command audio source: an ALSA capture device (arecord -D), or 'quest' (optionally"
-        " 'quest:<port>', default 8444) to stream the headset microphone from a page opened in the"
-        " Quest browser — see quest_mic.py. Open the printed URL on the headset before teleoperating."
+        "Voice-command audio source: an ALSA capture device (arecord -D); 'quest' / 'avp'"
+        " (optionally ':<port>', default 8444) to stream the headset microphone — see headset_mic.py"
+        " (Quest: open the printed URL in the headset browser before teleoperating; AVP: the Isaac XR"
+        " Teleop client streams by itself once connected, feature/avp-voice-mic build); or 'hub'"
+        " (optionally 'hub:<port>' / 'hub:<host>:<port>', default 127.0.0.1:8500) to take audio from"
+        " the always-on teleop app — see teleop_app.py, which keeps the microphone alive across runs."
     ),
 )
 parser.add_argument(
@@ -1456,10 +1459,15 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple, 
         hand_calibration=hand_calibration,
         wrist_offsets_xyzw=SPEC.wrist_offsets_xyzw,
     )
+    # The tuning UI is a GLFW (X11) window, not a Kit one: without a display
+    # its thread dies with "Failed to initialize GLFW", so don't request it.
+    has_display = bool(os.environ.get("DISPLAY"))
+    if not has_display:
+        print("[INFO] No DISPLAY: skipping the retargeter tuning UI.")
     teleop_cfg = IsaacTeleopCfg(
         xr_cfg=XrCfg(anchor_pos=tuple(anchor[0]), anchor_rot=tuple(anchor[1])),
         pipeline_builder=lambda: pipeline,
-        retargeters_to_tune=lambda: retargeters,
+        retargeters_to_tune=(lambda: retargeters) if has_display else None,
         sim_device=env.device,
     )
     # The CloudXR runtime is owned by main() and survives scene switches, so

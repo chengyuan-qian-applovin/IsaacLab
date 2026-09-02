@@ -32,7 +32,7 @@ or install it as a user service so it comes back after a reboot::
 
     ./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/teleop_app.py --install-service
 
-Pair it with ``--mic_device hub`` on the teleop side (see :mod:`quest_mic`),
+Pair it with ``--mic_device hub`` on the teleop side (see :mod:`headset_mic`),
 which makes teleop pull audio from this app instead of serving its own page.
 """
 
@@ -54,7 +54,7 @@ import time
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 
-from quest_mic import _lan_ips, _ssl_context  # noqa: E402  (shares the CloudXR cert)
+from headset_mic import _lan_ips, _ssl_context  # noqa: E402  (shares the CloudXR cert)
 
 DEFAULT_PORT = 8500
 """Fixed port for the app. Bookmarked once, so it must not move."""
@@ -63,7 +63,7 @@ _TELEOP_SCRIPT = os.path.join(_HERE, "make_teleop_scene.py")
 _ISAACLAB_SH = os.path.abspath(os.path.join(_HERE, "..", "..", "..", "..", "isaaclab.sh"))
 
 _SUPERSEDED = 4001
-"""Close code telling an older mic page a newer one took over (see :mod:`quest_mic`)."""
+"""Close code telling an older mic page a newer one took over (see :mod:`headset_mic`)."""
 
 _STOP_GRACE_S = 12.0
 """Seconds to wait for a SIGINT (the Ctrl-C equivalent) before escalating."""

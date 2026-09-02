@@ -3,29 +3,38 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Quest-microphone audio source: a mic capture page streamed from the headset's browser.
+"""Headset-microphone audio source: a WSS server the headset streams mic audio to.
 
 Nothing in the CloudXR/IsaacTeleop stack delivers the headset microphone to the
 server (the runtime's mic machinery is internal-only, and NVIDIA's own voice
-flow runs on-device), so this module provides the audio path ourselves:
+flow runs on-device), so this module provides the audio path ourselves.
+:class:`HeadsetMicServer` accepts a WSS stream of 16 kHz mono PCM16 chunks on
+one port; TLS reuses the CloudXR WSS proxy's self-signed certificate
+(``~/.cloudxr/certs``) when present — the same warning flow the headset already
+went through — and generates one otherwise. Two headsets speak this protocol:
 
-- :class:`QuestMicServer` serves a small HTTPS page and accepts a WSS stream of
-  16 kHz mono PCM16 on the SAME port (plain GETs get the page, websocket
-  upgrades get the audio channel). TLS reuses the CloudXR WSS proxy's
-  self-signed certificate (``~/.cloudxr/certs``) when present — the same
-  warning flow the headset already went through — and generates one otherwise.
-- The page (embedded below) captures the browser microphone with
-  ``getUserMedia``, resamples to 16 kHz in an AudioWorklet, and ships int16
-  chunks over the websocket. It auto-reconnects.
+- **Quest/Pico** (``client="quest"``): the headset has no native hook, so plain
+  HTTP GETs on the same port serve a small mic-capture page (embedded below)
+  that grabs the browser microphone with ``getUserMedia``, resamples to 16 kHz
+  in an AudioWorklet, and ships int16 chunks over the websocket, auto-
+  reconnecting. Usage: open ``https://<workstation-ip>:<port>/`` in the Quest
+  browser, accept the certificate warning, tap "Start microphone", grant the
+  mic permission — then connect the CloudXR client as usual. The page keeps
+  streaming from the background tab.
+- **Apple Vision Pro** (``client="avp"``): the Isaac XR Teleop Sample Client
+  (``feature/avp-voice-mic`` branch) captures the mic natively and streams the
+  same chunks to ``wss://<workstation-ip>:<port>/audio`` by itself once its
+  "Stream microphone" toggle is on and the CloudXR session connects — nothing
+  to open on the headset.
 
-Usage on the headset: open ``https://<workstation-ip>:<port>/`` in the Quest
-browser, accept the certificate warning, tap "Start microphone", grant the mic
-permission — then connect the CloudXR client as usual. The page keeps
-streaming from the background tab.
+The ``client`` parameter only selects the operator instructions printed at
+startup; the wire protocol and server behavior are identical, so either
+headset is accepted whichever was named.
 
-The server exposes :meth:`QuestMicServer.read_chunk`, blocking until the next
+The server exposes :meth:`HeadsetMicServer.read_chunk`, blocking until the next
 0.1 s chunk arrives, which :class:`voice_labeler.VoiceLabeler` consumes in
-place of ``arecord`` when ``--mic_device quest`` is selected.
+place of ``arecord`` when ``--mic_device quest`` or ``--mic_device avp`` is
+selected.
 """
 
 from __future__ import annotations
@@ -222,25 +231,41 @@ def _ssl_context() -> ssl.SSLContext:
     return ctx
 
 
-class QuestMicServer:
-    """Serves the mic page and receives the headset's 16 kHz PCM stream."""
+class HeadsetMicServer:
+    """Receives the headset's 16 kHz PCM stream (and serves the Quest mic page).
 
-    def __init__(self, port: int = 8444):
+    Args:
+        port: TCP port for the WSS audio endpoint (and the Quest capture page).
+        client: Which headset the operator uses — ``"quest"`` or ``"avp"``.
+            Only changes the instructions printed at startup and in the stall
+            watchdog; the audio endpoint accepts either client regardless.
+    """
+
+    def __init__(self, port: int = 8444, client: str = "quest"):
         self._port = port
+        self._client = client
         self._chunks: queue.Queue[np.ndarray] = queue.Queue(maxsize=100)
         self._active = None  # the one connection allowed to stream (see handler)
         self._connected = False
         self._last_rx = 0.0
         self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._serve, daemon=True, name="quest-mic-server")
+        self._thread = threading.Thread(target=self._serve, daemon=True, name="headset-mic-server")
         self._thread.start()
-        self._watchdog = threading.Thread(target=self._watch, daemon=True, name="quest-mic-watchdog")
+        self._watchdog = threading.Thread(target=self._watch, daemon=True, name="headset-mic-watchdog")
         self._watchdog.start()
-        urls = " or ".join(f"https://{ip}:{port}/" for ip in _lan_ips())
-        print(
-            f"[VOICE] Quest microphone: open {urls} (the LAN address) in the headset browser,"
-            " accept the certificate, tap 'Start microphone', then connect the CloudXR client."
-        )
+        if client == "avp":
+            ips = " or ".join(_lan_ips())
+            print(
+                f"[VOICE] AVP microphone: turn on 'Stream microphone' in the Isaac XR Teleop client"
+                f" (feature/avp-voice-mic build); it streams to wss://{ips}:{port}/audio by itself"
+                " once the CloudXR session connects."
+            )
+        else:
+            urls = " or ".join(f"https://{ip}:{port}/" for ip in _lan_ips())
+            print(
+                f"[VOICE] Quest microphone: open {urls} (the LAN address) in the headset browser,"
+                " accept the certificate, tap 'Start microphone', then connect the CloudXR client."
+            )
 
     def read_chunk(self) -> np.ndarray | None:
         """Next 0.1 s float32 chunk; blocks until audio arrives. None once stopped."""
@@ -266,14 +291,19 @@ class QuestMicServer:
             silent_s = time.monotonic() - self._last_rx
             if silent_s > 4.0 and not stalled:
                 stalled = True
+                hint = (
+                    "check the 'Stream microphone' toggle in the Isaac XR Teleop client"
+                    if self._client == "avp"
+                    else "the headset browser tab was likely frozen — bring the mic page to the"
+                    " foreground once, or reload it"
+                )
                 print(
-                    f"[VOICE] WARNING: Quest microphone stalled ({silent_s:.0f} s without audio, socket still"
-                    " open) — the headset browser tab was likely frozen. Bring the mic page to the"
-                    " foreground once, or reload it."
+                    f"[VOICE] WARNING: headset microphone stalled ({silent_s:.0f} s without audio, socket"
+                    f" still open) — {hint}."
                 )
             elif silent_s < 1.0 and stalled:
                 stalled = False
-                print("[VOICE] Quest microphone audio resumed.")
+                print("[VOICE] Headset microphone audio resumed.")
 
     def _serve(self) -> None:
         asyncio.run(self._serve_async())
@@ -302,7 +332,7 @@ class QuestMicServer:
                     await previous.close(code=_SUPERSEDED, reason="superseded")
                 print("[VOICE] Superseded an older Quest microphone page (a stale tab was still open).")
             self._connected = True
-            print("[VOICE] Quest microphone connected.")
+            print("[VOICE] Headset microphone connected.")
             leftover = np.zeros(0, dtype=np.float32)
             try:
                 async for message in connection:
@@ -328,7 +358,7 @@ class QuestMicServer:
                 if connection is self._active:
                     self._active = None
                     self._connected = False
-                    print("[VOICE] Quest microphone disconnected (the page reconnects automatically).")
+                    print("[VOICE] Headset microphone disconnected (the client reconnects automatically).")
 
         async with serve(handler, "0.0.0.0", self._port, ssl=_ssl_context(), process_request=process_request):
             while not self._stop.is_set():
@@ -339,7 +369,7 @@ class MicHubClient:
     """Consumes microphone audio relayed by the teleop app (``--mic_device hub``).
 
     Exposes the same :meth:`read_chunk`/:meth:`close` pair as
-    :class:`QuestMicServer`, so :class:`~voice_labeler.VoiceLabeler` cannot tell
+    :class:`HeadsetMicServer`, so :class:`~voice_labeler.VoiceLabeler` cannot tell
     the two apart. The difference is ownership: here the headset page and the
     microphone belong to :mod:`teleop_app`, which outlives any single teleop
     run, so the operator taps "Start microphone" once per headset session rather
