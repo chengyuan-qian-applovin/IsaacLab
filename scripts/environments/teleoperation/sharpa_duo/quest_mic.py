@@ -46,6 +46,13 @@ import numpy as np
 _SAMPLE_RATE = 16000
 _CHUNK_SAMPLES = 1600  # 0.1 s, matching voice_labeler's reader granularity
 
+_SUPERSEDED = 4001
+"""Private websocket close code telling an older page a newer one took over.
+
+In the 4000-4999 application range. The page treats it as terminal: it releases
+the microphone and stops reconnecting, so a forgotten tab cannot keep stealing
+the mic from the page actually in use."""
+
 _PAGE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -62,15 +69,33 @@ _PAGE = """<!doctype html>
 <div id="level"><div id="bar"></div></div>
 <div id="status">idle</div>
 <script>
-const RATE = 16000, CHUNK = 1600;
+const RATE = 16000, CHUNK = 1600, SUPERSEDED = 4001;
 const status = t => document.getElementById("status").textContent = t;
-let ws = null, started = false;
+let ws = null, started = false, micStream = null;
+
+// Release the mic and stand down. Used when the server reports that a newer
+// page took over: a stale tab that kept its capture alive would go on stealing
+// the microphone back, restarting the real page's capture every few seconds.
+function standDown(msg) {
+  status(msg);
+  started = false;
+  document.getElementById("btn").textContent = "Start microphone";
+  document.getElementById("bar").style.width = "0%";
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+}
 
 function connect() {
+  // Drop any previous socket first: start() re-runs whenever the OS reclaims
+  // the mic, and without this each restart leaks another open connection.
+  if (ws) { ws.onclose = null; ws.onerror = null; try { ws.close(); } catch (e) {} }
   ws = new WebSocket("wss://" + location.host + "/audio");
   ws.binaryType = "arraybuffer";
   ws.onopen = () => status("streaming to " + location.host);
-  ws.onclose = () => { status("disconnected - retrying"); setTimeout(connect, 1000); };
+  ws.onclose = (ev) => {
+    if (ev.code === SUPERSEDED) { standDown("superseded by a newer mic page - close this tab"); return; }
+    status("disconnected - retrying");
+    setTimeout(connect, 1000);
+  };
   ws.onerror = () => ws.close();
 }
 
@@ -78,11 +103,23 @@ let lastAudioMs = 0;
 
 async function start() {
   if (started) return;
+  // Claim the mic BEFORE latching: getUserMedia rejects whenever another copy
+  // of this page already holds the microphone, and latching first would leave
+  // the button reading "running" with every later tap a no-op until a reload.
+  let stream;
+  document.getElementById("btn").textContent = "Starting...";
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+    });
+  } catch (err) {
+    document.getElementById("btn").textContent = "Start microphone";
+    status("mic failed: " + err.name + " - close any other copy of this page, then tap again");
+    return;
+  }
   started = true;
+  micStream = stream;
   document.getElementById("btn").textContent = "Microphone running";
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-  });
   const ctx = new AudioContext();
   // Keep-alive: a tab that is PLAYING audio is exempt from Chromium's
   // background-tab freezing/throttling, which otherwise stops the capture a
@@ -191,6 +228,7 @@ class QuestMicServer:
     def __init__(self, port: int = 8444):
         self._port = port
         self._chunks: queue.Queue[np.ndarray] = queue.Queue(maxsize=100)
+        self._active = None  # the one connection allowed to stream (see handler)
         self._connected = False
         self._last_rx = 0.0
         self._stop = threading.Event()
@@ -242,6 +280,7 @@ class QuestMicServer:
 
     async def _serve_async(self) -> None:
         from websockets.asyncio.server import serve
+        from websockets.exceptions import ConnectionClosed
 
         def process_request(connection, request):
             # Plain HTTP GETs receive the capture page; websocket upgrades pass through.
@@ -252,11 +291,23 @@ class QuestMicServer:
             return None
 
         async def handler(connection):
+            # Newest page wins. The headset grants its microphone to one page at
+            # a time, so leftover tabs do not merely idle — they keep stealing
+            # the mic back, and every theft restarts the loser's capture. Evict
+            # the previous connection with _SUPERSEDED so it releases the mic
+            # and stops retrying, instead of both sides fighting forever.
+            previous, self._active = self._active, connection
+            if previous is not None:
+                with contextlib.suppress(Exception):
+                    await previous.close(code=_SUPERSEDED, reason="superseded")
+                print("[VOICE] Superseded an older Quest microphone page (a stale tab was still open).")
             self._connected = True
             print("[VOICE] Quest microphone connected.")
             leftover = np.zeros(0, dtype=np.float32)
             try:
                 async for message in connection:
+                    if connection is not self._active:
+                        break  # a newer page took over mid-stream
                     if not isinstance(message, bytes):
                         continue
                     self._last_rx = time.monotonic()
@@ -268,10 +319,87 @@ class QuestMicServer:
                             self._chunks.put_nowait(data[:_CHUNK_SAMPLES].copy())
                         data = data[_CHUNK_SAMPLES:]
                     leftover = data
+            except ConnectionClosed:
+                # Routine: the page navigated away, or we superseded it. The 4001
+                # close is deliberate, so let it end the handler quietly instead
+                # of surfacing as websockets' "connection handler failed".
+                pass
             finally:
-                self._connected = False
-                print("[VOICE] Quest microphone disconnected (the page reconnects automatically).")
+                if connection is self._active:
+                    self._active = None
+                    self._connected = False
+                    print("[VOICE] Quest microphone disconnected (the page reconnects automatically).")
 
         async with serve(handler, "0.0.0.0", self._port, ssl=_ssl_context(), process_request=process_request):
             while not self._stop.is_set():
                 await asyncio.sleep(0.5)
+
+
+class MicHubClient:
+    """Consumes microphone audio relayed by the teleop app (``--mic_device hub``).
+
+    Exposes the same :meth:`read_chunk`/:meth:`close` pair as
+    :class:`QuestMicServer`, so :class:`~voice_labeler.VoiceLabeler` cannot tell
+    the two apart. The difference is ownership: here the headset page and the
+    microphone belong to :mod:`teleop_app`, which outlives any single teleop
+    run, so the operator taps "Start microphone" once per headset session rather
+    than once per run. If the app restarts underneath us, this end reconnects on
+    its own instead of dying with a stale socket.
+    """
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 8500):
+        self._uri = f"wss://{host}:{port}/subscribe"
+        self._chunks: queue.Queue[np.ndarray] = queue.Queue(maxsize=100)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="mic-hub-client")
+        self._thread.start()
+        print(f"[VOICE] Using the teleop app's microphone relay at {self._uri}.")
+        print("[VOICE] Tap 'Start session' (or 'Microphone only') on the app page in the headset.")
+
+    def read_chunk(self) -> np.ndarray | None:
+        """Next 0.1 s float32 chunk; blocks until audio arrives. None once stopped."""
+        while not self._stop.is_set():
+            try:
+                return self._chunks.get(timeout=0.5)
+            except queue.Empty:
+                continue
+        return None
+
+    def close(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        asyncio.run(self._consume())
+
+    async def _consume(self) -> None:
+        from websockets.asyncio.client import connect as ws_connect
+
+        # The app serves the same self-signed CloudXR cert; this is a loopback
+        # hop on the machine that issued it, so verification buys nothing.
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        announced = False
+        while not self._stop.is_set():
+            try:
+                async with ws_connect(self._uri, ssl=ctx, open_timeout=5) as ws:
+                    if not announced:
+                        print("[VOICE] Connected to the teleop app's microphone relay.")
+                        announced = True
+                    leftover = np.zeros(0, dtype=np.float32)
+                    while not self._stop.is_set():
+                        message = await ws.recv()
+                        if not isinstance(message, bytes):
+                            continue
+                        pcm = np.frombuffer(message, dtype=np.int16).astype(np.float32) / 32768.0
+                        data = np.concatenate([leftover, pcm])
+                        while len(data) >= _CHUNK_SAMPLES:
+                            with contextlib.suppress(queue.Full):
+                                self._chunks.put_nowait(data[:_CHUNK_SAMPLES].copy())
+                            data = data[_CHUNK_SAMPLES:]
+                        leftover = data
+            except Exception:
+                if announced:
+                    print("[VOICE] Lost the microphone relay; retrying. Is the teleop app still running?")
+                    announced = False
+                await asyncio.sleep(2.0)

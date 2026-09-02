@@ -5,10 +5,11 @@
 
 """Always-on voice labeling with OpenAI Whisper: say "success" or "failure".
 
-Audio comes from the machine's microphone via an ``arecord`` subprocess (16 kHz
-mono S16), so no Python audio stack is needed — the operator just has to be
-within speaking range of the machine (the headset microphone is not streamed to
-the server by this teleop stack).
+Audio is 16 kHz mono S16 from one of three sources: the machine's own
+microphone via an ``arecord`` subprocess, the headset microphone streamed from a
+page this process serves (:mod:`quest_mic`), or the same headset microphone
+relayed by the always-on control app (:mod:`teleop_app`), which keeps capture
+alive across teleop restarts.
 
 A reader thread segments the stream into utterances with a simple energy gate
 (ambient noise is measured at startup), a worker thread transcribes each
@@ -90,12 +91,15 @@ class VoiceLabeler:
         model_name: Whisper model to load (e.g. ``base.en``, ``small.en``).
         device: torch device for Whisper. Default ``cpu`` so transcription never
             competes with the simulation and CloudXR encode for the GPU.
-        mic_device: ALSA capture device passed to ``arecord -D``, or
+        mic_device: ALSA capture device passed to ``arecord -D``;
             ``"quest"`` (optionally ``"quest:<port>"``, default port 8444) to
-            receive audio from the headset's browser instead — see
-            :mod:`quest_mic`. With the quest source, calibration waits until
-            the headset page connects and measures ambient from its first
-            1.5 s, so stay quiet right after tapping "Start microphone".
+            serve a page and receive audio from the headset's browser — see
+            :mod:`quest_mic`; or ``"hub"`` (optionally ``"hub:<port>"`` or
+            ``"hub:<host>:<port>"``, default ``127.0.0.1:8500``) to consume the
+            relay of the always-on teleop app — see :mod:`teleop_app`. With
+            either headset source, calibration waits until audio starts flowing
+            and measures ambient from its first 1.5 s, so stay quiet right
+            after tapping "Start microphone".
         min_utterance_s: Shortest speech burst considered an utterance.
         silence_s: Trailing silence that closes an utterance.
         max_utterance_s: Utterances are clipped to this length.
@@ -121,7 +125,14 @@ class VoiceLabeler:
 
         self._proc = None
         self._quest = None
-        if mic_device == "quest" or mic_device.startswith("quest:"):
+        if mic_device == "hub" or mic_device.startswith("hub:"):
+            from quest_mic import MicHubClient
+
+            # "hub", "hub:<port>" or "hub:<host>:<port>".
+            spec = mic_device.split(":", 1)[1] if ":" in mic_device else ""
+            host, _, port = spec.rpartition(":")
+            self._quest = MicHubClient(host=host or "127.0.0.1", port=int(port) if port else 8500)
+        elif mic_device == "quest" or mic_device.startswith("quest:"):
             from quest_mic import QuestMicServer
 
             port = int(mic_device.split(":", 1)[1]) if ":" in mic_device else 8444

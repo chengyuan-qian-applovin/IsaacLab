@@ -138,6 +138,73 @@ tagged with its scene), so the table's counts accumulate across sessions.
 Cycle the selected scenes with the "next" voice command; when the run exits,
 the launcher returns to the table with refreshed counts.
 
+## Headset control app
+
+```bash
+# try it in a terminal
+./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/teleop_app.py
+# or install it as a user service that comes back after a reboot
+./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/teleop_app.py --install-service
+sudo loginctl enable-linger $USER   # keep it running when you are logged out
+```
+
+One page in the headset browser that starts a session, holds the microphone,
+and kills teleop — replacing the pair of hand-edited bookmarks whose URLs went
+stale whenever an address or a port moved. [SETUP.md](SETUP.md) has the
+from-scratch procedure for a new workstation and for onboarding each headset.
+
+On Quest software v74 or newer, the browser's ⋮ menu offers **Add this page to
+my Library**, which puts the page in Library → Apps as its own tile (named
+"Teleop", with the icon the app serves) that opens in a window of its own. The
+page also ships a web app manifest, so where the browser offers "Install app"
+that works too; it only does so on an origin it deems secure, which a
+self-signed certificate is not always judged to be.
+
+Bookmark or tile **`https://<hostname>.local:8500/`** once. mDNS keeps the host correct
+across DHCP leases and the port is fixed by the service, so the bookmark does
+not go stale; the app looks up the CloudXR client's ports when you ask for the
+link rather than baking them in, and hands the client `serverIP` and `port` as
+query params so its connection fields arrive filled in.
+
+It runs as a **supervisor**, independent of any teleop run, so it is still
+reachable when teleop is stopped or wedged — which is when you need it. **Start
+session** starts the microphone, launches teleop if it is down, and opens the
+CloudXR client in a new tab. **Kill teleop** signals the whole process group
+(SIGINT, then SIGTERM, then SIGKILL) and then reaps the CloudXR runtime that
+normally outlives it holding 49100/48322 — the thing `Ctrl-C` alone leaves
+behind. The sweep only touches runtimes younger than the run it just stopped
+and owned by you, so a session you started by hand in a terminal, or one
+belonging to another user of the workstation, survives untouched.
+
+The app owns the microphone and relays it to teleop over `--mic_device hub`,
+which it passes automatically to anything it launches. Because capture lives in
+the app rather than in the teleop process, **it survives teleop restarts**: tap
+"Start microphone" once per headset session, not once per run. Only the newest
+page streams — an older tab is evicted with close code 4001 and told to release
+the microphone, which is what stops a pile of stale tabs from fighting over it.
+
+Keep the app tab open while you teleoperate. Capture stops if that page is
+closed, so the CloudXR client is deliberately opened in a *new* tab rather than
+navigated to. Forward `--teleop-arg` once per argument to control what gets
+launched, e.g. `--teleop-arg --embodiment --teleop-arg yam_duo`. Both the app
+and the CloudXR proxy use the same self-signed certificate, but the headset
+may still ask you to accept it for the proxy's port. The page checks for you.
+The certificate button doubles as the boot indicator: it reads "Teleop not
+running", then "Preparing teleop..." while the run boots (inert, since tapping
+would only wait on a dead port), then "Teleop ready - certificate OK" when the
+browser already trusts the proxy or "Teleop ready - accept certificate" when
+it does not. "Open CloudXR" is likewise inert until the proxy is up. During
+"Start session" the certificate is only asked for when the check says it is
+missing, and the flow moves on to "Open CloudXR" by itself as soon as you have
+accepted. Restarting the app itself (for a code update) leaves a running
+teleop alive and the new instance adopts it, so status and "Kill" keep
+working across the restart. The one tap that
+cannot be removed is "Connect" in the NVIDIA page: WebXR requires a user
+gesture to enter VR, and this client build only *reads* the server address
+from the URL, it does not connect on its own. (NVIDIA's `--setup-oob` gets to
+zero taps by driving the headset browser over `adb`, which needs developer
+mode and a USB link.)
+
 ## Multi-scene sessions
 
 `--scene_list scenes/scene_list.json` teleops through a list of scenes (JSON:
@@ -395,10 +462,11 @@ never shifts pinch timing.
 | `duo_teleop_pipeline.py` | The IsaacTeleop retargeting pipeline (hand tracking → 58-D action). |
 | `sharpa_retargeting.py` | Calibrated DexPilot finger retargeting (hand-shape calibration, raw-distance pinch hysteresis). |
 | `usda_scene.py` | References the scene USDA into the env and registers its rigid bodies so resets restore their poses. |
-| `adjust_mode.py` | The "adjust object" pose-authoring mode: snapshot/undo, sidecar save, and panel pinch-taps. |
-| `floating_hands.py` | Adjust mode's embodiment swap: parks the rig, drives two free-floating SharpaWave hands from the tracked wrists. |
-| `region_overlay.py` | Adjust mode's in-headset preview of the object-randomization region (XY square + yaw bars per object). |
-| `assets/robots/` | Vendored robot USD (torso + arms + hands + skin material), plus the floating-hand wrappers. |
+| `adjust_mode.py` | The "adjust object" kinematic pose editor: pinch-grab objects in full 6-DoF, ghosts, translucent desk, robot park/restore, sidecar save. |
+| `region_overlay.py` | Adjust mode's in-headset preview of the object-randomization region (XY square per object). |
+| `teleop_app.py` | Always-on headset control app: start/restart/kill teleop, own the microphone across runs, hand out an up-to-date CloudXR link. |
+| `SETUP.md` | From-scratch procedure: workstation install, app service, per-headset onboarding, terminal-only use, troubleshooting. |
+| `assets/robots/` | Vendored robot USD (torso + arms + hands + skin material). |
 | `assets/dex_retargeting/` | Vendored SharpaWave URDFs + DexPilot YAMLs for the finger retargeting. |
 
 ## Vendored example scenes
