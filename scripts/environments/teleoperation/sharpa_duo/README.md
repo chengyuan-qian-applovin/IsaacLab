@@ -199,8 +199,9 @@ The full voice vocabulary: **"success"** / **"failure"** (label + export the
 episode), **"align"** (re-anchor; only while teleop is stopped — say "stop"
 first if it is running),
 **"play"** (or "start" — starts teleop, driven through the same state machine
-as the client button), **"stop"** (or "pause" — pauses teleop, keeping the
-episode buffer; resume with "play" or auto-start),
+as the client button), **"stop"** (pauses teleop, keeping the episode
+buffer; resume with "play" or auto-start — "pause" is deliberately not a
+synonym: it was mis-heard in room conversation far too often),
 **"reset"** (discards the in-flight episode and resets the scene),
 and **"next"** (or "skip" — advance to the next scene in the `--scene_list`,
 wrapping at the end; an unlabeled in-flight episode is discarded, a

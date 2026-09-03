@@ -37,7 +37,7 @@ vocabulary of short commands rather than dictation:
 
 Recognized commands: "success"/"succeed…" → ``"success"``; "fail…" →
 ``"failure"``; "align" → ``"align"``; "play"/"start…" → ``"play"``;
-"stop"/"pause" → ``"stop"``; "reset" → ``"reset"``; "next"/"skip" →
+"stop" → ``"stop"``; "reset" → ``"reset"``; "next"/"skip" →
 ``"next"`` (advance to the next scene in the list); "initial" →
 ``"adjust"``; "done"/"finish…" → ``"done"``. An utterance matching more than
 one is ignored (announced on the console). A command said several times in one
@@ -67,7 +67,7 @@ _FUZZY_MAX_WORDS = 3  # only short utterances are fuzzy-matched; sentences must 
 _FUZZY_MIN_RATIO = 0.8  # difflib ratio a word must reach to count as a command
 # Prompt text is an example transcript in the style expected, which is how
 # Whisper's prompting works: it biases the decoder toward these spellings.
-_INITIAL_PROMPT = "Reset. Align. Play. Start. Stop. Pause. Next. Skip. Success. Failure. Initial. Done. Finish."
+_INITIAL_PROMPT = "Reset. Align. Play. Start. Stop. Next. Skip. Success. Failure. Initial. Done. Finish."
 
 _COMMAND_RES = (
     ("success", re.compile(r"\b(success\w*|succeed\w*)\b")),
@@ -75,7 +75,7 @@ _COMMAND_RES = (
     # "a line" / "a lie" are the common mis-hearings of a spoken "align".
     ("align", re.compile(r"\b(align\w*|a line|a lie)\b")),
     ("play", re.compile(r"\b(play\w*|start\w*)\b")),
-    ("stop", re.compile(r"\b(stop|pause)\b")),
+    ("stop", re.compile(r"\bstop\b")),
     ("reset", re.compile(r"\breset\w*\b")),
     ("next", re.compile(r"\b(next|skip)\b")),
     # "initial" (any suffix): open the initial-pose editor (internal command name "adjust").
@@ -88,7 +88,7 @@ _COMMAND_WORDS = {
     "failure": ("failure", "fail"),
     "align": ("align",),
     "play": ("play", "start"),
-    "stop": ("stop", "pause"),
+    "stop": ("stop",),
     "reset": ("reset",),
     "next": ("next", "skip"),
     "adjust": ("initial",),
