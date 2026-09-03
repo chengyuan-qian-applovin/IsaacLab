@@ -1,0 +1,634 @@
+<!doctype html>
+<!--
+  The headset control page served by teleop_app.py at "/". Read from disk on
+  every request, so an edit shows up on the next reload without restarting the
+  service. Three tabs:
+
+  - Session: start/stop teleop, the microphone relay, the CloudXR link (the
+    original one-tap flow);
+  - Scenes: the record directory and the scene source (local directory or the
+    fleet server) with the scene table — what the desktop launcher's page 2 does;
+  - Parameters: the teleop knobs, rendered from the schema the server sends.
+
+  Everything that carries data goes over the /control WebSocket as JSON
+  ("rpc" below): the HTTP layer of the app cannot read request bodies.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teleop</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" href="/icon-192.png">
+<meta name="theme-color" content="#111111">
+<style>
+  body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding: 1em 1em 2em; margin: 0; }
+  h1 { margin: 0.4em 0; }
+  button, a.btn { font-size: 1.3em; padding: 0.6em 1em; border-radius: 0.5em; border: 0; margin: 0.3em;
+                  display: inline-block; background: #ddd; color: #111; text-decoration: none; cursor: pointer; }
+  button.small { font-size: 1.0em; padding: 0.45em 0.8em; }
+  button.sel { background: #4c4; }
+  /* Highlighted once the session is up and only the CloudXR tap is left. */
+  a.ready { background: #4c4; font-size: 1.7em; padding: 0.8em 1.6em; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: 0.55; } }
+  a.disabled { pointer-events: none; opacity: 0.35; }
+  a.ok { background: #2a5; color: #fff; }
+  .primary { background: #4c4; font-size: 1.7em; padding: 0.8em 1.6em; }
+  .danger { background: #c44; color: #fff; }
+  #level { width: 60%; height: 0.9em; background: #333; margin: 0.8em auto; border-radius: 0.5em; overflow: hidden; }
+  #bar { height: 100%; width: 0; background: #4c4; }
+  .row { margin: 0.8em 0; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 0.3em; }
+  .dot { display: inline-block; width: 0.8em; height: 0.8em; border-radius: 50%; margin-right: 0.4em; }
+  .on { background: #4c4; } .off { background: #666; }
+  .booting { background: #ec4; animation: pulse 1.2s infinite; }
+  #status { margin-top: 0.6em; font-size: 1.05em; color: #bbb; }
+  #status:empty { display: none; }
+  .muted { color: #999; font-size: 0.95em; }
+  .warn { color: #fa6; }
+  /* Tabs */
+  nav.tabs { display: flex; justify-content: center; gap: 0.3em; margin-bottom: 0.8em; border-bottom: 1px solid #333; }
+  nav.tabs button { background: #222; color: #bbb; border-radius: 0.5em 0.5em 0 0; margin: 0; font-size: 1.15em; }
+  nav.tabs button.active { background: #333; color: #fff; }
+  section[hidden] { display: none; }
+  #dirty { display: none; color: #fc6; font-size: 0.95em; }
+  /* Forms */
+  .field { display: flex; align-items: center; gap: 0.6em; margin: 0.5em auto; max-width: 44em; text-align: left; }
+  .field label { flex: 1; }
+  .field input, .field select { font-size: 1.1em; padding: 0.4em 0.5em; border-radius: 0.4em; border: 1px solid #444;
+                                background: #1c1c1c; color: #eee; min-width: 8em; }
+  .field input.wide { flex: 2; min-width: 0; }
+  .field input[type=checkbox] { width: 1.6em; height: 1.6em; }
+  .field .hint { color: #888; font-size: 0.85em; margin-right: 0.4em; }
+  fieldset { border: 1px solid #333; border-radius: 0.6em; margin: 0.8em auto; max-width: 46em; text-align: left; padding: 0.4em 1em 0.8em; }
+  legend { color: #9c9; padding: 0 0.4em; }
+  .seg button { background: #333; color: #ddd; margin: 0; border-radius: 0; }
+  .seg button:first-child { border-radius: 0.5em 0 0 0.5em; } .seg button:last-child { border-radius: 0 0.5em 0.5em 0; }
+  .seg button.active { background: #4c4; color: #111; }
+  /* Scene table */
+  table { width: 100%; max-width: 50em; margin: 0.6em auto; border-collapse: collapse; text-align: left; font-size: 1.05em; }
+  th, td { padding: 0.55em 0.5em; border-bottom: 1px solid #2a2a2a; }
+  th { color: #9c9; font-weight: normal; }
+  td.num { text-align: right; width: 4em; }
+  tr.scene { cursor: pointer; }
+  tr.scene:active { background: #222; }
+  tr.off td { color: #777; }
+  td.tick { width: 1.4em; color: #4c4; font-weight: bold; }
+  tr.done td.name { color: #6d6; }
+  #scene_note { margin: 0.6em 0; }
+</style>
+
+<h1>Teleop</h1>
+<nav class="tabs">
+  <button data-tab="session" class="active">Session</button>
+  <button data-tab="scenes">Scenes</button>
+  <button data-tab="params">Parameters</button>
+</nav>
+<div id="dirty">Unsaved changes — tap Save on this tab (Start session saves too).</div>
+
+<!-- ============================ Session ============================ -->
+<section id="tab-session">
+  <div class="row"><span id="teleop_dot" class="dot off"></span><span id="teleop_state">checking...</span></div>
+  <div class="row muted" id="config_summary">loading configuration...</div>
+  <div class="row"><span id="mic_dot" class="dot off"></span><span id="mic_state">microphone idle</span></div>
+  <div id="level"><div id="bar"></div></div>
+
+  <!-- Row 1: the whole session. Start brings up mic + teleop, Finish tears both down. -->
+  <div class="row">
+    <button id="go" class="primary">Start session</button>
+    <button id="finish" class="primary danger">Finish session</button>
+  </div>
+  <!-- Row 2: the two taps the browser will not do for us. -->
+  <div class="row">
+    <!-- One-time per port: the NVIDIA-hosted client cannot open a socket back
+         here until this self-signed certificate is accepted for this origin. -->
+    <a id="cert" class="btn disabled" target="_blank" rel="noopener" href="#">Teleop not running</a>
+    <!-- A real link, not window.open: a popup opened after the readiness wait is
+         no longer tied to the tap and gets blocked silently. -->
+    <a id="cxr" class="btn disabled" target="_blank" rel="noopener" href="#">Open CloudXR</a>
+  </div>
+  <!-- Row 3: the parts, controlled one at a time. -->
+  <div class="row">
+    <button id="restart">Restart teleop</button>
+    <button id="kill" class="danger">Kill teleop</button>
+    <button id="mic">Start microphone</button>
+    <button id="micstop" class="danger">Stop microphone</button>
+  </div>
+  <!-- Row 4: the log opens as its own page, readable at headset distance. -->
+  <div class="row">
+    <a class="btn" href="/log.html" target="_blank" rel="noopener">Log</a>
+  </div>
+  <!-- Progress/result of the last tap; hidden until there is one. -->
+  <div id="status"></div>
+</section>
+
+<!-- ============================ Scenes ============================ -->
+<section id="tab-scenes" hidden>
+  <div class="field">
+    <label>Record directory <span class="hint">(one HDF5 per episode)</span></label>
+    <input id="record_dir" class="wide" data-key="record_dir">
+  </div>
+  <div class="row seg">
+    <button data-source="local">Local directory</button>
+    <button data-source="server">Fleet server</button>
+  </div>
+  <div id="local_pane">
+    <div class="field">
+      <label>Scene directory</label>
+      <input id="scene_dir" class="wide" data-key="scene_dir">
+      <button id="rescan" class="small">Rescan</button>
+    </div>
+    <div class="muted">Scenes found under the directory (recursive), with this machine's success / failure demo counts. Tap a row to toggle it.</div>
+  </div>
+  <div id="server_pane" hidden>
+    <div class="field">
+      <label>Server URL</label>
+      <input id="fleet_server" class="wide" data-key="fleet_server" placeholder="http://fleet-host:8080">
+      <button id="connect" class="small">Connect</button>
+    </div>
+    <div class="field">
+      <label>Collector ID <span class="hint">(default: hostname)</span></label>
+      <input id="collector_id" data-key="collector_id">
+      <label>Token <span class="hint">(default: $FLEET_TOKEN)</span></label>
+      <input id="fleet_token" type="password" data-key="fleet_token">
+    </div>
+    <div id="fleet_status" class="muted">Not connected.</div>
+  </div>
+  <div class="row">
+    <button id="sel_all" class="small">Select all</button>
+    <button id="sel_none" class="small">Select none</button>
+    <button id="sel_needed" class="small" hidden>Select needed</button>
+    <span id="sel_count" class="muted"></span>
+  </div>
+  <table id="scenes"><thead><tr id="scene_head"></tr></thead><tbody id="scene_body"></tbody></table>
+  <div id="scene_note" class="muted"></div>
+  <div class="row"><button id="save_scenes" class="primary">Save</button></div>
+</section>
+
+<!-- ============================ Parameters ============================ -->
+<section id="tab-params" hidden>
+  <div class="muted">Only settings that differ from the defaults are passed to teleop.</div>
+  <div id="param_groups"></div>
+  <div class="row">
+    <button id="save_params" class="primary">Save</button>
+    <button id="reset_params">Reset to defaults</button>
+  </div>
+</section>
+
+<script>
+// Registering this is what lets the headset offer "Install"/"Add to library".
+// It fails harmlessly on a self-signed origin the browser deems insecure, in
+// which case a bookmark tile still works.
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+
+const RATE = 16000, CHUNK = 1600, SUPERSEDED = 4001;
+const $ = id => document.getElementById(id);
+const status = t => $("status").textContent = t;
+let ws = null, started = false, micStream = null, cxrUrl = null, audioCtx = null;
+
+async function api(path, method) {
+  const r = await fetch(path, { method: method || "GET", headers: { "X-Teleop-Control": "1" } });
+  return await r.json();
+}
+
+// ---- control channel (JSON over WebSocket) ----------------------------------
+// The app's HTTP layer cannot read request bodies, so anything that carries
+// data — settings, scene selection — goes through here as {id, op, ...} and
+// gets {id, ok, ...} back.
+let ctl = null, ctlPending = new Map(), rpcId = 0;
+function ctlConnect() {
+  return new Promise((resolve, reject) => {
+    const sock = new WebSocket("wss://" + location.host + "/control");
+    sock.onopen = () => { ctl = sock; resolve(sock); };
+    sock.onmessage = (e) => {
+      const m = JSON.parse(e.data), p = ctlPending.get(m.id);
+      if (!p) return;
+      ctlPending.delete(m.id);
+      m.ok ? p.resolve(m) : p.reject(new Error(m.error || "request failed"));
+    };
+    sock.onclose = () => {
+      if (ctl === sock) ctl = null;
+      for (const p of ctlPending.values()) p.reject(new Error("control channel closed"));
+      ctlPending.clear();
+    };
+    sock.onerror = () => { sock.close(); reject(new Error("control channel failed")); };
+  });
+}
+async function rpc(op, params) {
+  if (!ctl || ctl.readyState !== 1) await ctlConnect();
+  const id = ++rpcId;
+  return new Promise((resolve, reject) => {
+    ctlPending.set(id, { resolve, reject });
+    ctl.send(JSON.stringify({ id, op, ...(params || {}) }));
+  });
+}
+
+// ---- tabs -------------------------------------------------------------------
+let activeTab = "session";
+document.querySelectorAll("nav.tabs button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+function showTab(name) {
+  activeTab = name;
+  document.querySelectorAll("nav.tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  for (const t of ["session", "scenes", "params"]) $("tab-" + t).hidden = t !== name;
+  if (name !== "session") loadState();  // fresh counts / fleet numbers whenever a config tab is opened
+}
+
+// ---- configuration model ---------------------------------------------------
+// `state` is what the server last sent (settings, schema, table rows, fleet
+// status); `settings` is the copy the operator edits until Save.
+let state = null, settings = null, dirty = false;
+function markDirty(flag) { dirty = flag; $("dirty").style.display = flag ? "block" : "none"; }
+const activeSource = () => settings.scene_source === "server" ? "server" : "local";
+
+async function loadState() {
+  try {
+    const r = await rpc("state");
+    applyState(r.state);
+  } catch (e) { $("fleet_status").textContent = "app unreachable: " + e.message; }
+}
+function applyState(s) {
+  state = s;
+  if (!dirty) settings = JSON.parse(JSON.stringify(s.settings));
+  render();
+}
+async function saveAll() {
+  const r = await rpc("save", { settings });
+  markDirty(false);
+  applyState(r.state);
+}
+
+function render() {
+  if (!settings) return;
+  // text fields bound by data-key
+  document.querySelectorAll("input[data-key]").forEach(el => { if (document.activeElement !== el) el.value = settings[el.dataset.key] || ""; });
+  // scene source
+  const src = activeSource();
+  document.querySelectorAll(".seg button").forEach(b => b.classList.toggle("active", b.dataset.source === src));
+  $("local_pane").hidden = src !== "local";
+  $("server_pane").hidden = src !== "server";
+  $("sel_needed").hidden = src !== "server";
+  renderFleet();
+  renderTable();
+  renderParams();
+  $("config_summary").textContent = state.summary || "";
+}
+
+// ---- scenes tab -------------------------------------------------------------
+document.querySelectorAll("input[data-key]").forEach(el => el.oninput = () => { settings[el.dataset.key] = el.value; markDirty(true); });
+document.querySelectorAll(".seg button").forEach(b => b.onclick = async () => {
+  settings.scene_source = b.dataset.source;
+  await saveAll();  // the server starts/stops the fleet monitor from the saved source
+});
+$("rescan").onclick = () => saveAll();
+$("connect").onclick = async () => {
+  await saveAll();
+  $("fleet_status").textContent = "Connecting to " + (settings.fleet_server || "?") + " ...";
+  try { await rpc("connect"); } catch (e) { $("fleet_status").textContent = e.message; return; }
+  setTimeout(loadState, 1500); setTimeout(loadState, 4000);
+};
+$("save_scenes").onclick = () => saveAll().catch(e => alert(e.message));
+
+function rowSelected(row) {
+  const sel = (settings.selection || {})[activeSource()] || {};
+  return typeof sel[row.name] === "boolean" ? sel[row.name] : row.selected;
+}
+function setRow(name, value) {
+  settings.selection = settings.selection || {};
+  settings.selection[activeSource()] = settings.selection[activeSource()] || {};
+  settings.selection[activeSource()][name] = value;
+  markDirty(true);
+}
+$("sel_all").onclick = () => { (state.table.rows || []).forEach(r => setRow(r.name, true)); renderTable(); };
+$("sel_none").onclick = () => { (state.table.rows || []).forEach(r => setRow(r.name, false)); renderTable(); };
+$("sel_needed").onclick = () => { (state.table.rows || []).forEach(r => setRow(r.name, !!r.needed)); renderTable(); };
+
+function renderTable() {
+  const table = state.table || { rows: [] }, server = table.source === "server";
+  $("scene_head").innerHTML = server
+    ? "<th></th><th>Scene</th><th>Fleet progress</th><th>Working now</th>"
+    : "<th></th><th>Scene</th><th class=num>Success</th><th class=num>Failure</th>";
+  const body = $("scene_body");
+  body.innerHTML = "";
+  let count = 0;
+  for (const row of table.rows) {
+    const on = rowSelected(row); if (on) count++;
+    const tr = document.createElement("tr");
+    tr.className = "scene" + (on ? "" : " off") + (row.done ? " done" : "");
+    const cells = server
+      ? [row.progress, row.workers.join(", ")]
+      : [row.success, row.failure];
+    tr.innerHTML = `<td class="tick">${on ? "&#10003;" : ""}</td><td class="name">${row.name}</td>`
+      + cells.map((c, i) => `<td class="${server ? "" : "num"}">${c}</td>`).join("");
+    tr.onclick = () => { setRow(row.name, !on); renderTable(); };
+    body.appendChild(tr);
+  }
+  if (table.untagged) {
+    const tr = document.createElement("tr"); tr.className = "off";
+    tr.innerHTML = `<td></td><td>(demos without a scene tag)</td><td class=num>${table.untagged[0]}</td><td class=num>${table.untagged[1]}</td>`;
+    body.appendChild(tr);
+  }
+  $("sel_count").textContent = table.rows.length ? `${count} of ${table.rows.length} selected` : "";
+  const fleet = state.fleet;
+  $("scene_note").textContent = !table.rows.length
+    ? (server ? (fleet && fleet.connected ? "The server lists no scenes." : "Press Connect to list the fleet server's scenes.")
+              : "No scene files (*.usdz, *.usda, *.usd) under the scene directory.")
+    : (server ? "New server scenes are ticked when the fleet still needs them; green rows are at target." : "");
+}
+
+function renderFleet() {
+  const f = state.fleet, el = $("fleet_status");
+  el.className = "muted";
+  if (!f) { el.textContent = "Not connected."; return; }
+  if (f.error && !f.totals) { el.textContent = "Unreachable — " + f.error; el.className = "warn"; return; }
+  if (f.totals) {
+    const t = f.totals;
+    el.textContent = `Connected: ${t.successes_toward_target}/${t.target_successes} successes across ${t.scenes} scenes`
+      + ` — online: ${f.online.length ? f.online.join(", ") : "none"} (auto-refreshes every ${Math.round(f.interval_s)} s)`
+      + (f.error ? ` — last poll failed: ${f.error}` : "");
+    if (f.error) el.className = "warn";
+  } else el.textContent = "Connecting...";
+}
+
+// ---- parameters tab ----------------------------------------------------------
+function renderParams() {
+  const host = $("param_groups");
+  if (host.dataset.built) { // already built: just refresh values
+    for (const p of state.schema) {
+      const el = document.getElementById("p:" + p.flag); if (!el || document.activeElement === el) continue;
+      const v = settings.params[p.flag];
+      if (p.kind === "bool") el.checked = (v === true || v === "true" || v === "1"); else el.value = v === undefined || v === null ? "" : v;
+    }
+    return;
+  }
+  host.dataset.built = "1";
+  const hidden = new Set(state.hidden_params || []);
+  for (const group of state.groups) {
+    const fs = document.createElement("fieldset");
+    fs.innerHTML = `<legend>${group}</legend>`;
+    let shown = 0;
+    for (const p of state.schema.filter(p => p.group === group)) {
+      if (hidden.has(p.flag)) continue;
+      shown++;
+      const f = document.createElement("div"); f.className = "field";
+      const id = "p:" + p.flag, v = settings.params[p.flag];
+      if (p.kind === "bool") {
+        f.innerHTML = `<label for="${id}">${p.label}</label><input type="checkbox" id="${id}">`;
+        f.querySelector("input").checked = (v === true || v === "true" || v === "1");
+        f.querySelector("input").onchange = e => { settings.params[p.flag] = e.target.checked; markDirty(true); };
+      } else if (p.kind === "choice") {
+        f.innerHTML = `<label for="${id}">${p.label}</label><select id="${id}">${p.choices.map(c => `<option>${c}</option>`).join("")}</select>`;
+        f.querySelector("select").value = v;
+        f.querySelector("select").onchange = e => { settings.params[p.flag] = e.target.value; markDirty(true); };
+      } else {
+        const hint = p.kind === "port" ? `<span class="hint">default ${p.port_default}</span>` : "";
+        const type = p.kind === "float" || p.kind === "port" ? "number" : "text";
+        f.innerHTML = `<label for="${id}">${p.label}</label>${hint}<input type="${type}" id="${id}" ${p.kind === "float" ? 'step="any"' : ""}>`;
+        f.querySelector("input").value = v === undefined || v === null ? "" : v;
+        f.querySelector("input").oninput = e => { settings.params[p.flag] = e.target.value; markDirty(true); };
+      }
+      fs.appendChild(f);
+    }
+    if (group === "Network ports") { const n = document.createElement("div"); n.className = "muted"; n.textContent = state.ports_note; fs.appendChild(n); }
+    if (shown) host.appendChild(fs);
+  }
+}
+$("save_params").onclick = () => saveAll().catch(e => alert(e.message));
+$("reset_params").onclick = () => {
+  for (const p of state.schema) settings.params[p.flag] = p.default;
+  markDirty(true); renderParams();
+};
+
+// ---- status polling -------------------------------------------------------
+// Whether this browser already trusts the proxy's certificate. A no-cors fetch
+// resolves (opaque) once the certificate has been accepted for that host and
+// port, and rejects while it has not. Only meaningful while the port is up,
+// which is why it is gated on cloudxr_ready wherever it is called.
+let certOk = null, lastProbe = 0;
+async function probeCert(url) {
+  const ctlr = new AbortController();
+  const t = setTimeout(() => ctlr.abort(), 4000);
+  try { await fetch(url, { mode: "no-cors", cache: "no-store", signal: ctlr.signal }); return true; }
+  catch (e) { return false; }
+  finally { clearTimeout(t); }
+}
+
+async function refresh() {
+  try {
+    const s = await api("/status");
+    cxrUrl = s.cloudxr_url;
+    $("cxr").href = cxrUrl;  // kept current, so the link is always tappable
+    const cert = $("cert"), cxr = $("cxr");
+    cert.href = s.cert_url;
+    if (!s.cloudxr_ready) {
+      // The proxy port is not listening yet. The certificate button doubles as
+      // the boot indicator here: tapping it now would hang on a dead port for
+      // as long as teleop takes to come up, so it is inert until then. The
+      // CloudXR link likewise sheds any "ready" glow left over from a previous
+      // run, which otherwise survives a kill/restart and lies.
+      cert.classList.add("disabled"); cert.classList.remove("ready", "ok");
+      cert.textContent = s.running ? "Preparing teleop..." : "Teleop not running";
+      cxr.classList.add("disabled"); cxr.classList.remove("ready");
+      certOk = null;
+    } else {
+      cert.classList.remove("disabled");
+      cxr.classList.remove("disabled");
+      if (certOk !== true && Date.now() - lastProbe > 3000) {
+        lastProbe = Date.now();
+        certOk = await probeCert(s.cert_url);
+      }
+      if (certOk) {
+        cert.textContent = "Teleop ready - certificate OK";
+        cert.classList.add("ok"); cert.classList.remove("ready");
+      } else {
+        cert.textContent = "Teleop ready - accept certificate";
+        cert.classList.remove("ok");
+      }
+    }
+    // "running" means the process is alive; it spends ~30-60 s loading the
+    // sim before CloudXR listens. Calling that "running" next to a button
+    // saying "Preparing teleop..." read as a contradiction, so the process
+    // state is split into starting / running.
+    const up = " (pid " + s.pid + ", up " + Math.round(s.uptime_s) + "s)";
+    $("teleop_dot").className = "dot " + (!s.running ? "off" : s.cloudxr_ready ? "on" : "booting");
+    $("teleop_state").textContent = !s.running
+      ? "teleop stopped" + (s.exit_code === null ? "" : " (exit " + s.exit_code + ")")
+      : s.cloudxr_ready ? "teleop running" + up : "teleop starting - loading the simulator" + up;
+    if (s.summary && !dirty) $("config_summary").textContent = s.summary;
+    $("mic_dot").className = "dot " + (s.mic_connected ? "on" : "off");
+    if (s.mic_connected && !started) {
+      // The server sees a page streaming, but it is not this one: either a
+      // second app tab, or a socket this page just closed that the server has
+      // not timed out yet. Saying "streaming" here read as Stop having failed.
+      $("mic_state").textContent = "microphone streaming from another tab";
+    } else if (s.mic_connected) {
+      const age = s.mic_silent_s;
+      $("mic_state").textContent = (age !== null && age > 4)
+        ? "microphone connected but silent " + age + "s" : "microphone streaming";
+    } else {
+      $("mic_state").textContent = started ? "microphone starting..." : "microphone idle";
+    }
+  } catch (e) { $("teleop_state").textContent = "app unreachable"; }
+}
+setInterval(refresh, 1500);
+refresh();
+loadState();
+// Fleet numbers move on their own; keep the scenes tab current while it is showing the server.
+setInterval(() => { if (activeTab === "scenes" && settings && activeSource() === "server") loadState(); }, 15000);
+
+// ---- microphone -----------------------------------------------------------
+function standDown(msg) {
+  status(msg); started = false; $("bar").style.width = "0%";
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+}
+
+function connect() {
+  if (ws) { ws.onclose = null; ws.onerror = null; try { ws.close(); } catch (e) {} }
+  ws = new WebSocket("wss://" + location.host + "/audio");
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => status("microphone streaming");
+  ws.onclose = (ev) => {
+    if (ev.code === SUPERSEDED) { standDown("superseded by a newer tab - close this one"); return; }
+    status("mic disconnected - retrying"); setTimeout(connect, 1000);
+  };
+  ws.onerror = () => ws.close();
+}
+
+async function startMic() {
+  if (started) return true;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+    });
+  } catch (err) {
+    status("mic failed: " + err.name + " - close any other copy of this page, then tap again");
+    return false;
+  }
+  started = true; micStream = stream;
+  const ctx = audioCtx = new AudioContext();
+  // A tab that is PLAYING audio is exempt from Chromium's background-tab
+  // freezing, which otherwise kills capture minutes into an immersive session.
+  const osc = ctx.createOscillator(), g = ctx.createGain();
+  g.gain.value = 0.001; osc.frequency.value = 30;
+  osc.connect(g).connect(ctx.destination); osc.start();
+  ctx.onstatechange = () => { if (ctx.state !== "running") ctx.resume(); };
+  stream.getTracks()[0].onended = () => { status("mic lost - restarting"); started = false; startMic(); };
+  const code = `registerProcessor("grab", class extends AudioWorkletProcessor {
+      process(i) { if (i[0] && i[0][0]) this.port.postMessage(i[0][0]); return true; } });`;
+  await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([code], { type: "text/javascript" })));
+  const node = new AudioWorkletNode(ctx, "grab");
+  ctx.createMediaStreamSource(stream).connect(node);
+  const ratio = ctx.sampleRate / RATE;
+  let buf = [], acc = 0, out = new Int16Array(CHUNK), oi = 0, peak = 0, frames = 0;
+  node.port.onmessage = (e) => {
+    const x = e.data;
+    for (let i = 0; i < x.length; i++) buf.push(x[i]);
+    while (acc + ratio < buf.length) {
+      const j = Math.floor(acc), f = acc - j;
+      const v = buf[j] * (1 - f) + buf[j + 1] * f;
+      out[oi++] = Math.max(-32768, Math.min(32767, Math.round(v * 32767)));
+      peak = Math.max(peak, Math.abs(v));
+      acc += ratio;
+      if (oi === CHUNK) {
+        if (ws && ws.readyState === 1) ws.send(out.buffer.slice(0));
+        oi = 0;
+        if (++frames % 5 === 0) { $("bar").style.width = Math.min(100, peak * 400) + "%"; peak = 0; }
+      }
+    }
+    const drop = Math.floor(acc); buf = buf.slice(drop); acc -= drop;
+  };
+  connect();
+  return true;
+}
+
+// ---- buttons --------------------------------------------------------------
+$("mic").onclick = () => startMic();
+
+function stopMic() {
+  // Detach handlers before tearing down: onclose would otherwise reconnect and
+  // the track's onended would treat this as a lost mic and start it again.
+  if (ws) { ws.onclose = null; ws.onerror = null; try { ws.close(); } catch (e) {} ws = null; }
+  if (micStream) { micStream.getTracks().forEach(t => { t.onended = null; t.stop(); }); micStream = null; }
+  if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+  started = false; $("bar").style.width = "0%";
+  status("microphone stopped");
+}
+$("micstop").onclick = stopMic;
+
+$("go").onclick = async () => {
+  const go = $("go");
+  go.disabled = true;
+  try {
+    if (dirty) {
+      status("saving settings...");
+      try { await saveAll(); } catch (e) { status("could not save settings: " + e.message); return; }
+    }
+    status("starting microphone...");
+    if (!await startMic()) return;
+    let s = await api("/status");
+    if (!s.running) {
+      status("starting teleop...");
+      const r = await api("/start", "POST");
+      if (!r.ok) { status("cannot start: " + r.message); return; }
+    }
+    // The process existing is not the same as the XR stack being up; opening
+    // the client early lands on a page that cannot connect yet.
+    const deadline = Date.now() + 180000;
+    while (!s.cloudxr_ready && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 2000));
+      s = await api("/status");
+      if (!s.running && s.exit_code !== null) {
+        status("teleop exited (code " + s.exit_code + ") - tap Log to see why");
+        return;
+      }
+      status("waiting for teleop to come up... " + Math.round((Date.now() - (deadline - 180000)) / 1000) + "s");
+    }
+    if (!s.cloudxr_ready) { status("teleop did not come up in 3 min - tap Log"); return; }
+    // Certificate gate. The NVIDIA-hosted client cannot open its socket to the
+    // proxy until this browser has accepted the proxy's certificate, and that
+    // acceptance is not always remembered between sessions. Only ask when the
+    // probe says it is actually missing, then advance as soon as it is granted.
+    if (!(await probeCert(s.cert_url))) {
+      const cert = $("cert");
+      cert.classList.remove("disabled"); cert.classList.add("ready");
+      status("tap the green certificate button, accept the warning, then come back to this tab");
+      const certDeadline = Date.now() + 300000;
+      while (Date.now() < certDeadline && !(await probeCert(s.cert_url))) {
+        await new Promise(r => setTimeout(r, 2000));
+      }
+      cert.classList.remove("ready");
+      if (!(await probeCert(s.cert_url))) {
+        status("certificate still not accepted - tap the certificate button, then 'Open CloudXR'");
+        return;
+      }
+    }
+    certOk = true;
+    // Try to open it directly, but the tap that started this is long expired,
+    // so the browser may refuse. window.open returns null when it does.
+    const w = window.open(s.cloudxr_url, "_blank");
+    const cxr = $("cxr");
+    cxr.href = s.cloudxr_url;
+    if (w) {
+      status("running - keep THIS tab open, the mic runs here");
+    } else {
+      cxr.classList.add("ready");
+      status("ready - tap 'Open CloudXR' below (keep THIS tab open, the mic runs here)");
+    }
+  } finally {
+    go.disabled = false;
+  }
+};
+$("restart").onclick = async () => {
+  if (dirty) { try { await saveAll(); } catch (e) { status("could not save settings: " + e.message); return; } }
+  status("restarting..."); status((await api("/restart", "POST")).message);
+};
+$("kill").onclick = async () => { status("killing..."); status((await api("/stop", "POST")).message); };
+$("finish").onclick = async () => {
+  const b = $("finish");
+  b.disabled = true;
+  try {
+    stopMic();
+    status("finishing session - stopping teleop...");
+    status("session finished - " + (await api("/stop", "POST")).message);
+  } finally {
+    b.disabled = false;
+  }
+};
+</script>

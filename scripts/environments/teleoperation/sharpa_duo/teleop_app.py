@@ -19,7 +19,16 @@ which is exactly when you need it. From the headset it can:
   teleop process is running. Because the mic lives here rather than inside
   teleop, it **survives teleop restarts** — no re-tapping between runs;
 - hand out the CloudXR client link with the ports the running session actually
-  uses, read at request time rather than baked into a bookmark.
+  uses, read at request time rather than baked into a bookmark;
+- **configure the session** from the headset — the same things the desktop
+  launcher (:mod:`teleop_launcher`) offers: the teleop parameters, the record
+  directory, and a **scene source** (a local scene directory with this
+  machine's per-scene demo counts, or the fleet server with its live
+  progress and who is collecting what), ticking the scenes to collect. Both
+  UIs share :mod:`session_config` — one schema, one settings file
+  (``~/.config/duo_teleop_launcher.json``) — so a choice made on either side
+  shows up on the other. "Start session" launches ``make_teleop_scene.py``
+  from the saved settings.
 
 Bookmark it once as ``https://<hostname>.local:8500/`` — mDNS keeps that
 address correct across DHCP leases, and the port is fixed by this service.
@@ -32,8 +41,10 @@ or install it as a user service so it comes back after a reboot::
 
     ./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/teleop_app.py --install-service
 
-Pair it with ``--mic_device hub`` on the teleop side (see :mod:`headset_mic`),
-which makes teleop pull audio from this app instead of serving its own page.
+The app passes ``--mic_device hub`` to every teleop it launches (see
+:mod:`headset_mic`), which makes teleop pull audio from this app instead of
+serving its own page. Anything the settings page does not cover can still be
+forwarded once per argument with ``--teleop-arg``.
 """
 
 from __future__ import annotations
@@ -49,19 +60,39 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
+from collections.abc import Callable
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 
+from fleet_client import FleetMonitor  # noqa: E402
 from headset_mic import _lan_ips, _ssl_context  # noqa: E402  (shares the CloudXR cert)
+from session_config import (  # noqa: E402
+    PORTS_NOTE,
+    TELEOP_SCRIPT,
+    LaunchSpec,
+    SceneTable,
+    build_env,
+    build_launch,
+    load_settings,
+    merge_settings,
+    normalize_server_url,
+    param_groups,
+    save_settings,
+    scene_table,
+    schema,
+)
 
 DEFAULT_PORT = 8500
 """Fixed port for the app. Bookmarked once, so it must not move."""
 
-_TELEOP_SCRIPT = os.path.join(_HERE, "make_teleop_scene.py")
+_TELEOP_SCRIPT = TELEOP_SCRIPT
 _ISAACLAB_SH = os.path.abspath(os.path.join(_HERE, "..", "..", "..", "..", "isaaclab.sh"))
+_PAGE_PATH = os.path.join(_HERE, "teleop_app_page.html")
+"""The control page, read per request so an edit shows on the next reload."""
 
 _SUPERSEDED = 4001
 """Close code telling an older mic page a newer one took over (see :mod:`headset_mic`)."""
@@ -80,11 +111,18 @@ class TeleopProcess:
     signalled at once. A plain ``kill`` on the launcher misses the Isaac Sim
     process and the CloudXR runtime, which is how ports end up held by
     survivors after an apparently clean exit.
+
+    Every launch asks ``launch_provider`` for the :class:`LaunchSpec` built
+    from the saved settings (scene source, selection, parameters, ports);
+    ``base_args`` are the service-level ``--teleop-arg`` extras, placed first
+    so the settings win where both name a flag.
     """
 
-    def __init__(self, extra_args: list[str], env_overrides: dict[str, str]):
-        self._extra_args = list(extra_args)
-        self._env_overrides = dict(env_overrides)
+    def __init__(self, base_args: list[str], launch_provider: Callable[[], LaunchSpec]):
+        self._base_args = list(base_args)
+        self._launch_provider = launch_provider
+        self._last_launch: LaunchSpec | None = None
+        self._last_command: list[str] = [_ISAACLAB_SH, "-p", _TELEOP_SCRIPT, *self._base_args]
         self._proc: subprocess.Popen | None = None
         # A run inherited from a previous app instance (see _adopt_orphan). Not
         # our child, so it is tracked by pid and polled through /proc.
@@ -130,14 +168,18 @@ class TeleopProcess:
     # -- lifecycle ----------------------------------------------------------
 
     def start(self) -> tuple[bool, str]:
-        """Launch teleop if it is not already up. Returns ``(ok, message)``."""
+        """Launch teleop from the saved settings if it is not already up. Returns ``(ok, message)``."""
         if self.is_running():
             return False, f"already running (pid {self.pid})"
-        cmd = [_ISAACLAB_SH, "-p", _TELEOP_SCRIPT, *self._extra_args]
         if not os.path.exists(_ISAACLAB_SH):
             return False, f"launcher not found: {_ISAACLAB_SH}"
-        # Desktop vars first so explicit overrides still win.
-        env = {**os.environ, **_desktop_env(), **self._env_overrides}
+        try:
+            spec = self._launch_provider()
+        except ValueError as exc:  # operator-facing: nothing selected, bad port, no server URL...
+            return False, str(exc)
+        cmd = [_ISAACLAB_SH, "-p", _TELEOP_SCRIPT, *self._base_args, *spec.args]
+        # Desktop vars first so the settings' port variables still win.
+        env = {**os.environ, **_desktop_env(), **spec.env}
         self._log_file = open(self._log_path, "wb")  # noqa: SIM115  (closed in _reap)
         try:
             self._proc = subprocess.Popen(
@@ -155,7 +197,10 @@ class TeleopProcess:
             return False, f"failed to launch: {exc}"
         self._adopted_pid = None
         self._started_at = time.monotonic()
-        return True, f"started (pid {self._proc.pid}); log: {self._log_path}"
+        self._last_launch, self._last_command = spec, cmd
+        shown_env = " ".join(f"{k}={'***' if k == 'FLEET_TOKEN' else v}" for k, v in spec.env.items())
+        print("[APP] Launching: " + " ".join(filter(None, [shown_env, *(shlex.quote(a) for a in cmd)])), flush=True)
+        return True, f"started (pid {self._proc.pid}) with {spec.summary}; log: {self._log_path}"
 
     def stop(self) -> tuple[bool, str]:
         """Kill the whole teleop tree, then sweep this user's CloudXR leftovers.
@@ -209,6 +254,10 @@ class TeleopProcess:
             return _pid_alive(self._adopted_pid)
         return False
 
+    def launch_env(self) -> dict[str, str]:
+        """The extra environment of the run we started (empty for an adopted run or before the first start)."""
+        return dict(self._last_launch.env) if self._last_launch is not None else {}
+
     def status(self) -> dict:
         """JSON-ready snapshot for the page."""
         running = self.is_running()
@@ -218,7 +267,7 @@ class TeleopProcess:
             "uptime_s": round(time.monotonic() - self._started_at, 1) if running else 0.0,
             "exit_code": None if running else (self._proc.returncode if self._proc else None),
             "log": self._log_path,
-            "command": " ".join(shlex.quote(a) for a in [_ISAACLAB_SH, "-p", _TELEOP_SCRIPT, *self._extra_args]),
+            "command": " ".join(shlex.quote(a) for a in self._last_command),
         }
 
     def tail_log(self, lines: int = 40) -> str:
@@ -348,6 +397,169 @@ def _preferred_host() -> str:
             return f"{host}.local"
     ips = _lan_ips()
     return ips[0] if ips else "127.0.0.1"
+
+
+class SessionConfigurator:
+    """The app's side of :mod:`session_config`: settings on disk, the fleet monitor, table rows, launches.
+
+    Holds the settings the page edits (persisted in the file shared with the
+    desktop launcher — re-read whenever that file changes underneath), runs a
+    :class:`~fleet_client.FleetMonitor` while the scene source is the fleet
+    server, and turns the saved state into the :class:`LaunchSpec` every
+    "Start session" runs. Everything here may block on disk or network, so the
+    server calls it from a worker thread.
+    """
+
+    _TABLE_TTL_S = 5.0
+    """How long a scanned scene table is reused for the (frequent) status summary."""
+
+    def __init__(self, mic_device: str | None):
+        self._mic_device = mic_device
+        self._lock = threading.RLock()
+        self._settings = load_settings()
+        self._settings_mtime = self._file_mtime()
+        self._monitor: FleetMonitor | None = None
+        self._table: SceneTable | None = None
+        self._table_at = 0.0
+        self._sync_monitor()
+
+    # -- settings -------------------------------------------------------------
+
+    @staticmethod
+    def _file_mtime() -> float:
+        from session_config import SETTINGS_PATH
+
+        try:
+            return os.stat(SETTINGS_PATH).st_mtime
+        except OSError:
+            return 0.0
+
+    def settings(self) -> dict:
+        """The current settings; picks up edits made by the desktop launcher to the shared file."""
+        with self._lock:
+            mtime = self._file_mtime()
+            if mtime != self._settings_mtime:
+                self._settings = load_settings()
+                self._settings_mtime = mtime
+                self._table = None
+                self._sync_monitor()
+            return self._settings
+
+    def update(self, patch: dict) -> dict:
+        """Merge ``patch`` (the page's settings) into the saved settings and persist them."""
+        if not isinstance(patch, dict):
+            raise ValueError("settings must be an object")
+        with self._lock:
+            settings = merge_settings(self.settings(), patch)
+            settings["fleet_server"] = normalize_server_url(settings.get("fleet_server", ""))
+            save_settings(settings)
+            self._settings, self._settings_mtime = settings, self._file_mtime()
+            self._table = None
+            self._sync_monitor()
+            return settings
+
+    # -- fleet ----------------------------------------------------------------
+
+    def _sync_monitor(self) -> None:
+        """Run exactly one monitor, for the saved server, only while the source is the fleet server."""
+        settings = self._settings
+        server = (
+            normalize_server_url(settings.get("fleet_server", "")) if settings.get("scene_source") == "server" else ""
+        )
+        token = str(settings.get("fleet_token", "")).strip() or None
+        if self._monitor is not None and (not server or not self._monitor.matches(server, token)):
+            self._monitor.stop()
+            self._monitor = None
+        if server and self._monitor is None:
+            self._monitor = FleetMonitor(server, token)
+            self._monitor.start()
+
+    def connect_fleet(self) -> None:
+        """Poll the fleet server now (the operator pressed Connect)."""
+        with self._lock:
+            self.settings()
+            if self._monitor is None:
+                if self._settings.get("scene_source") != "server":
+                    raise ValueError("Switch the scene source to 'Fleet server' first.")
+                raise ValueError("Enter the fleet server URL first (e.g. http://fleet-host:8080).")
+            self._monitor.poll_now()
+
+    def fleet_status(self) -> dict | None:
+        with self._lock:
+            return self._monitor.status() if self._monitor is not None else None
+
+    # -- scenes & launch --------------------------------------------------------
+
+    def table(self, max_age_s: float = 0.0) -> SceneTable:
+        """The active source's scene table, rescanned unless a copy younger than ``max_age_s`` exists."""
+        with self._lock:
+            settings = self.settings()
+            if self._table is not None and time.monotonic() - self._table_at <= max_age_s:
+                return self._table
+            scenes = self._monitor.scenes if self._monitor is not None else None
+            self._table = scene_table(settings, scenes)
+            self._table_at = time.monotonic()
+            return self._table
+
+    def launch(self) -> LaunchSpec:
+        """The launch for the saved settings; raises ``ValueError`` with an operator-facing message."""
+        with self._lock:
+            settings = self.settings()
+            if settings.get("scene_source") == "server":
+                fleet = self.fleet_status()
+                if fleet is None or not fleet["connected"]:
+                    raise ValueError("Connect to the fleet server before starting (Scenes tab).")
+            return build_launch(settings, self.table(), mic_device=self._mic_device)
+
+    def port_env(self) -> dict[str, str]:
+        """The port variables the saved settings would give a launch (for links before the first start)."""
+        try:
+            return build_env(self.settings().get("params", {}))
+        except ValueError:
+            return {}
+
+    def summary(self) -> str:
+        """One line for the session tab: what "Start session" would launch."""
+        settings = self.settings()
+        table = self.table(max_age_s=self._TABLE_TTL_S)
+        robot = settings.get("params", {}).get("--embodiment", "?")
+        if table.source == "server":
+            fleet = self.fleet_status()
+            server = settings.get("fleet_server") or "(no server URL)"
+            if fleet is None or not fleet["connected"]:
+                return f"Fleet server {server}: not connected — robot {robot}"
+            t = fleet["totals"]
+            return (
+                f"Fleet server {server}: {len(table.selected)} of {len(table.rows)} scenes selected,"
+                f" {t['successes_toward_target']}/{t['target_successes']} successes fleet-wide — robot {robot}"
+            )
+        scene_dir = settings.get("scene_dir") or ""
+        return (
+            f"Local scenes: {len(table.selected)} of {len(table.rows)} selected under"
+            f" {os.path.basename(scene_dir.rstrip('/')) or scene_dir} — robot {robot}"
+        )
+
+    def state(self) -> dict:
+        """Everything the configuration tabs render, in one message."""
+        settings = self.settings()
+        table = self.table()
+        return {
+            "settings": settings,
+            "schema": schema(),
+            "groups": param_groups(),
+            "ports_note": PORTS_NOTE,
+            # The app relays the headset mic itself, so the mic port is not a knob here.
+            "hidden_params": ["port:mic"] if self._mic_device else [],
+            "table": {"source": table.source, "rows": table.rows, "untagged": table.untagged},
+            "fleet": self.fleet_status(),
+            "summary": self.summary(),
+        }
+
+    def close(self) -> None:
+        with self._lock:
+            if self._monitor is not None:
+                self._monitor.stop()
+                self._monitor = None
 
 
 class MicHub:
@@ -494,305 +706,14 @@ def _icon_png(size: int) -> bytes:
     return _ICON_CACHE[size]
 
 
-_PAGE = """<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Teleop</title>
-<link rel="manifest" href="/manifest.webmanifest">
-<link rel="icon" type="image/png" href="/icon-192.png">
-<meta name="theme-color" content="#111111">
-<style>
-  body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding: 1.5em 1em; }
-  button, a.btn { font-size: 1.3em; padding: 0.6em 1em; border-radius: 0.5em; border: 0; margin: 0.3em;
-                  display: inline-block; background: #ddd; color: #111; text-decoration: none; }
-  /* Highlighted once the session is up and only the CloudXR tap is left. */
-  a.ready { background: #4c4; font-size: 1.7em; padding: 0.8em 1.6em; animation: pulse 1.2s infinite; }
-  @keyframes pulse { 50% { opacity: 0.55; } }
-  a.disabled { pointer-events: none; opacity: 0.35; }
-  a.ok { background: #2a5; color: #fff; }
-  .primary { background: #4c4; font-size: 1.7em; padding: 0.8em 1.6em; }
-  .danger { background: #c44; color: #fff; }
-  #level { width: 60%; height: 0.9em; background: #333; margin: 0.8em auto; border-radius: 0.5em; overflow: hidden; }
-  #bar { height: 100%; width: 0; background: #4c4; }
-  .row { margin: 0.8em 0; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 0.3em; }
-  .dot { display: inline-block; width: 0.8em; height: 0.8em; border-radius: 50%; margin-right: 0.4em; }
-  .on { background: #4c4; } .off { background: #666; }
-  .booting { background: #ec4; animation: pulse 1.2s infinite; }
-  #status { margin-top: 0.6em; font-size: 1.05em; color: #bbb; }
-  #status:empty { display: none; }
-</style>
-<h1>Teleop</h1>
-<div class="row"><span id="teleop_dot" class="dot off"></span><span id="teleop_state">checking...</span></div>
-<div class="row"><span id="mic_dot" class="dot off"></span><span id="mic_state">microphone idle</span></div>
-<div id="level"><div id="bar"></div></div>
+def _page_html() -> str:
+    """The control page (``teleop_app_page.html`` next to this file), read per request."""
+    try:
+        with open(_PAGE_PATH, encoding="utf-8") as f:
+            return f.read()
+    except OSError as exc:
+        return f"<!doctype html><meta charset=utf-8><pre>cannot read {_PAGE_PATH}: {exc}</pre>"
 
-<!-- Row 1: the whole session. Start brings up mic + teleop, Finish tears both down. -->
-<div class="row">
-  <button id="go" class="primary">Start session</button>
-  <button id="finish" class="primary danger">Finish session</button>
-</div>
-<!-- Row 2: the two taps the browser will not do for us. -->
-<div class="row">
-  <!-- One-time per port: the NVIDIA-hosted client cannot open a socket back
-       here until this self-signed certificate is accepted for this origin. -->
-  <a id="cert" class="btn disabled" target="_blank" rel="noopener" href="#">Teleop not running</a>
-  <!-- A real link, not window.open: a popup opened after the readiness wait is
-       no longer tied to the tap and gets blocked silently. -->
-  <a id="cxr" class="btn disabled" target="_blank" rel="noopener" href="#">Open CloudXR</a>
-</div>
-<!-- Row 3: the parts, controlled one at a time. -->
-<div class="row">
-  <button id="restart">Restart teleop</button>
-  <button id="kill" class="danger">Kill teleop</button>
-  <button id="mic">Start microphone</button>
-  <button id="micstop" class="danger">Stop microphone</button>
-</div>
-<!-- Row 4: the log opens as its own page, readable at headset distance. -->
-<div class="row">
-  <a class="btn" href="/log.html" target="_blank" rel="noopener">Log</a>
-</div>
-<!-- Progress/result of the last tap; hidden until there is one. -->
-<div id="status"></div>
-
-<script>
-// Registering this is what lets the headset offer "Install"/"Add to library".
-// It fails harmlessly on a self-signed origin the browser deems insecure, in
-// which case a bookmark tile still works.
-if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
-
-const RATE = 16000, CHUNK = 1600, SUPERSEDED = 4001;
-const $ = id => document.getElementById(id);
-const status = t => $("status").textContent = t;
-let ws = null, started = false, micStream = null, cxrUrl = null, audioCtx = null;
-
-async function api(path, method) {
-  const r = await fetch(path, { method: method || "GET", headers: { "X-Teleop-Control": "1" } });
-  return await r.json();
-}
-
-// ---- status polling -------------------------------------------------------
-// Whether this browser already trusts the proxy's certificate. A no-cors fetch
-// resolves (opaque) once the certificate has been accepted for that host and
-// port, and rejects while it has not. Only meaningful while the port is up,
-// which is why it is gated on cloudxr_ready wherever it is called.
-let certOk = null, lastProbe = 0;
-async function probeCert(url) {
-  const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 4000);
-  try { await fetch(url, { mode: "no-cors", cache: "no-store", signal: ctl.signal }); return true; }
-  catch (e) { return false; }
-  finally { clearTimeout(t); }
-}
-
-async function refresh() {
-  try {
-    const s = await api("/status");
-    cxrUrl = s.cloudxr_url;
-    $("cxr").href = cxrUrl;  // kept current, so the link is always tappable
-    const cert = $("cert"), cxr = $("cxr");
-    cert.href = s.cert_url;
-    if (!s.cloudxr_ready) {
-      // The proxy port is not listening yet. The certificate button doubles as
-      // the boot indicator here: tapping it now would hang on a dead port for
-      // as long as teleop takes to come up, so it is inert until then. The
-      // CloudXR link likewise sheds any "ready" glow left over from a previous
-      // run, which otherwise survives a kill/restart and lies.
-      cert.classList.add("disabled"); cert.classList.remove("ready", "ok");
-      cert.textContent = s.running ? "Preparing teleop..." : "Teleop not running";
-      cxr.classList.add("disabled"); cxr.classList.remove("ready");
-      certOk = null;
-    } else {
-      cert.classList.remove("disabled");
-      cxr.classList.remove("disabled");
-      if (certOk !== true && Date.now() - lastProbe > 3000) {
-        lastProbe = Date.now();
-        certOk = await probeCert(s.cert_url);
-      }
-      if (certOk) {
-        cert.textContent = "Teleop ready - certificate OK";
-        cert.classList.add("ok"); cert.classList.remove("ready");
-      } else {
-        cert.textContent = "Teleop ready - accept certificate";
-        cert.classList.remove("ok");
-      }
-    }
-    // "running" means the process is alive; it spends ~30-60 s loading the
-    // sim before CloudXR listens. Calling that "running" next to a button
-    // saying "Preparing teleop..." read as a contradiction, so the process
-    // state is split into starting / running.
-    const up = " (pid " + s.pid + ", up " + Math.round(s.uptime_s) + "s)";
-    $("teleop_dot").className = "dot " + (!s.running ? "off" : s.cloudxr_ready ? "on" : "booting");
-    $("teleop_state").textContent = !s.running
-      ? "teleop stopped" + (s.exit_code === null ? "" : " (exit " + s.exit_code + ")")
-      : s.cloudxr_ready ? "teleop running" + up : "teleop starting - loading the simulator" + up;
-    $("mic_dot").className = "dot " + (s.mic_connected ? "on" : "off");
-    if (s.mic_connected && !started) {
-      // The server sees a page streaming, but it is not this one: either a
-      // second app tab, or a socket this page just closed that the server has
-      // not timed out yet. Saying "streaming" here read as Stop having failed.
-      $("mic_state").textContent = "microphone streaming from another tab";
-    } else if (s.mic_connected) {
-      const age = s.mic_silent_s;
-      $("mic_state").textContent = (age !== null && age > 4)
-        ? "microphone connected but silent " + age + "s" : "microphone streaming";
-    } else {
-      $("mic_state").textContent = started ? "microphone starting..." : "microphone idle";
-    }
-  } catch (e) { $("teleop_state").textContent = "app unreachable"; }
-}
-setInterval(refresh, 1500);
-refresh();
-
-// ---- microphone -----------------------------------------------------------
-function standDown(msg) {
-  status(msg); started = false; $("bar").style.width = "0%";
-  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
-}
-
-function connect() {
-  if (ws) { ws.onclose = null; ws.onerror = null; try { ws.close(); } catch (e) {} }
-  ws = new WebSocket("wss://" + location.host + "/audio");
-  ws.binaryType = "arraybuffer";
-  ws.onopen = () => status("microphone streaming");
-  ws.onclose = (ev) => {
-    if (ev.code === SUPERSEDED) { standDown("superseded by a newer tab - close this one"); return; }
-    status("mic disconnected - retrying"); setTimeout(connect, 1000);
-  };
-  ws.onerror = () => ws.close();
-}
-
-async function startMic() {
-  if (started) return true;
-  let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-    });
-  } catch (err) {
-    status("mic failed: " + err.name + " - close any other copy of this page, then tap again");
-    return false;
-  }
-  started = true; micStream = stream;
-  const ctx = audioCtx = new AudioContext();
-  // A tab that is PLAYING audio is exempt from Chromium's background-tab
-  // freezing, which otherwise kills capture minutes into an immersive session.
-  const osc = ctx.createOscillator(), g = ctx.createGain();
-  g.gain.value = 0.001; osc.frequency.value = 30;
-  osc.connect(g).connect(ctx.destination); osc.start();
-  ctx.onstatechange = () => { if (ctx.state !== "running") ctx.resume(); };
-  stream.getTracks()[0].onended = () => { status("mic lost - restarting"); started = false; startMic(); };
-  const code = `registerProcessor("grab", class extends AudioWorkletProcessor {
-      process(i) { if (i[0] && i[0][0]) this.port.postMessage(i[0][0]); return true; } });`;
-  await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([code], { type: "text/javascript" })));
-  const node = new AudioWorkletNode(ctx, "grab");
-  ctx.createMediaStreamSource(stream).connect(node);
-  const ratio = ctx.sampleRate / RATE;
-  let buf = [], acc = 0, out = new Int16Array(CHUNK), oi = 0, peak = 0, frames = 0;
-  node.port.onmessage = (e) => {
-    const x = e.data;
-    for (let i = 0; i < x.length; i++) buf.push(x[i]);
-    while (acc + ratio < buf.length) {
-      const j = Math.floor(acc), f = acc - j;
-      const v = buf[j] * (1 - f) + buf[j + 1] * f;
-      out[oi++] = Math.max(-32768, Math.min(32767, Math.round(v * 32767)));
-      peak = Math.max(peak, Math.abs(v));
-      acc += ratio;
-      if (oi === CHUNK) {
-        if (ws && ws.readyState === 1) ws.send(out.buffer.slice(0));
-        oi = 0;
-        if (++frames % 5 === 0) { $("bar").style.width = Math.min(100, peak * 400) + "%"; peak = 0; }
-      }
-    }
-    const drop = Math.floor(acc); buf = buf.slice(drop); acc -= drop;
-  };
-  connect();
-  return true;
-}
-
-// ---- buttons --------------------------------------------------------------
-$("mic").onclick = () => startMic();
-
-function stopMic() {
-  // Detach handlers before tearing down: onclose would otherwise reconnect and
-  // the track's onended would treat this as a lost mic and start it again.
-  if (ws) { ws.onclose = null; ws.onerror = null; try { ws.close(); } catch (e) {} ws = null; }
-  if (micStream) { micStream.getTracks().forEach(t => { t.onended = null; t.stop(); }); micStream = null; }
-  if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
-  started = false; $("bar").style.width = "0%";
-  status("microphone stopped");
-}
-$("micstop").onclick = stopMic;
-
-$("go").onclick = async () => {
-  const go = $("go");
-  go.disabled = true;
-  try {
-    status("starting microphone...");
-    if (!await startMic()) return;
-    let s = await api("/status");
-    if (!s.running) { status("starting teleop..."); await api("/start", "POST"); }
-    // The process existing is not the same as the XR stack being up; opening
-    // the client early lands on a page that cannot connect yet.
-    const deadline = Date.now() + 180000;
-    while (!s.cloudxr_ready && Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, 2000));
-      s = await api("/status");
-      if (!s.running && s.exit_code !== null) {
-        status("teleop exited (code " + s.exit_code + ") - tap Log to see why");
-        return;
-      }
-      status("waiting for teleop to come up... " + Math.round((Date.now() - (deadline - 180000)) / 1000) + "s");
-    }
-    if (!s.cloudxr_ready) { status("teleop did not come up in 3 min - tap Log"); return; }
-    // Certificate gate. The NVIDIA-hosted client cannot open its socket to the
-    // proxy until this browser has accepted the proxy's certificate, and that
-    // acceptance is not always remembered between sessions. Only ask when the
-    // probe says it is actually missing, then advance as soon as it is granted.
-    if (!(await probeCert(s.cert_url))) {
-      const cert = $("cert");
-      cert.classList.remove("disabled"); cert.classList.add("ready");
-      status("tap the green certificate button, accept the warning, then come back to this tab");
-      const certDeadline = Date.now() + 300000;
-      while (Date.now() < certDeadline && !(await probeCert(s.cert_url))) {
-        await new Promise(r => setTimeout(r, 2000));
-      }
-      cert.classList.remove("ready");
-      if (!(await probeCert(s.cert_url))) {
-        status("certificate still not accepted - tap the certificate button, then 'Open CloudXR'");
-        return;
-      }
-    }
-    certOk = true;
-    // Try to open it directly, but the tap that started this is long expired,
-    // so the browser may refuse. window.open returns null when it does.
-    const w = window.open(s.cloudxr_url, "_blank");
-    const cxr = $("cxr");
-    cxr.href = s.cloudxr_url;
-    if (w) {
-      status("running - keep THIS tab open, the mic runs here");
-    } else {
-      cxr.classList.add("ready");
-      status("ready - tap 'Open CloudXR' below (keep THIS tab open, the mic runs here)");
-    }
-  } finally {
-    go.disabled = false;
-  }
-};
-$("restart").onclick = async () => { status("restarting..."); status((await api("/restart", "POST")).message); };
-$("kill").onclick = async () => { status("killing..."); status((await api("/stop", "POST")).message); };
-$("finish").onclick = async () => {
-  const b = $("finish");
-  b.disabled = true;
-  try {
-    stopMic();
-    status("finishing session - stopping teleop...");
-    status("session finished - " + (await api("/stop", "POST")).message);
-  } finally {
-    b.disabled = false;
-  }
-};
-</script>
-"""
 
 _LOG_PAGE = """<!doctype html>
 <meta charset="utf-8">
@@ -835,17 +756,25 @@ load().then(() => window.scrollTo(0, document.body.scrollHeight));
 
 
 class TeleopApp:
-    """The HTTPS/WSS service: control page, mic hub, and teleop supervision."""
+    """The HTTPS/WSS service: control page, mic hub, session configuration, and teleop supervision."""
 
-    def __init__(self, port: int, teleop: TeleopProcess):
+    def __init__(self, port: int, teleop: TeleopProcess, config: SessionConfigurator):
         self._port = port
         self._teleop = teleop
+        self._config = config
         self._mic = MicHub()
 
-    @staticmethod
-    def _proxy_port() -> int:
-        """Port of the CloudXR WSS proxy, which moves when the host is shared."""
-        return int(os.environ.get("PROXY_PORT", "").strip() or 48322)
+    def _proxy_port(self) -> int:
+        """Port of the CloudXR WSS proxy, which moves when the host is shared.
+
+        The run we launched knows its own; before the first start (or for an
+        adopted run) the saved settings' port applies, then the environment.
+        """
+        for source in (self._teleop.launch_env(), self._config.port_env(), os.environ):
+            value = str(source.get("PROXY_PORT", "")).strip()
+            if value:
+                return int(value)
+        return 48322
 
     @staticmethod
     def _client_base() -> str:
@@ -892,6 +821,10 @@ class TeleopApp:
 
     def status(self) -> dict:
         """Everything the page polls, in one round trip."""
+        try:
+            summary = self._config.summary()
+        except Exception as exc:  # noqa: BLE001 — a broken settings file must not take the page down
+            summary = f"configuration unavailable: {exc}"
         return {
             **self._teleop.status(),
             **self._mic.status(),
@@ -901,7 +834,46 @@ class TeleopApp:
             # nothing about the XR stack being up. The proxy port going live is
             # the signal that the client has something to connect to.
             "cloudxr_ready": _port_in_use(self._proxy_port()),
+            "summary": summary,
         }
+
+    # -- control channel -----------------------------------------------------
+
+    def _control_op(self, op: str, request: dict) -> dict:
+        """One ``/control`` request (runs on a worker thread: settings, scans and the fleet may block)."""
+        if op == "state":
+            pass
+        elif op == "save":
+            self._config.update(request.get("settings"))
+        elif op == "connect":
+            self._config.connect_fleet()
+        elif op != "refresh":
+            raise ValueError(f"unknown op '{op}'")
+        return {"state": self._config.state()}
+
+    async def control(self, connection) -> None:
+        """Handle ``/control``: JSON requests ``{id, op, ...}`` answered with ``{id, ok, ...}``.
+
+        The HTTP layer cannot read request bodies, so this is how the page
+        sends anything that carries data (settings, the scene selection).
+        """
+        from websockets.exceptions import ConnectionClosed
+
+        try:
+            async for message in connection:
+                request_id, op = None, None
+                try:
+                    request = json.loads(message)
+                    request_id, op = request.get("id"), request.get("op")
+                    result = await asyncio.to_thread(self._control_op, op, request)
+                    reply = {"id": request_id, "ok": True, **result}
+                except Exception as exc:  # noqa: BLE001 — reported to the page, never fatal for the app
+                    reply = {"id": request_id, "ok": False, "error": str(exc)}
+                    if not isinstance(exc, ValueError):
+                        print(f"[APP] control '{op}' failed: {exc!r}", flush=True)
+                await connection.send(json.dumps(reply))
+        except ConnectionClosed:
+            pass
 
     async def serve(self) -> None:
         """Run until cancelled."""
@@ -912,7 +884,7 @@ class TeleopApp:
             if "upgrade" in request.headers.get("Connection", "").lower():
                 return None  # websocket routes are handled in the handler
             if path == "/":
-                r = connection.respond(http.HTTPStatus.OK, _PAGE)
+                r = connection.respond(http.HTTPStatus.OK, _page_html())
                 r.headers["Content-Type"] = "text/html; charset=utf-8"
                 # The page changes whenever the app is updated; a reload on the
                 # headset must always fetch it, never replay a cached copy.
@@ -961,6 +933,8 @@ class TeleopApp:
                 await self._mic.ingest(connection)
             elif path == "/subscribe":
                 await self._mic.subscribe(connection)
+            elif path == "/control":
+                await self.control(connection)
             else:
                 await connection.close(code=1008, reason="unknown path")
 
@@ -1057,31 +1031,39 @@ def main() -> None:
         action="append",
         default=[],
         metavar="ARG",
-        help="Argument forwarded to make_teleop_scene.py; repeat once per argument.",
+        help=(
+            "Extra argument forwarded to make_teleop_scene.py, for flags the settings page does not cover;"
+            " repeat once per argument. Scenes, recording and the parameters on the page come from the saved"
+            " settings, so do not pass --scene_list/--scene_usda/--record_dir here."
+        ),
     )
     parser.add_argument("--install-service", action="store_true", help="Install and start the systemd user service.")
     args = parser.parse_args()
-
-    # The app owns the microphone, so teleop must consume the relay rather than
-    # serving a competing page of its own.
-    teleop_args = list(args.teleop_arg)
-    if not any(a.startswith("--mic_device") for a in teleop_args):
-        teleop_args += ["--mic_device", f"hub:127.0.0.1:{args.port}"]
-    if "--headless" not in teleop_args:
-        teleop_args.append("--headless")
 
     if args.install_service:
         _install_service(args.port, args.teleop_arg)
         return
 
+    # The app owns the microphone, so teleop consumes the relay rather than
+    # serving a competing page of its own — unless a --teleop-arg says otherwise.
+    teleop_args = list(args.teleop_arg)
+    mic_device = f"hub:127.0.0.1:{args.port}"
+    if "--mic_device" in teleop_args:
+        index = teleop_args.index("--mic_device")
+        mic_device = teleop_args[index + 1] if index + 1 < len(teleop_args) else mic_device
+        del teleop_args[index : index + 2]
+
     if _port_in_use(args.port):
         raise SystemExit(f"[APP] Port {args.port} is already in use — another copy of the app is probably running.")
 
-    app = TeleopApp(args.port, TeleopProcess(teleop_args, env_overrides={}))
+    config = SessionConfigurator(mic_device=mic_device)
+    app = TeleopApp(args.port, TeleopProcess(teleop_args, launch_provider=config.launch), config)
     try:
         asyncio.run(app.serve())
     except KeyboardInterrupt:
         print("\n[APP] Shutting down; leaving any running teleop alone (use Kill in the page to stop it).")
+    finally:
+        config.close()
 
 
 if __name__ == "__main__":
