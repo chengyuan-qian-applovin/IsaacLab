@@ -95,29 +95,47 @@ The first start generates `~/.cloudxr/certs/server.{crt,key}` if it does not
 exist; the CloudXR proxy reuses the same certificate, so headsets accept one
 certificate for the whole machine.
 
-**Choosing what the app launches.** By default a session runs
-`make_teleop_scene.py --mic_device hub --headless` with the script's default
-scene and embodiment. Forward extra arguments once each with `--teleop-arg`
-and reinstall:
+**Choosing what the app launches.** Everything a session runs with is set on
+the page itself — the **Scenes** tab (record directory; a local scene
+directory with the scenes ticked, or the fleet server) and the **Parameters**
+tab (robot embodiment, voice, domain randomization, gains, ports, ...) — and
+saved to `~/.config/duo_teleop_launcher.json`, which the desktop launcher
+(`teleop_launcher.py`) shares. Fresh out of the box a session runs the
+scenes under `scenes/` with the script's defaults, `--mic_device hub` and
+`--headless`. Only flags the page does not offer need `--teleop-arg` (once
+per argument, then reinstall):
 
 ```bash
 ./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/teleop_app.py --install-service \
-    --teleop-arg --embodiment --teleop-arg yam_duo \
-    --teleop-arg --scene_list --teleop-arg scripts/environments/teleoperation/sharpa_duo/scenes/scene_list.json
+    --teleop-arg --robot_pos --teleop-arg 0 --teleop-arg -0.6 --teleop-arg 0
 ```
 
 **Several operators on one workstation.** Each user installs their own service
 under their own account. Give each a distinct app port (`--port 8501`, ...)
-and distinct CloudXR ports via `NV_CXR_SERVER_PORT` in the environment the
-service inherits, otherwise two sessions fight over 49100/48322.
+and distinct CloudXR ports in the Parameters tab's **Network ports** group
+(signaling, media and WSS proxy), otherwise two sessions fight over
+49100/48322. The ports become environment variables of the launched teleop;
+the page's CloudXR link follows them.
+
+**Fleet server (optional).** On the Scenes tab choose **Fleet server**, enter
+its URL (e.g. `http://fleet-host:8080`), the collector id this workstation
+should report as (default: hostname) and the token, tap **Connect**. The
+table shows the server's scenes with fleet-wide progress and who is working
+on each; scenes the fleet still needs come pre-ticked. Sessions then download
+the ticked scenes from the server and upload every labeled episode as it
+happens (queued locally and retried if the server is down). README.md,
+"Fleet collection", has the details; nothing else is installed for it.
 
 ### 1.5 Updating the app
 
-After editing `teleop_app.py`:
+After editing `teleop_app.py` (or `session_config.py`, `fleet_client.py`):
 
 ```bash
 systemctl --user restart teleop-app.service
 ```
+
+An edit to the page itself, `teleop_app_page.html`, needs no restart: the
+app reads it from disk on every request, so a reload on the headset shows it.
 
 A running teleop survives this (the unit uses `KillMode=process`) and the new
 instance adopts it, so status and Kill keep working. Headset tabs that are
@@ -165,25 +183,34 @@ profile, certificate acceptance and Library are per account).
 
 ## 3. Daily use, from the headset
 
-1. Open the **Teleop** tile. The top two lines show whether teleop is running
-   and whether a microphone is streaming.
-2. Tap **Start session**. The microphone starts (green level bar), teleop
+1. Open the **Teleop** tile. The top lines show whether teleop is running,
+   what a session would launch (scene source, how many scenes are ticked,
+   the robot), and whether a microphone is streaming.
+2. To change what gets collected, open the **Scenes** tab: tick or untick
+   scenes (tap a row; Select all / none / needed), switch between the local
+   directory and the fleet server, tap **Save**. Robot, voice, randomization,
+   gains and ports live on the **Parameters** tab. Start session saves any
+   unsaved edits by itself. Changes apply to the *next* run — **Restart
+   teleop** if one is already up.
+3. Tap **Start session**. The microphone starts (green level bar), teleop
    launches if it is down, and the status line counts the boot (30–90 s).
+   If nothing is ticked, a port is invalid or the fleet server is not
+   connected, the status line says so instead and nothing starts.
    The certificate button reads **Preparing teleop...** meanwhile; it and
    **Open CloudXR** are inert until the proxy is actually up.
-3. When teleop is up the button turns into one of:
+4. When teleop is up the button turns into one of:
    - **Teleop ready - certificate OK** (solid green): nothing to do.
    - **Teleop ready - accept certificate** (pulsing): tap it, accept the
      warning in the tab that opens ("Certificate Accepted"), come back. The
      page notices by itself and moves on.
-4. **Open CloudXR** pulses: tap it. On the NVIDIA page the address and port are
+5. **Open CloudXR** pulses: tap it. On the NVIDIA page the address and port are
    already filled in; tap **Connect**. That tap is the one WebXR requires and
    cannot be removed.
-5. Hold your wrists at the robot's hands until teleop auto-starts (or say
+6. Hold your wrists at the robot's hands until teleop auto-starts (or say
    "play"). Voice: **success** / **failure** end an episode, **reset**
    discards it, **next** switches scene, **align** adjusts the workspace
    offset while stopped.
-6. Keep the app window open the whole time: the microphone runs there.
+7. Keep the app window open the whole time: the microphone runs there.
 
 When you are done: **Finish session** (the red button beside Start) stops the
 microphone and the whole teleop process tree, CloudXR runtime included.
@@ -241,7 +268,10 @@ keeps 48322 and 8444 bound and the next start fails with "port already in use".
 | No hands in the scene | Controller awake, hand tracking off in headset settings, or VR permission denied for the NVIDIA page. Server log shows `XDev does not support hand tracking` when the headset never offered hands. |
 | Mic shows "streaming from another tab" | Another app tab is streaming, or one you just closed has not timed out (≤10 s). Close extra tabs. |
 | Voice never triggers | Stay quiet the first 1.5 s after the mic starts (ambient calibration). Check the level bar moves when you speak. |
-| Robot is Franka but you expected YAM | The service launches the script's default; reinstall with `--teleop-arg --embodiment --teleop-arg yam_duo` (section 1.4). |
+| Robot is Franka but you expected YAM | Set **Robot embodiment** on the Parameters tab, Save, then Restart teleop. |
+| Start session says "Select at least one scene" / "Connect to the fleet server" | Scenes tab: tick scenes, or Connect to the server first (check the URL/token; the status line shows the server's error). |
+| Fleet table stays empty after Connect | Server unreachable from the workstation (`curl http://fleet-host:8080/api/status`), wrong token, or the source is still "Local directory". |
+| Episodes not appearing on the fleet dashboard | They are queued in `<record_dir>/fleet_outbox.sqlite3`; the run's log (Log button) prints `[FLEET] Upload failed ...` with the reason and retries by itself. |
 
 Ports in one place: 8500/tcp app, 49100/tcp signaling, 48322/tcp WSS proxy +
 certificate page, 47998/udp media, 5353/udp mDNS, 8444/tcp mic page (only

@@ -38,9 +38,12 @@ the tracked joints).
 
 ## Recording episodes, hands-free
 
-Recording is on by default (`--no_record` disables it). Every episode becomes
-one demo in a timestamped robomimic-style HDF5 under `--record_dir`
-(default `./datasets/duo_teleop`):
+Recording is on by default (`--no_record` disables it). Every labeled episode
+becomes its **own** robomimic-style HDF5 file under `--record_dir` (default
+`./datasets/duo_teleop`), named `<scene>_<timestamp>_<uuid8>.hdf5` and holding
+a single `demo_0` — one trajectory per file, so each can be uploaded to the
+fleet server the moment it is labeled, and an interrupted write can never
+corrupt earlier demos:
 
 1. **Play** starts teleop and the episode buffer — by the client button, the
    voice command, or **auto-start**: hold both wrists at the robot's hand
@@ -65,9 +68,74 @@ Each demo carries per-step robot joint states, tracked object poses, the 58-D
 actions, the raw XR hand poses (`obs/xr_hands`, (T, 2, 26, 7), the retargeter
 input — enough to re-tune retargeting offline), the PD drive setpoints
 (`obs/joint_setpoints`, (T, 58), the differential-IK output), and HDF5
-attributes: the boolean `success` label, the `scene` name, and the drive
-gains it was recorded with (`arm_kp`/`arm_kd`/`hand_kp`/`hand_kd` — the
-`--arm_kp` etc. flags, tunable from the launcher's "Control gains" group).
+attributes: the boolean `success` label, the `scene` name, the `episode_uuid`
+(the identity the fleet server also keys on), and the drive gains it was
+recorded with (`arm_kp`/`arm_kd`/`hand_kp`/`hand_kd` — the `--arm_kp` etc.
+flags, tunable from the "Control gains" group of either UI).
+
+## Fleet collection (multiple headsets, one coordinator)
+
+For campaigns with several Quest/AVP collectors running at once, the
+`duo-fleet-server` repo (a small FastAPI + SQLite service kept separate from
+IsaacLab; see its README for setup) is the single source of truth: which scenes
+need how many successful demos, who is working on what right now, and every
+labeled trajectory. From the headset, pick **Fleet server** as the scene
+source on the app's Scenes tab (URL, optional collector id and token, tap
+Connect, tick scenes) and start the session as usual. From a terminal:
+
+```bash
+export FLEET_TOKEN=change-me   # or pass --fleet_token
+./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/make_teleop_scene.py \
+    --fleet_server http://fleet-host:8080 --collector_id ws1-quest --headless
+```
+
+What fleet mode does, in the order it happens:
+
+1. **Startup sync**: the collector checks in and prints the fleet-wide status
+   (progress toward targets, who else is online). The loose scene-doc JSONs
+   from the server's `scenes/` (e.g. `scene_instruct.json` with the task
+   descriptions) are always re-downloaded into the local cache, so the copies
+   next to the cached scene files are the latest by construction.
+2. **Scene download**: the scenes to work on come from the server —
+   `--fleet_scene_ids` names them explicitly (what both UIs pass for the
+   ticked scenes; mutually exclusive with `--scene_list`), or with no
+   selection at all the server picks the `--fleet_scenes` most-needed ones
+   (highest priority, fewest active collectors, most demos remaining). Every
+   scene on the server is one **self-contained `.usdz` package** (flattened,
+   geometry and textures inside, no external references except the
+   runtime-resolved `OmniPBR.mdl`), so a scene is exactly one download into
+   `<record_dir>/fleet_cache/scenes/` — there is no asset tree to mirror, on
+   the server or here. Downloads are sha256-verified against the server's
+   scene row: a cached file whose hash already matches is skipped, a changed
+   one is re-fetched, and a hash mismatch after download is a hard error.
+   Scenes cycle with "next" as usual.
+3. **Presence**: entering a scene declares "this collector works here" — pure
+   information, never a lock: any number of collectors may share a scene, and
+   a crashed collector can never block anyone (its presence just goes stale
+   after 120 s without a heartbeat).
+4. **Immediate upload**: the moment an episode is voice-labeled, it is queued
+   in a local outbox (`<record_dir>/fleet_outbox.sqlite3`) and a background
+   thread uploads it — file first, then the metadata commit, keyed by the
+   episode UUID so retries are idempotent. The teleop loop never waits on the
+   network; if the server is unreachable, episodes stay queued (across
+   restarts) and sync when it returns. The reply prints the scene's live
+   progress and says when it hits its target.
+
+Seed the server with scenes from any collector machine:
+
+```bash
+./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/fleet_push_scenes.py \
+    --fleet_server http://fleet-host:8080 --scene_dir ~/scenes_usdz --target 20
+```
+
+and watch the live dashboard at `http://fleet-host:8080/`. Push
+self-contained `.usdz` packages only: the generator's `.usda` scenes reference
+a separate `02_mesh/...` tree that collectors never receive, so convert them
+first (dependency closure → flatten → usdz, documented in the
+teleop-data-server README under "File organization convention"). The push
+script warns on any non-`.usdz` file. The "adjust object" pose sidecars
+(`<scene>.poses.json`) are loose JSON docs too: pushed into the server's
+`scenes/` they reach every collector through the doc sync.
 
 ## Replaying episodes
 
@@ -137,19 +205,68 @@ command is ignored.
 ./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/teleop_launcher.py
 ```
 
-A two-page launcher (plain tkinter; Isaac Sim only starts when you press
-Start): page 1 groups the teleop parameters by concern (operator & voice,
-session start, domain randomization, control gains, visuals, advanced); page 2
-picks a scene directory and a dataset HDF5 file and shows a table of every
-scene with the success/failure trajectory counts already collected for it in
-that dataset — tick the scenes to collect this session (click toggles one
-scene, dragging paints the toggle over consecutive rows, and Shift+Click
-extends the last toggle over the whole range, Excel-style). Start writes the
-selection to a scene-list JSON and runs the teleop with `--dataset_file`:
-demos from **all** scenes and sessions append into the chosen file (each
-tagged with its scene), so the table's counts accumulate across sessions.
-Cycle the selected scenes with the "next" voice command; when the run exits,
-the launcher returns to the table with refreshed counts.
+The desktop counterpart of the headset app below: a two-page tkinter launcher
+(Isaac Sim only starts when you press Start) that renders the same schema,
+scene sources and settings file (`session_config.py`), so a choice made here
+shows up in the headset and vice versa. Page 1 groups the teleop parameters
+by concern (operator & voice, session start, domain randomization, control
+gains, visuals, advanced, network ports); page 2 picks the record directory
+and the **scene source** — a radio choice between two mutually exclusive
+modes:
+
+- **Local directory** (default): scan a directory recursively for scene files
+  (`*.usdz`, `*.usda`, `*.usd`) and tick the scenes to collect; the table
+  shows the per-machine success/failure demo counts recorded under the record
+  directory. The run is fully standalone — no fleet server is involved at all.
+- **Fleet server**: enter the server URL (plus optional collector id/token)
+  and press **Connect**. The table then lists the *server's* scenes with the
+  server's numbers only: live **Fleet progress** (`successes/target`, green
+  when met) and **Working now** (who is collecting each scene right now)
+  columns, auto-refreshed every 15 s; newly listed scenes come pre-ticked
+  when the fleet still needs them, and **Select needed** re-derives that
+  ticking on demand. Start passes the ticked scene ids as
+  `--fleet_scene_ids`: the run downloads them from the server
+  (sha256-verified) and uploads every labeled episode as it happens.
+
+Selection works the same way in both modes (click toggles one scene,
+dragging paints the toggle over consecutive rows, and Shift+Click extends
+the last toggle over the whole range, Excel-style). All settings —
+parameters, directories, scene source, fleet connection, scene selection,
+network ports, window geometry — persist across runs in
+`~/.config/duo_teleop_launcher.json` (shared with the headset app), and a
+remembered fleet-server source reconnects automatically. Cycle the selected
+scenes with the "next" voice command; when the run exits, the launcher
+returns to the table with refreshed counts.
+
+### Network ports
+
+A teleop session listens on four ports; the **Network ports** group (in
+either UI) edits all of them (blank keeps the default), and they are passed to
+`make_teleop_scene.py` as environment variables — the same variables work on
+the command line. Two operators sharing one workstation each need their own
+TCP ports; open whatever you pick in the firewall (`sudo ufw allow <port>/tcp`).
+
+| Port | Default | Set via | Who connects |
+|---|---|---|---|
+| CloudXR signaling (TCP) | 49100 with the Quest/WebRTC profile, 48010 with the AVP native profile | `NV_CXR_SERVER_PORT` | The WSS proxy (Quest) or the AVP client directly; CloudXR refuses to start if it is taken |
+| CloudXR media (UDP) | 47998 | `NV_CXR_MEDIA_PORT` | The headset's video/input/audio stream |
+| WSS proxy (TCP) | 48322 | `PROXY_PORT` | Quest: the CloudXR.js browser page (`https://<ip>:48322/`); AVP in secure mode. Forwards to the signaling port |
+| Headset microphone (TCP) | 8444 | `--mic_device quest:<port>` / `avp:<port>` | The Quest mic page and the AVP client's mic stream (`wss://<ip>:<port>/audio`); not used when the headset app relays the mic |
+
+```bash
+# Second operator on the same workstation, e.g. from a second Linux account:
+NV_CXR_SERVER_PORT=49101 NV_CXR_MEDIA_PORT=47999 PROXY_PORT=48323 \
+./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/make_teleop_scene.py \
+    --mic_device quest:8445 --headless ...
+```
+
+The WSS proxy is told about a moved signaling port through
+`isaaclab_teleop.patch_cloudxr_wss_backend_port` (isaacteleop's launcher
+otherwise leaves it dialing 49100). The AVP native client keeps its own port
+setting, so a moved signaling port has to be entered in the Isaac XR Teleop
+client as well. The USB-tethered ports (`USB_UI_PORT` 8080,
+`USB_BACKEND_PORT`, `USB_TURN_PORT` 3478) belong to isaacteleop's OOB mode,
+which this pipeline does not use; the fleet server's port is part of its URL.
 
 ## Headset control app
 
@@ -194,6 +311,24 @@ behind. The sweep only touches runtimes younger than the run it just stopped
 and owned by you, so a session you started by hand in a terminal, or one
 belonging to another user of the workstation, survives untouched.
 
+The page has three tabs. **Session** is the one-tap flow above. **Scenes** and
+**Parameters** are the desktop launcher's two pages, reproduced for the
+headset: the record directory; the scene source (**Local directory** with the
+scene table and this machine's success/failure counts, or **Fleet server**
+with URL, collector id, token, a Connect button, the fleet-wide progress and
+"working now" columns refreshed every 15 s, and **Select needed**); tap a row
+to toggle it, or use Select all / none; and every teleop parameter grouped as
+on the desktop, including the network ports. Save persists to the same
+`~/.config/duo_teleop_launcher.json` the desktop launcher reads, and **Start
+session** launches from the saved settings (saving first if the tabs have
+unsaved edits): a scene-list JSON of the ticked local files, or
+`--fleet_server` + `--fleet_scene_ids` for the ticked server scenes, plus
+`--record_dir` and only the parameters that differ from their defaults. The
+Session tab shows a one-line summary of what Start would launch, and Start
+refuses with a clear message when nothing is ticked, a port is invalid, or the
+fleet server is not connected. The fleet token travels to teleop in the
+`FLEET_TOKEN` environment variable, not on the command line.
+
 The app owns the microphone and relays it to teleop over `--mic_device hub`,
 which it passes automatically to anything it launches. Because capture lives in
 the app rather than in the teleop process, **it survives teleop restarts**: tap
@@ -203,8 +338,11 @@ the microphone, which is what stops a pile of stale tabs from fighting over it.
 
 Keep the app tab open while you teleoperate. Capture stops if that page is
 closed, so the CloudXR client is deliberately opened in a *new* tab rather than
-navigated to. Forward `--teleop-arg` once per argument to control what gets
-launched, e.g. `--teleop-arg --embodiment --teleop-arg yam_duo`. Both the app
+navigated to. Flags the Parameters tab does not cover can still be forwarded
+once per argument with `--teleop-arg` (e.g. `--teleop-arg --robot_pos ...`);
+they go first on the command line, so the saved settings win where both name
+a flag, and scenes must come from the Scenes tab rather than `--teleop-arg
+--scene_list`. Both the app
 and the CloudXR proxy use the same self-signed certificate, but the headset
 may still ask you to accept it for the proxy's port. The page checks for you.
 The certificate button doubles as the boot indicator: it reads "Teleop not
@@ -513,8 +651,14 @@ never shifts pinch timing.
 | `usda_scene.py` | References the scene USDA into the env and registers its rigid bodies so resets restore their poses. |
 | `adjust_mode.py` | The "initial" (adjust-mode) kinematic pose editor: pinch-grab objects in full 6-DoF, ghosts, translucent desk, robot park/restore, sidecar save. |
 | `region_overlay.py` | Adjust mode's in-headset preview of the object-randomization region (XY square per object). |
-| `teleop_app.py` | Always-on headset control app: start/restart/kill teleop, own the microphone across runs, hand out an up-to-date CloudXR link. |
+| `recording.py` | Recorder terms + the per-episode HDF5 handler (one file per labeled trajectory). |
+| `session_config.py` | What a session is launched with, shared by both UIs: parameter schema, ports, headset devices, the persisted settings file, scene/record-dir scanning, scene table rows, and settings → command line. |
+| `teleop_app.py` / `teleop_app_page.html` | Always-on headset control app: start/restart/kill teleop, own the microphone across runs, hand out an up-to-date CloudXR link, and configure the session (scenes, fleet server, parameters) from the headset. |
+| `teleop_launcher.py` | Desktop (tkinter) launcher with the same pages: parameters, scene source, per-scene counts, fleet progress. |
+| `fleet_client.py` | Client for the duo-fleet-server: startup check-in, presence, scene download, crash-safe episode upload outbox; plus the read-only status monitor both UIs poll. |
+| `fleet_push_scenes.py` | Seeds the fleet server with self-contained scene packages (`.usdz`), targets, and task descriptions over HTTP. |
 | `SETUP.md` | From-scratch procedure: workstation install, app service, per-headset onboarding, terminal-only use, troubleshooting. |
+| `FLEET_INTEGRATION.md` | What changed to bring fleet collection and the launcher's functions into the headset-app flow, and why. |
 | `assets/robots/` | Vendored robot USD (torso + arms + hands + skin material). |
 | `assets/dex_retargeting/` | Vendored SharpaWave URDFs + DexPilot YAMLs for the finger retargeting. |
 
