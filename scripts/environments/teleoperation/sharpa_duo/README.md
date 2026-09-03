@@ -84,12 +84,22 @@ camera (`--cam_eye`/`--cam_lookat`) writes `<output_dir>/<demo>/video.mp4` at
 30 fps plus a `meta.json` with the success label. `--episodes
 all|success|failure|0,3,7` selects demos. No domain randomization.
 
-### Voice labels (OpenAI Whisper)
+### Voice commands (local Whisper)
 
-Voice commands are transcribed locally by `openai-whisper` (`pip install
-openai-whisper` into the env; done via `--whisper_model`, default `base.en`,
-running on `--whisper_device`, default `cpu` so it never competes with the sim
-and CloudXR for the GPU). Besides the labels, saying **"align"** (while teleop
+Voice commands are transcribed locally by OpenAI Whisper (`--whisper_model`,
+default `base.en`; `small.en` is more accurate and ~3x slower), on the CPU so
+it never competes with the sim and CloudXR for the GPU (`--whisper_device cuda`
+if you would rather spend ~1 GB of VRAM for lower latency). Whisper is tuned
+for this closed vocabulary rather than dictation: the decoder is primed with the
+command words (`initial_prompt`), decodes with beam search, and its own
+confidence is honoured — a clip it flags as probably-not-speech or decodes
+poorly is reported as "no intelligible speech" rather than trusted. Output that
+cannot be real speech (an impossible word rate, or one word looping for a page,
+which Whisper emits when a clip is cut mid-word) is rejected and logged. A
+short utterance that matches no command exactly is matched fuzzily against the
+vocabulary ("we're set" → reset, logged as `(fuzzy match)`); sentences are
+never fuzzy-matched, so room conversation must contain a command verbatim to
+count. Besides the labels, saying **"align"** (while teleop
 is stopped) re-anchors the XR session: it rotates the world about your head
 until you face the robot's forward axis, moves you to `--align_head_xy`
 (default: the TACO table's near edge) and sets your head `--align_head_z`
@@ -104,8 +114,11 @@ that matched no command, and `Detected "..." - executed: ...` naming the effect
 (or the reason it was ignored) when one ran. The panel hides itself after
 `--voice_display_seconds` (default 4); `--voice_display_pos` moves it and
 `--no_voice_display` turns it off. Since it shows mis-hearings too, a panel
-that stays blank while you talk means the audio never reached Whisper — check
-the microphone rather than the wording.
+that stays blank while you talk means the audio never reached the recognizer —
+check the microphone rather than the wording. Every spoken command runs once
+per time you say it: "reset … reset … reset" resets three times, whether you
+pause between them (three utterances) or say them in one breath (one
+utterance, logged as `-> RESET x3`).
 The full voice vocabulary: **"success"** / **"failure"** (label + export the
 episode), **"align"** (re-anchor; only while teleop is stopped — say "stop"
 first if it is running),
@@ -211,7 +224,7 @@ mode and a USB link.)
 a list of USDA paths or `{"scenes": [...]}`, relative to the JSON's
 directory); the session starts at the first and **"next"** advances. Each
 scene switch rebuilds the environment (the CloudXR runtime, headset
-connection, Whisper model, and any "align" adjustment all survive it) and
+connection, ASR model, and any "align" adjustment all survive it) and
 opens a fresh dataset file named `dataset_<time>_<scene>.hdf5`; every demo
 also carries a `scene` HDF5 attribute naming the scene it was recorded in.
 
@@ -370,7 +383,7 @@ Audio can come from two places:
     Nothing to open on the headset. (The wire protocol is identical, so a
     quest/avp mix-up only prints the wrong instructions — audio still works.)
 
-Test the mic + Whisper chain without starting the simulator:
+Test the mic + ASR chain without starting the simulator:
 
 ```bash
 ./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/make_teleop_scene.py \

@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Always-on voice labeling with OpenAI Whisper: say "success" or "failure".
+"""Always-on voice commands: say "success", "failure", "reset", ...
 
 Audio is 16 kHz mono S16 from one of three sources: the machine's own
 microphone via an ``arecord`` subprocess, the headset microphone streamed from a
@@ -13,15 +13,35 @@ alive across teleop restarts.
 
 A reader thread segments the stream into utterances with a simple energy gate
 (ambient noise is measured at startup), a worker thread transcribes each
-utterance with a local Whisper model and turns keyword matches into events, and
-the teleop loop drains the events with :meth:`VoiceLabeler.poll`. Every
-transcription is printed, so mis-hearings are visible immediately.
+utterance and turns keyword matches into events, and the teleop loop drains the
+events with :meth:`VoiceLabeler.poll`. Every transcription is printed, so
+mis-hearings are visible immediately.
+
+Transcription is OpenAI Whisper (``openai-whisper``), tuned for a closed
+vocabulary of short commands rather than dictation:
+
+* the decoder is primed with the command vocabulary as ``initial_prompt`` —
+  Whisper is an autoregressive language model, so this prior is what turns an
+  ambiguous half-second of audio into "reset" rather than "we're set";
+* beam search (not greedy) — a few times slower but markedly more reliable on
+  one-word clips, and still well under 0.5 s on a CPU for ``base.en``;
+* Whisper's own confidence is honoured: a segment it flags as probably not
+  speech (``no_speech_prob``) or decodes with a poor average log-probability is
+  reported as "no intelligible speech" instead of being trusted — on noise the
+  greedy decode otherwise happily invents "All right. All right.";
+* output that cannot be real speech (impossible word rate, or the looping
+  ``"reset, reset, reset, ..."`` an autoregressive decoder produces on a clip
+  cut mid-word) is rejected by :func:`hallucination_reason`;
+* a short utterance that matches no command exactly is matched fuzzily
+  against the vocabulary, so "we're set" or "a lie" still count.
 
 Recognized commands: "success"/"succeed…" → ``"success"``; "fail…" →
-``"failure"``; "align" (or Whisper's common mis-hearing "a line") →
-``"align"``; "play"/"start…" → ``"play"``; "reset" → ``"reset"``;
-"next"/"skip" → ``"next"`` (advance to the next scene in the list). An
-utterance matching more than one is ignored (announced on the console).
+``"failure"``; "align" → ``"align"``; "play"/"start…" → ``"play"``;
+"stop"/"pause" → ``"stop"``; "reset" → ``"reset"``; "next"/"skip" →
+``"next"`` (advance to the next scene in the list); "initial" →
+``"adjust"``; "done"/"finish…" → ``"done"``. An utterance matching more than
+one is ignored (announced on the console). A command said several times in one
+breath ("reset, reset, reset") is emitted once per occurrence.
 """
 
 from __future__ import annotations
@@ -38,12 +58,22 @@ _SAMPLE_RATE = 16000
 _CHUNK_S = 0.1  # reader granularity
 _CHUNK_BYTES = int(_SAMPLE_RATE * _CHUNK_S) * 2  # S16LE mono
 _HIGHPASS_HZ = 80.0  # kill DC/infrasonic wander (laptop mics drift hugely below ~20 Hz)
+_MAX_WORDS_PER_S = 6.0  # fast speech is ~4 words/s; more than this in a clip is not speech
+_MAX_COMPRESSION_RATIO = 2.4  # Whisper's own fallback threshold for a looping decoder
+_BEAM_SIZE = 5
+_NO_SPEECH_THRESHOLD = 0.6  # Whisper's default: above this the segment is probably not speech
+_LOGPROB_THRESHOLD = -1.0  # Whisper's default: below this the decode is not trusted
+_FUZZY_MAX_WORDS = 3  # only short utterances are fuzzy-matched; sentences must match exactly
+_FUZZY_MIN_RATIO = 0.8  # difflib ratio a word must reach to count as a command
+# Prompt text is an example transcript in the style expected, which is how
+# Whisper's prompting works: it biases the decoder toward these spellings.
+_INITIAL_PROMPT = "Reset. Align. Play. Start. Stop. Pause. Next. Skip. Success. Failure. Initial. Done. Finish."
 
 _COMMAND_RES = (
     ("success", re.compile(r"\b(success\w*|succeed\w*)\b")),
     ("failure", re.compile(r"\bfail\w*\b")),
-    # "a line" is Whisper's most common mis-hearing of a spoken "align".
-    ("align", re.compile(r"\b(align\w*|a line)\b")),
+    # "a line" / "a lie" are the common mis-hearings of a spoken "align".
+    ("align", re.compile(r"\b(align\w*|a line|a lie)\b")),
     ("play", re.compile(r"\b(play\w*|start\w*)\b")),
     ("stop", re.compile(r"\b(stop|pause)\b")),
     ("reset", re.compile(r"\breset\w*\b")),
@@ -52,6 +82,37 @@ _COMMAND_RES = (
     ("adjust", re.compile(r"\binitial\w*\b")),
     ("done", re.compile(r"\b(done|finish\w*)\b")),
 )
+# Spoken forms for fuzzy matching, when the exact patterns above find nothing.
+_COMMAND_WORDS = {
+    "success": ("success",),
+    "failure": ("failure", "fail"),
+    "align": ("align",),
+    "play": ("play", "start"),
+    "stop": ("stop", "pause"),
+    "reset": ("reset",),
+    "next": ("next", "skip"),
+    "adjust": ("initial",),
+    "done": ("done", "finish"),
+}
+
+
+def hallucination_reason(text: str, segments: list[dict], clip_s: float) -> str | None:
+    """Return why ``text`` cannot be genuine speech from a ``clip_s``-second clip, or None.
+
+    Whisper's decoder loops on garbled input — half a word cut off by a
+    dropout, a cough, a door — and returns the nearest token repeated until
+    the length limit. Two independent tells: a word rate no human could
+    produce, and text so repetitive that it compresses far beyond prose (the
+    statistic Whisper uses for its own temperature fallback, which the
+    fixed-temperature decode here never triggers).
+    """
+    words = len(text.split())
+    if words > _MAX_WORDS_PER_S * clip_s + 2:
+        return f"{words} words in a {clip_s:.1f} s clip"
+    ratio = max((seg.get("compression_ratio", 0.0) for seg in segments), default=0.0)
+    if ratio > _MAX_COMPRESSION_RATIO:
+        return f"repetitive output (compression ratio {ratio:.1f})"
+    return None
 
 
 def parse_label(text: str) -> str | None:
@@ -66,32 +127,104 @@ def parse_label(text: str) -> str | None:
     return matches[0] if len(matches) == 1 else None
 
 
+def fuzzy_label(text: str) -> str | None:
+    """Nearest command for a SHORT utterance that :func:`parse_label` rejected, or None.
+
+    Mis-hearings of an isolated command word tend to be near-homophones —
+    "we're set", "recent" for "reset"; "a lie" for "align". Each word, and the
+    whole utterance with spaces removed, is compared to the spoken forms of
+    every command; a single command above :data:`_FUZZY_MIN_RATIO` wins.
+    Utterances longer than :data:`_FUZZY_MAX_WORDS` words are never fuzzy-matched:
+    a sentence of room conversation must contain a command verbatim to count.
+    """
+    from difflib import SequenceMatcher
+
+    words = re.findall(r"[a-z']+", text.lower())
+    if not words or len(words) > _FUZZY_MAX_WORDS:
+        return None
+    letters = [w.replace("'", "") for w in words]  # "we're set" -> "wereset" vs "reset"
+    candidates = [*letters, "".join(letters)]
+    hits = set()
+    for label, forms in _COMMAND_WORDS.items():
+        for form in forms:
+            if any(SequenceMatcher(None, c, form).ratio() >= _FUZZY_MIN_RATIO for c in candidates):
+                hits.add(label)
+                break
+    return hits.pop() if len(hits) == 1 else None
+
+
+def count_label(text: str, label: str) -> int:
+    """How many times ``label`` was said in ``text`` (at least 1).
+
+    "Reset, reset, reset" in one breath is one utterance but three orders; the
+    operator expects three resets.
+    """
+    return max(1, len(dict(_COMMAND_RES)[label].findall(text.lower())))
+
+
 @dataclass(frozen=True)
 class VoiceEvent:
     """One closed utterance: what was transcribed and which command it mapped to.
 
     Every utterance the energy gate captures produces an event, including ones
     that match no command, so the caller can show the operator what was heard.
+    A command said N times in one utterance produces N identical events.
 
     Attributes:
-        text: The transcription, or ``""`` when audio was captured but Whisper
-            found no intelligible speech.
+        text: The transcription, or ``""`` when audio was captured but no
+            intelligible speech was found.
         command: The parsed command (success / failure / align / play / stop /
-            reset / next / adjust / done), or None when the utterance matched none of them (or
-            matched several, which is treated as contradictory).
+            reset / next / adjust / done), or None when the utterance matched
+            none of them (or matched several, which is treated as contradictory).
     """
 
     text: str
     command: str | None
 
 
+class _Whisper:
+    """OpenAI Whisper configured for short command clips (see module docstring)."""
+
+    def __init__(self, model_name: str, device: str):
+        import whisper
+
+        print(f"[VOICE] Loading Whisper '{model_name}' on {device} ...")
+        self._model = whisper.load_model(model_name, device=device)
+        self._fp16 = device != "cpu"
+
+    def transcribe(self, clip: np.ndarray) -> tuple[str, list[dict]]:
+        """Return ``(text, segments)``; ``text`` is ``""`` when Whisper itself is not confident.
+
+        Segments carry ``no_speech_prob``, ``avg_logprob`` and
+        ``compression_ratio``; the first two gate the result here, the last is
+        consumed by :func:`hallucination_reason`.
+        """
+        result = self._model.transcribe(
+            clip,
+            language="en",
+            fp16=self._fp16,
+            temperature=0.0,
+            beam_size=_BEAM_SIZE,
+            condition_on_previous_text=False,
+            initial_prompt=_INITIAL_PROMPT,
+        )
+        segments = result.get("segments", [])
+        if segments and all(
+            seg.get("no_speech_prob", 0.0) > _NO_SPEECH_THRESHOLD or seg.get("avg_logprob", 0.0) < _LOGPROB_THRESHOLD
+            for seg in segments
+        ):
+            return "", segments
+        return result["text"].strip(), segments
+
+
 class VoiceLabeler:
-    """Background success/failure keyword listener (see module docstring).
+    """Background voice-command listener (see module docstring).
 
     Args:
-        model_name: Whisper model to load (e.g. ``base.en``, ``small.en``).
-        device: torch device for Whisper. Default ``cpu`` so transcription never
-            competes with the simulation and CloudXR encode for the GPU.
+        model_name: Whisper model (``base.en`` default; ``small.en`` is more
+            accurate and ~3x slower on a CPU).
+        device: torch device for Whisper. Default ``cpu`` so transcription
+            never competes with the simulation and CloudXR encode for the GPU.
         mic_device: ALSA capture device passed to ``arecord -D``;
             ``"quest"`` / ``"avp"`` (optionally ``"quest:<port>"`` /
             ``"avp:<port>"``, default port 8444) to receive audio from the
@@ -116,11 +249,7 @@ class VoiceLabeler:
         silence_s: float = 0.5,
         max_utterance_s: float = 6.0,
     ):
-        import whisper
-
-        print(f"[VOICE] Loading Whisper '{model_name}' on {device} ...")
-        self._model = whisper.load_model(model_name, device=device)
-        self._fp16 = device != "cpu"
+        self._whisper = _Whisper(model_name, device)
         self._min_chunks = max(1, round(min_utterance_s / _CHUNK_S))
         self._silence_chunks = max(1, round(silence_s / _CHUNK_S))
         self._max_chunks = max(self._min_chunks, round(max_utterance_s / _CHUNK_S))
@@ -279,25 +408,34 @@ class VoiceLabeler:
             except queue.Empty:
                 continue
             try:
-                result = self._model.transcribe(
-                    clip,
-                    language="en",
-                    fp16=self._fp16,
-                    temperature=0.0,
-                    condition_on_previous_text=False,
-                    initial_prompt="Robot teleoperation commands: success, failure, align, play, stop, reset, next.",
-                )
+                text, segments = self._whisper.transcribe(clip)
             except Exception as exc:
                 print(f"[VOICE] Transcription failed: {exc}")
                 continue
-            text = result["text"].strip()
+            clip_s = len(clip) / _SAMPLE_RATE
             if not text:
-                print(f"[VOICE] Heard a {len(clip) / _SAMPLE_RATE:.1f} s sound but no intelligible speech.")
+                print(f"[VOICE] Heard a {clip_s:.1f} s sound but no intelligible speech.")
+                self._events.put(VoiceEvent("", None))
+                continue
+            reason = hallucination_reason(text, segments, clip_s)
+            if reason is not None:
+                brief = text if len(text) <= 60 else text[:57] + "..."
+                print(f'[VOICE] Rejected ASR output "{brief}" as a hallucination: {reason}.')
                 self._events.put(VoiceEvent("", None))
                 continue
             label = parse_label(text)
+            fuzzy = label is None and (label := fuzzy_label(text)) is not None
             if label is None:
                 print(f'[VOICE] Heard: "{text}" (no label)')
-            else:
-                print(f'[VOICE] Heard: "{text}" -> {label.upper()}')
-            self._events.put(VoiceEvent(text, label))
+                self._events.put(VoiceEvent(text, None))
+                continue
+            if fuzzy:
+                print(f'[VOICE] Heard: "{text}" -> {label.upper()} (fuzzy match)')
+                self._events.put(VoiceEvent(text, label))
+                continue
+            # One event per time the command was said: the consumer acts on one
+            # event per loop iteration, so each repeat becomes its own execution.
+            count = count_label(text, label)
+            print(f'[VOICE] Heard: "{text}" -> {label.upper()}' + (f" x{count}" if count > 1 else ""))
+            for _ in range(count):
+                self._events.put(VoiceEvent(text, label))

@@ -11,8 +11,8 @@ YAM Ultra arms) is placed into it at ``--robot_pos``/``--robot_rot``, and your
 tracked hands drive it — wrists through per-arm differential IK, all fingers
 through DexPilot retargeting. Episodes are recorded to a robomimic-style HDF5 by default and
 labeled hands-free: saying "success" or "failure" (transcribed locally with
-OpenAI Whisper) ends, labels, and exports the episode — see README.md for the
-full flow.
+OpenAI Whisper, on the CPU) ends, labels, and exports the episode — see
+README.md for the full flow.
 
 Example (headless is required for XR without a desktop display):
 
@@ -34,7 +34,7 @@ Validation without a headset:
     ./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/make_teleop_scene.py \\
         --scene_usda <scene.usda> --smoke 120 --headless
 
-    # microphone + Whisper check (prints levels, transcripts, and label events)
+    # microphone + ASR check (prints levels, transcripts, and label events)
     ./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/make_teleop_scene.py \\
         --scene_usda unused --voice_test 20
 """
@@ -345,9 +345,12 @@ parser.add_argument(
         " that far below your eyes. Pass 0 or negative to keep the headset's own floor calibration."
     ),
 )
-parser.add_argument("--no_voice", action="store_true", help="Disable the Whisper success/failure voice labeling.")
+parser.add_argument("--no_voice", action="store_true", help="Disable voice commands (success/failure labels etc.).")
 parser.add_argument(
-    "--whisper_model", type=str, default="base.en", help="Whisper model for voice labels (e.g. base.en, small.en)."
+    "--whisper_model",
+    type=str,
+    default="base.en",
+    help="Whisper model for voice commands (base.en default; small.en is more accurate, ~3x slower on a CPU).",
 )
 parser.add_argument(
     "--whisper_device",
@@ -373,7 +376,7 @@ parser.add_argument(
     type=int,
     default=None,
     metavar="SECONDS",
-    help="Mic/Whisper check without the simulator: listen for N seconds, print transcripts and labels, exit.",
+    help="Mic/ASR check without the simulator: listen for N seconds, print transcripts and labels, exit.",
 )
 parser.add_argument(
     "--smoke",
@@ -397,7 +400,7 @@ AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
 if args_cli.voice_test is not None:
-    # Standalone mic + Whisper check; the simulator never starts.
+    # Standalone mic + ASR check; the simulator never starts.
     import time
 
     from voice_labeler import VoiceLabeler
@@ -979,13 +982,14 @@ class EpisodeFlow:
         event = self.labeler.poll() if self.labeler is not None else None
         if event is None:
             return
+        text = event.text if len(event.text) <= 60 else event.text[:57] + "..."  # the panel is one line
         if event.command is None:
             # Mis-hearings are shown too: without them a command that silently
             # failed to parse is indistinguishable from a dead microphone.
-            self.show_voice_message(f'Heard: "{event.text}"' if event.text else "Heard a sound, but no speech")
+            self.show_voice_message(f'Heard: "{text}"' if text else "Heard a sound, but no speech")
             return
         outcome = self._run_voice_command(event.command)
-        self.show_voice_message(f'Detected "{event.text}" - executed: {outcome}')
+        self.show_voice_message(f'Detected "{text}" - executed: {outcome}')
 
     def show_voice_message(self, message: str) -> None:
         """Put ``message`` on the headset feedback panel, when one is spawned."""
@@ -1934,7 +1938,7 @@ def main():
         return
 
     # Everything that must SURVIVE scene switches lives here: the voice labeler
-    # (Whisper model + microphone stream) and the CloudXR runtime (stopping it
+    # (ASR model + microphone stream) and the CloudXR runtime (stopping it
     # would disconnect the headset between scenes).
     labeler = None
     if not args_cli.no_voice:
