@@ -211,11 +211,40 @@ between two mutually exclusive modes:
 Selection works the same way in both modes (click toggles one scene,
 dragging paints the toggle over consecutive rows, and Shift+Click extends
 the last toggle over the whole range, Excel-style). All settings —
-parameters, directories, scene source, fleet connection, window geometry —
-persist across launcher runs in `~/.config/duo_teleop_launcher.json`, and a
-remembered fleet-server source reconnects automatically.
+parameters, directories, scene source, fleet connection, network ports,
+window geometry — persist across launcher runs in
+`~/.config/duo_teleop_launcher.json`, and a remembered fleet-server source
+reconnects automatically.
 Cycle the selected scenes with the "next" voice command; when the run exits,
 the launcher returns to the table with refreshed counts.
+
+### Network ports
+
+A teleop session listens on four ports; the launcher's **Network ports**
+group edits all of them (blank keeps the default), and they are passed to
+`make_teleop_scene.py` as environment variables — the same variables work on
+the command line. Two operators sharing one workstation each need their own
+TCP ports; open whatever you pick in the firewall (`sudo ufw allow <port>/tcp`).
+
+| Port | Default | Set via | Who connects |
+|---|---|---|---|
+| CloudXR signaling (TCP) | 49100 with the Quest/WebRTC profile, 48010 with the AVP native profile | `NV_CXR_SERVER_PORT` | The WSS proxy (Quest) or the AVP client directly; CloudXR refuses to start if it is taken |
+| CloudXR media (UDP) | 47998 | `NV_CXR_MEDIA_PORT` | The headset's video/input/audio stream |
+| WSS proxy (TCP) | 48322 | `PROXY_PORT` | Quest: the CloudXR.js browser page (`https://<ip>:48322/`); AVP in secure mode. Forwards to the signaling port |
+| Headset microphone (TCP) | 8444 | `--mic_device quest:<port>` / `avp:<port>` | The Quest mic page and the AVP client's mic stream (`wss://<ip>:<port>/audio`) |
+
+```bash
+# Second operator on the same workstation, e.g. from a second Linux account:
+NV_CXR_SERVER_PORT=49101 NV_CXR_MEDIA_PORT=47999 PROXY_PORT=48323 \
+./isaaclab.sh -p scripts/environments/teleoperation/sharpa_duo/make_teleop_scene.py \
+    --mic_device quest:8445 --headless ...
+```
+
+The AVP native client keeps its own port setting, so a moved signaling port
+has to be entered in the Isaac XR Teleop client as well. The USB-tethered
+ports (`USB_UI_PORT` 8080, `USB_BACKEND_PORT`, `USB_TURN_PORT` 3478) belong
+to isaacteleop's OOB mode, which this pipeline does not use; the fleet
+server's port is part of its URL.
 
 ## Multi-scene sessions
 

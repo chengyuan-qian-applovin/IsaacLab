@@ -8,7 +8,12 @@
 A plain-tkinter launcher (no Isaac Sim involved until Start is pressed):
 
 - **Page 1 — Parameters**: the teleop knobs, grouped by concern (operator &
-  voice, session start, domain randomization, control gains, visuals, advanced).
+  voice, session start, domain randomization, control gains, visuals,
+  advanced, network ports). The **Network ports** group covers every port a
+  teleop session listens on — CloudXR signaling and media, the WSS proxy, the
+  headset-microphone stream — so several operators can share one workstation
+  (each with distinct ports) or dodge a port another program holds. Blank
+  fields keep the runtime defaults; see :data:`_PORTS`.
 - **Page 2 — Scenes & dataset**: pick a record directory (one HDF5 file per
   labeled episode) and a **scene source** — a radio choice between two
   mutually exclusive modes:
@@ -119,10 +124,32 @@ _DEVICES = {
     "avp": ("avp", "avp"),
 }
 
-# Parameter schema: (flag, label, default, kind, group). Kind: str|float|bool|choice:<a,b,c>.
+# Every port a teleop session opens on the workstation, keyed by the launcher's
+# pseudo-parameter name: (env var or None, protocol, default shown when blank).
+# The CloudXR runtime and its WSS proxy read their ports from the environment
+# (make_teleop_scene.py inherits it from the launcher); the headset-mic port is
+# the ``:<port>`` suffix of ``--mic_device``. Not listed: the fleet server's
+# port (part of its URL) and the USB-tethered OOB ports (USB_UI_PORT,
+# USB_BACKEND_PORT, USB_TURN_PORT), which the teleop script never enables.
+_PORTS = {
+    # Runtime signaling. Default depends on the CloudXR device profile:
+    # 49100 for the WebRTC (Quest browser) profile, 48010 for the AVP native one.
+    "port:cxr_server": ("NV_CXR_SERVER_PORT", "tcp", "49100 Quest / 48010 AVP"),
+    # Runtime media stream (video/audio/input) — UDP.
+    "port:cxr_media": ("NV_CXR_MEDIA_PORT", "udp", "47998"),
+    # WSS/HTTPS proxy: the Quest browser client connects here (wss://<ip>:<port>),
+    # AVP "secure mode" too; the proxy forwards to the signaling port above.
+    "port:wss_proxy": ("PROXY_PORT", "tcp", "48322"),
+    # headset_mic.py: the Quest mic page and the WSS PCM endpoint for both headsets.
+    "port:mic": (None, "tcp", "8444"),
+}
+
+# Parameter schema: (flag, label, default, kind, group). Kind: str|float|bool|port|choice:<a,b,c>.
 # Defaults mirror make_teleop_scene.py's argparse defaults. The "device" entry
 # is a pseudo-parameter: _collect_args expands it through _DEVICES instead of
-# passing it through as a flag.
+# passing it through as a flag. "port:*" entries are pseudo-parameters too:
+# _collect_env turns them into environment variables (see _PORTS), and the mic
+# port becomes the ``--mic_device`` suffix.
 _PARAMS = [
     ("device", "Device", "meta quest", "choice:meta quest,avp", "Operator & voice"),
     ("--embodiment", "Robot embodiment", "franka_duo", "choice:franka_duo,yam_duo", "Operator & voice"),
@@ -149,6 +176,10 @@ _PARAMS = [
     ("--episode_length_s", "Episode timeout [s]", 300.0, "float", "Advanced"),
     ("--render_frequency", "Render frequency [Hz]", 30.0, "float", "Advanced"),
     ("--no_record", "Disable recording", False, "bool", "Advanced"),
+    ("port:cxr_server", "CloudXR signaling [tcp]", "", "port", "Network ports"),
+    ("port:cxr_media", "CloudXR media [udp]", "", "port", "Network ports"),
+    ("port:wss_proxy", "WSS proxy / Quest client [tcp]", "", "port", "Network ports"),
+    ("port:mic", "Headset microphone [tcp]", "", "port", "Network ports"),
 ]
 
 # UI prefills that intentionally differ from the teleop script's argparse
@@ -264,6 +295,7 @@ class TeleopLauncher(tk.Tk):
         style.configure("TLabelframe.Label", background=_PANEL, foreground=_MUTED, font=self._font_bold)
         style.configure("Panel.TFrame", background=_PANEL)
         style.configure("Panel.TLabel", background=_PANEL)
+        style.configure("PanelMuted.TLabel", background=_PANEL, foreground=_MUTED)
         style.configure("Panel.TCheckbutton", background=_PANEL)
         style.map("Panel.TCheckbutton", background=[("active", _PANEL)])
         style.configure("TCheckbutton", indicatorsize=self._px(18), indicatormargin=(0, 0, self._px(8), 0))
@@ -380,25 +412,90 @@ class TeleopLauncher(tk.Tk):
                 ttk.Combobox(
                     row, textvariable=var, values=kind.split(":", 1)[1].split(","), width=12, state="readonly"
                 ).pack(side="right")
+            elif kind == "port":
+                var = tk.StringVar(value=str(initial))
+                ttk.Label(row, text=label, style="Panel.TLabel").pack(side="left")
+                ttk.Entry(row, textvariable=var, width=7).pack(side="right")
+                ttk.Label(row, text=f"default {_PORTS[flag][2]}", style="PanelMuted.TLabel").pack(
+                    side="right", padx=(0, self._px(8))
+                )
             else:
                 var = tk.StringVar(value=str(initial))
                 ttk.Label(row, text=label, style="Panel.TLabel").pack(side="left")
                 ttk.Entry(row, textvariable=var, width=12).pack(side="right")
             self._param_vars[flag] = (var, default, kind)
+        ttk.Label(
+            groups["Network ports"],
+            style="PanelMuted.TLabel",
+            text=(
+                "Blank keeps the default. Every operator sharing this workstation needs distinct\n"
+                "TCP ports; open them in the firewall (e.g. sudo ufw allow <port>/tcp)."
+            ),
+        ).pack(anchor="w", pady=(self._px(4), 0))
+
+    def _port(self, flag: str) -> int | None:
+        """The port typed into a ``port:*`` field, or ``None`` when it is blank.
+
+        Raises:
+            ValueError: If the field is not an integer in 1..65535.
+        """
+        raw = str(self._param_vars[flag][0].get()).strip()
+        if not raw:
+            return None
+        label = next(lbl for f, lbl, *_rest in _PARAMS if f == flag)
+        try:
+            port = int(raw)
+        except ValueError:
+            raise ValueError(f"{label}: '{raw}' is not a port number.") from None
+        if not 1 <= port <= 65535:
+            raise ValueError(f"{label}: {port} is out of range (1-65535).")
+        return port
+
+    def _validate_ports(self) -> str | None:
+        """An error message when a port field is invalid or two TCP ports collide, else ``None``."""
+        try:
+            ports = {flag: self._port(flag) for flag in _PORTS}
+        except ValueError as exc:
+            return str(exc)
+        # The blank (default) signaling and proxy ports differ, and the mic default
+        # is far from both; only explicit values can collide.
+        tcp = [(flag, port) for flag, port in ports.items() if port is not None and _PORTS[flag][1] == "tcp"]
+        seen: dict[int, str] = {}
+        for flag, port in tcp:
+            if port in seen:
+                return f"Port {port} is used for both '{seen[port]}' and '{flag.split(':', 1)[1]}'."
+            seen[port] = flag.split(":", 1)[1]
+        return None
+
+    def _collect_env(self) -> dict[str, str]:
+        """Environment variables for the filled-in ``port:*`` fields (see ``_PORTS``)."""
+        env = {}
+        for flag, (env_var, _proto, _default) in _PORTS.items():
+            port = self._port(flag)
+            if env_var is not None and port is not None:
+                env[env_var] = str(port)
+        return env
 
     def _collect_args(self) -> list[str]:
         """CLI arguments for every parameter that differs from its default.
 
         The "device" pseudo-parameter always expands to explicit ``--mic_device``
         and ``--cloudxr_env`` flags (via ``_DEVICES``), so the launched teleop
-        session unambiguously matches the selected headset.
+        session unambiguously matches the selected headset; a filled-in mic port
+        becomes the ``--mic_device`` ``:<port>`` suffix. ``port:*`` fields are
+        otherwise environment variables (``_collect_env``), not flags.
         """
         args = []
         for flag, (var, default, kind) in self._param_vars.items():
             value = var.get()
             if flag == "device":
                 mic_device, cloudxr_env = _DEVICES[str(value)]
+                mic_port = self._port("port:mic")
+                if mic_port is not None:
+                    mic_device = f"{mic_device}:{mic_port}"
                 args += ["--mic_device", mic_device, "--cloudxr_env", cloudxr_env]
+            elif kind == "port":
+                continue
             elif kind == "bool":
                 if value:
                     args.append(flag)
@@ -801,6 +898,11 @@ class TeleopLauncher(tk.Tk):
         if not selected:
             messagebox.showerror("No scenes", "Select at least one scene to collect.")
             return
+        port_error = self._validate_ports()
+        if port_error:
+            messagebox.showerror("Network ports", port_error)
+            self._show("params")
+            return
         record_dir = os.path.abspath(self._record_dir.get())
         os.makedirs(record_dir, exist_ok=True)
         if self._scene_source.get() == "server":
@@ -834,9 +936,11 @@ class TeleopLauncher(tk.Tk):
             "--headless",
             *self._collect_args(),
         ]  # fmt: skip
+        env_overrides = self._collect_env()
+        env = {**os.environ, **env_overrides}
         self._save_settings()  # remember everything the run was started with
-        print("[LAUNCHER] " + " ".join(command))
-        self._proc = subprocess.Popen(command)
+        print("[LAUNCHER] " + " ".join([f"{k}={v}" for k, v in env_overrides.items()] + command))
+        self._proc = subprocess.Popen(command, env=env)
         self._running_label.config(text=f"Teleop running (pid {self._proc.pid}), {scenes_str} selected.")
         self._show("running")
         self.after(1000, self._poll_process)

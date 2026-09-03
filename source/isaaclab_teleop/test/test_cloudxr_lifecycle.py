@@ -112,7 +112,10 @@ from isaaclab_teleop.isaac_teleop_cfg import (  # noqa: E402
     CLOUDXR_JS_ENV,
     IsaacTeleopCfg,
 )
-from isaaclab_teleop.session_lifecycle import TeleopSessionLifecycle  # noqa: E402
+from isaaclab_teleop.session_lifecycle import (  # noqa: E402
+    TeleopSessionLifecycle,
+    patch_cloudxr_wss_backend_port,
+)
 
 _restore_stubs()
 
@@ -315,6 +318,73 @@ class TestEnsureCloudXRRuntime:
             lifecycle._ensure_cloudxr_runtime()
 
         assert lifecycle._cloudxr_launcher is None
+
+
+# ============================================================================
+# patch_cloudxr_wss_backend_port
+# ============================================================================
+
+
+def _fake_cloudxr_module() -> tuple[MagicMock, list[dict]]:
+    """A stand-in ``isaacteleop.cloudxr`` whose ``wss.run`` records its kwargs."""
+    calls: list[dict] = []
+
+    async def run(**kwargs):
+        calls.append(kwargs)
+
+    fake = MagicMock()
+    fake.wss = ModuleType("wss")
+    fake.wss.run = run
+    return fake, calls
+
+
+def _run(coro_fn, **kwargs) -> None:
+    import asyncio
+
+    asyncio.run(coro_fn(**kwargs))
+
+
+class TestPatchCloudXRWssBackendPort:
+    """Tests for the module-level ``patch_cloudxr_wss_backend_port`` helper."""
+
+    def test_noop_without_port(self):
+        """No argument and no NV_CXR_SERVER_PORT leaves wss.run untouched."""
+        fake, _calls = _fake_cloudxr_module()
+        original = fake.wss.run
+        with patch.dict(os.environ, {}, clear=False), patch.dict(sys.modules, {"isaacteleop.cloudxr": fake}):
+            os.environ.pop("NV_CXR_SERVER_PORT", None)
+            assert patch_cloudxr_wss_backend_port() is None
+        assert fake.wss.run is original
+
+    def test_env_var_sets_backend_port_default(self):
+        """NV_CXR_SERVER_PORT becomes wss.run's default backend_port; explicit kwargs still win."""
+        fake, calls = _fake_cloudxr_module()
+        with (
+            patch.dict(os.environ, {"NV_CXR_SERVER_PORT": " 49101 "}),
+            patch.dict(sys.modules, {"isaacteleop.cloudxr": fake}),
+        ):
+            assert patch_cloudxr_wss_backend_port() == 49101
+        _run(fake.wss.run, stop_future=None)
+        _run(fake.wss.run, backend_port=49200)
+        assert [c["backend_port"] for c in calls] == [49101, 49200]
+        assert calls[0]["stop_future"] is None
+
+    def test_explicit_port_and_repatch(self):
+        """An explicit port wins over the env var; re-patching replaces rather than stacks."""
+        fake, calls = _fake_cloudxr_module()
+        original = fake.wss.run
+        with (
+            patch.dict(os.environ, {"NV_CXR_SERVER_PORT": "49101"}),
+            patch.dict(sys.modules, {"isaacteleop.cloudxr": fake}),
+        ):
+            assert patch_cloudxr_wss_backend_port(49102) == 49102
+            first = fake.wss.run
+            assert patch_cloudxr_wss_backend_port(49102) == 49102
+            assert fake.wss.run is first  # idempotent for the same port
+            assert patch_cloudxr_wss_backend_port(49103) == 49103
+        assert fake.wss.run._isaaclab_original is original  # wraps the original, not the earlier patch
+        _run(fake.wss.run)
+        assert calls == [{"backend_port": 49103}]
 
 
 # ============================================================================

@@ -1420,7 +1420,7 @@ def main():
             model_name=args_cli.whisper_model, device=args_cli.whisper_device, mic_device=args_cli.mic_device
         )
     launcher = None
-    from isaaclab_teleop import CLOUDXR_AVP_ENV, CLOUDXR_JS_ENV
+    from isaaclab_teleop import CLOUDXR_AVP_ENV, CLOUDXR_JS_ENV, patch_cloudxr_wss_backend_port
 
     cloudxr_env = {"cloudxrjs": CLOUDXR_JS_ENV, "avp": CLOUDXR_AVP_ENV, "none": None}.get(
         args_cli.cloudxr_env, args_cli.cloudxr_env
@@ -1430,6 +1430,10 @@ def main():
 
         from isaacteleop.cloudxr import CloudXRLauncher
 
+        # Ports are taken from the environment (NV_CXR_SERVER_PORT, NV_CXR_MEDIA_PORT,
+        # PROXY_PORT — what the launcher UI's "Network ports" group sets). The WSS
+        # proxy has to be told about a moved signaling port explicitly.
+        patch_cloudxr_wss_backend_port()
         launcher = CloudXRLauncher(install_dir=str(Path.home() / ".cloudxr"), env_config=cloudxr_env, accept_eula=False)
         print("[INFO] CloudXR runtime launched (kept alive across scene switches).")
 
