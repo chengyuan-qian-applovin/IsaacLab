@@ -3,21 +3,47 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Teleop launcher UI: tune parameters, pick scenes and a dataset, start teleop.
+"""Desktop teleop launcher: tune parameters, pick scenes and a dataset, start teleop.
 
-A plain-tkinter launcher (no Isaac Sim involved until Start is pressed):
+A plain-tkinter launcher (no Isaac Sim involved until Start is pressed). It is
+the desktop counterpart of the headset app (:mod:`teleop_app`): both render the
+same parameter schema, scene sources and persisted settings from
+:mod:`session_config`, so a choice made here shows up in the headset and vice
+versa.
 
 - **Page 1 — Parameters**: the teleop knobs, grouped by concern (operator &
-  voice, session start, domain randomization, control gains, visuals, advanced).
-- **Page 2 — Scenes & dataset**: pick a scene directory (scanned recursively
-  for ``*.usda``) and a dataset HDF5 file; a table lists every scene with the
-  number of success/failure trajectories already collected for it in that
-  dataset, and checkboxes select the scenes for this session.
-- **Start teleop** writes the selection to a scene-list JSON and launches
-  ``make_teleop_scene.py`` with ``--dataset_file`` (demos from all scenes and
-  sessions append to the chosen file, each tagged with its scene) — cycle the
-  selected scenes with the "next" voice command. Console output stays in the
-  terminal the launcher was started from.
+  voice, session start, domain randomization, control gains, visuals,
+  advanced, network ports). The **Network ports** group covers every port a
+  teleop session listens on — CloudXR signaling and media, the WSS proxy, the
+  headset-microphone stream — so several operators can share one workstation
+  (each with distinct ports) or dodge a port another program holds. Blank
+  fields keep the runtime defaults.
+- **Page 2 — Scenes & dataset**: pick a record directory (one HDF5 file per
+  labeled episode) and a **scene source** — a radio choice between two
+  mutually exclusive modes:
+
+  - **Local directory**: scan a directory recursively for scene files
+    (``*.usdz``, ``*.usda``, ``*.usd``) and tick the scenes to collect; the
+    table shows the per-machine success/failure demo counts recorded under
+    the record directory. The run is fully standalone — no fleet server is
+    involved at all.
+  - **Fleet server**: connect to the fleet coordination server (URL, optional
+    collector id and token); the table then lists the SERVER's scenes with
+    the server's numbers only — fleet-wide progress (``successes/target``)
+    and who is collecting each scene right now, auto-refreshed every 15 s —
+    and you tick which of those to collect. The run downloads the ticked
+    scenes from the server and uploads every labeled episode as it happens.
+- **Start teleop** launches ``make_teleop_scene.py`` with the active source's
+  arguments — a local scene-list JSON, or ``--fleet_server`` +
+  ``--fleet_scene_ids``, never both — and the scenes cycle with the "next"
+  voice command. Console output stays in the terminal the launcher was
+  started from.
+
+Every setting (parameters, directories, scene source, fleet connection, scene
+selection, window geometry) is remembered across runs in the shared settings
+file (``~/.config/duo_teleop_launcher.json``; saved on close and on Start); a
+remembered fleet-server source reconnects automatically. The window sizes
+itself to fit all content on first launch.
 
 Run:
 
@@ -26,7 +52,7 @@ Run:
 
 from __future__ import annotations
 
-import json
+import contextlib
 import os
 import subprocess
 import sys
@@ -35,93 +61,23 @@ import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_TELEOP_SCRIPT = os.path.join(_HERE, "make_teleop_scene.py")
-_DEFAULT_SCENE_DIR = os.path.join(_HERE, "scenes")
-_DEFAULT_DATASET = os.path.abspath(os.path.join(os.getcwd(), "datasets", "duo_teleop", "duo_teleop.hdf5"))
+sys.path.insert(0, _HERE)
 
-
-def scan_scene_dir(scene_dir: str) -> list[str]:
-    """All ``*.usda`` scene files under ``scene_dir``, recursively, sorted."""
-    hits = []
-    for root, _dirs, files in os.walk(scene_dir):
-        hits += [os.path.join(root, f) for f in files if f.endswith(".usda")]
-    return sorted(hits)
-
-
-def scan_dataset(dataset_path: str) -> dict[str, tuple[int, int]]:
-    """Per-scene ``(success, failure)`` demo counts in an HDF5 dataset.
-
-    Demos are grouped by their ``scene`` attribute (written by the teleop
-    script); demos without one are grouped under ``"<untagged>"``. Returns an
-    empty dict when the file does not exist or holds no demos.
-    """
-    import h5py
-
-    counts: dict[str, list[int]] = {}
-    if not os.path.exists(dataset_path):
-        return {}
-    try:
-        with h5py.File(dataset_path, "r") as f:
-            if "data" not in f:
-                return {}
-            for _name, group in f["data"].items():
-                scene = group.attrs.get("scene", "<untagged>")
-                if isinstance(scene, bytes):
-                    scene = scene.decode()
-                entry = counts.setdefault(str(scene), [0, 0])
-                entry[0 if bool(group.attrs.get("success", False)) else 1] += 1
-    except OSError as exc:
-        print(f"[LAUNCHER] Could not read {dataset_path}: {exc}")
-        return {}
-    return {k: (v[0], v[1]) for k, v in counts.items()}
-
-
-# The headset choice sets BOTH the microphone source and the CloudXR client in
-# one go: label -> (--mic_device, --cloudxr_env). Quest streams its mic from
-# the CloudXR.js browser page; the AVP's Isaac XR Teleop client streams the mic
-# natively once its CloudXR session connects (see headset_mic.py).
-_DEVICES = {
-    "meta quest": ("quest", "cloudxrjs"),
-    "avp": ("avp", "avp"),
-}
-
-# Parameter schema: (flag, label, default, kind, group). Kind: str|float|bool|choice:<a,b,c>.
-# Defaults mirror make_teleop_scene.py's argparse defaults. The "device" entry
-# is a pseudo-parameter: _collect_args expands it through _DEVICES instead of
-# passing it through as a flag.
-_PARAMS = [
-    ("device", "Device", "meta quest", "choice:meta quest,avp", "Operator & voice"),
-    ("--embodiment", "Robot embodiment", "franka_duo", "choice:franka_duo,yam_duo", "Operator & voice"),
-    ("--user", "User name (hand calibration)", "", "str", "Operator & voice"),
-    ("--whisper_model", "Whisper model", "base.en", "str", "Operator & voice"),
-    ("--no_voice", "Disable voice commands", False, "bool", "Operator & voice"),
-    ("--no_auto_start", "Disable auto-start", False, "bool", "Session start"),
-    ("--auto_start_pos_tol", "Auto-start position tolerance [m]", 0.10, "float", "Session start"),
-    ("--auto_start_rot_tol", "Auto-start rotation tolerance [deg]", 25.0, "float", "Session start"),
-    ("--debug_auto_start", "Debug auto-start (frames + errors)", False, "bool", "Session start"),
-    ("--no_dr", "Disable domain randomization", False, "bool", "Domain randomization"),
-    ("--dr_arm_jitter", "Arm start-pose jitter [rad]", 0.08, "float", "Domain randomization"),
-    ("--dr_object_xy", "Object position range [m]", 0.05, "float", "Domain randomization"),
-    ("--dr_object_yaw", "Object yaw range [deg]", 180.0, "float", "Domain randomization"),
-    ("--dr_object_bias", "Shift objects toward the robot [m]", 0.0, "float", "Domain randomization"),
-    ("--settle_time", "Object settling time after reset [s]", 1.0, "float", "Domain randomization"),
-    ("--arm_kp", "Arm kp (stiffness) [N·m/rad]", 400.0, "float", "Control gains"),
-    ("--arm_kd", "Arm kd (damping) [N·m·s/rad]", 80.0, "float", "Control gains"),
-    ("--hand_kp", "Hand kp (stiffness) [N·m/rad]", 400.0, "float", "Control gains"),
-    ("--hand_kd", "Hand kd (damping) [N·m·s/rad]", 4.0, "float", "Control gains"),
-    ("--arm_visual", "Arm rendering", "transparent", "choice:transparent,hidden,normal", "Visuals"),
-    ("--visualize_hands", "Show tracked hand joints", False, "bool", "Visuals"),
-    ("--no_task_display", "Hide the task-description panel", False, "bool", "Visuals"),
-    ("--episode_length_s", "Episode timeout [s]", 300.0, "float", "Advanced"),
-    ("--render_frequency", "Render frequency [Hz]", 30.0, "float", "Advanced"),
-    ("--no_record", "Disable recording", False, "bool", "Advanced"),
-]
-
-# UI prefills that intentionally differ from the teleop script's argparse
-# defaults. The schema default above stays the argparse default so
-# ``_collect_args`` recognizes these as changed and passes them on the
-# command line.
-_INITIAL_OVERRIDES: dict[str, object] = {}
+from fleet_client import FleetMonitor  # noqa: E402
+from session_config import (  # noqa: E402
+    PARAMS,
+    PORTS,
+    PORTS_NOTE,
+    SceneTable,
+    build_launch,
+    load_settings,
+    local_scene_rows,
+    normalize_server_url,
+    param_groups,
+    save_settings,
+    scene_needed,
+    server_scene_rows,
+)
 
 # Palette (light, one blue accent).
 _BG = "#eef0f4"  # window background
@@ -141,11 +97,13 @@ class TeleopLauncher(tk.Tk):
         super().__init__()
         self.title("Duo Teleop Launcher")
         self._apply_style()
-        self.geometry(f"{self._px(980)}x{self._px(820)}")
-        self.minsize(self._px(820), self._px(620))
+        self.minsize(self._px(700), self._px(520))
         self._proc: subprocess.Popen | None = None
-        self._param_vars: dict[str, tuple[tk.Variable, object, str]] = {}
-        self._scene_rows: dict[str, dict] = {}  # basename -> {path, selected(BooleanVar)}
+        self._param_vars: dict[str, tuple[tk.Variable, str]] = {}  # flag -> (var, kind)
+        self._scene_rows: dict[str, dict] = {}  # name -> {path, selected(BooleanVar), odd, row(dict)}
+        self._rows_source: str | None = None  # which scene source the rows above belong to
+        self._monitor: FleetMonitor | None = None
+        self._monitor_seen = 0.0  # polled_at of the last snapshot applied to the UI
 
         self._pages = {}
         container = ttk.Frame(self)
@@ -157,10 +115,25 @@ class TeleopLauncher(tk.Tk):
         container.rowconfigure(0, weight=1)
         container.columnconfigure(0, weight=1)
 
+        self._settings = load_settings()
         self._build_params_page(self._pages["params"])
         self._build_scenes_page(self._pages["scenes"])
         self._build_running_page(self._pages["running"])
+        self._apply_settings(self._settings)
         self._show("params")
+
+        # Size the window to fit ALL content (the tallest page wins, clamped to
+        # the screen) unless a remembered geometry exists; no manual resizing
+        # needed to see everything.
+        self.update_idletasks()
+        geometry = self._settings.get("geometry")
+        if not isinstance(geometry, str) or "x" not in geometry:
+            width = min(self.winfo_reqwidth(), int(self.winfo_screenwidth() * 0.95))
+            height = min(self.winfo_reqheight(), int(self.winfo_screenheight() * 0.92))
+            geometry = f"{width}x{height}"
+        self.geometry(geometry)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(500, self._watch_monitor)
 
     def _px(self, logical: int) -> int:
         """Scale a logical pixel size to the screen (HiDPI-aware)."""
@@ -174,8 +147,8 @@ class TeleopLauncher(tk.Tk):
         font sizes) scaled from the screen height, so the layout looks the same
         on a 1080p and a 4K/HiDPI panel.
         """
-        # The 0.8 keeps the UI comfortably compact (full HiDPI scaling felt big).
-        self._scale = 0.8 * min(2.0, max(1.0, self.winfo_screenheight() / 1080))
+        # 0.96 = the original compact 0.8 enlarged by 20% for readability.
+        self._scale = 0.96 * min(2.0, max(1.0, self.winfo_screenheight() / 1080))
         base = self._px(16)  # body text height in pixels
 
         # Best available proportional family. Conda's Tk is often built without
@@ -212,6 +185,7 @@ class TeleopLauncher(tk.Tk):
         style.configure("TLabelframe.Label", background=_PANEL, foreground=_MUTED, font=self._font_bold)
         style.configure("Panel.TFrame", background=_PANEL)
         style.configure("Panel.TLabel", background=_PANEL)
+        style.configure("PanelMuted.TLabel", background=_PANEL, foreground=_MUTED)
         style.configure("Panel.TCheckbutton", background=_PANEL)
         style.map("Panel.TCheckbutton", background=[("active", _PANEL)])
         style.configure("TCheckbutton", indicatorsize=self._px(18), indicatormargin=(0, 0, self._px(8), 0))
@@ -234,6 +208,62 @@ class TeleopLauncher(tk.Tk):
     def _show(self, name: str) -> None:
         self._pages[name].tkraise()
 
+    # -- persisted settings ------------------------------------------------------
+
+    def _apply_settings(self, settings: dict) -> None:
+        """Restore the remembered launcher state; missing or unknown keys are ignored."""
+        for flag, value in settings.get("params", {}).items():
+            if flag in self._param_vars:
+                with contextlib.suppress(tk.TclError):  # e.g. a bool flag remembered as a bad type
+                    self._param_vars[flag][0].set(value)
+        for key, var in (
+            ("record_dir", self._record_dir),
+            ("scene_dir", self._scene_dir),
+            ("fleet_server", self._fleet_server_var),
+            ("collector_id", self._collector_id_var),
+            ("fleet_token", self._fleet_token_var),
+        ):
+            if isinstance(settings.get(key), str):
+                var.set(settings[key])
+        if settings.get("scene_source") in ("local", "server"):
+            self._scene_source.set(settings["scene_source"])
+        self._on_source_change()  # shows the restored source's pane and re-renders the table
+        # The remembered source is the fleet server: reconnect right away.
+        if self._scene_source.get() == "server" and normalize_server_url(self._fleet_server_var.get()):
+            self.connect_fleet()
+
+    def _current_settings(self) -> dict:
+        """The settings dict as the UI currently shows it (the remembered selection updated with the table)."""
+        selection = {k: dict(v) for k, v in self._settings.get("selection", {}).items()}
+        if self._rows_source is not None:  # the table's toggles belong to the source it was rendered for
+            selection.setdefault(self._rows_source, {}).update(
+                {name: row["selected"].get() for name, row in self._scene_rows.items()}
+            )
+        return {
+            **self._settings,
+            "params": {flag: var.get() for flag, (var, _kind) in self._param_vars.items()},
+            "record_dir": self._record_dir.get(),
+            "scene_dir": self._scene_dir.get(),
+            "scene_source": self._scene_source.get(),
+            "fleet_server": self._fleet_server_var.get(),
+            "collector_id": self._collector_id_var.get(),
+            "fleet_token": self._fleet_token_var.get(),
+            "selection": selection,
+        }
+
+    def _save_settings(self) -> None:
+        self._settings = {**self._current_settings(), "geometry": self.geometry()}
+        try:
+            save_settings(self._settings)
+        except OSError as exc:
+            print(f"[LAUNCHER] Could not save settings: {exc}")
+
+    def _on_close(self) -> None:
+        self._save_settings()
+        if self._monitor is not None:
+            self._monitor.stop()
+        self.destroy()
+
     # -- page 1: parameters ---------------------------------------------------
 
     def _build_params_page(self, page: ttk.Frame) -> None:
@@ -250,53 +280,36 @@ class TeleopLauncher(tk.Tk):
         columns = ttk.Frame(page)
         columns.pack(fill="both", expand=True, pady=self._px(8))
         groups: dict[str, ttk.LabelFrame] = {}
-        order = []
-        for _flag, _label, _default, _kind, group in _PARAMS:
-            if group not in groups:
-                order.append(group)
-                groups[group] = ttk.LabelFrame(columns, text=f" {group} ")
-        for i, group in enumerate(order):
+        for i, group in enumerate(param_groups()):
+            groups[group] = ttk.LabelFrame(columns, text=f" {group} ")
             groups[group].grid(row=i // 2, column=i % 2, sticky="nsew", padx=self._px(8), pady=self._px(8))
         columns.columnconfigure((0, 1), weight=1)
 
-        for flag, label, default, kind, group in _PARAMS:
-            initial = _INITIAL_OVERRIDES.get(flag, default)
-            row = ttk.Frame(groups[group], style="Panel.TFrame")
+        for p in PARAMS:
+            row = ttk.Frame(groups[p.group], style="Panel.TFrame")
             row.pack(fill="x", pady=self._px(3))
-            if kind == "bool":
-                var = tk.BooleanVar(value=initial)
-                ttk.Checkbutton(row, text=label, variable=var, style="Panel.TCheckbutton").pack(anchor="w")
-            elif kind.startswith("choice:"):
-                var = tk.StringVar(value=initial)
-                ttk.Label(row, text=label, style="Panel.TLabel").pack(side="left")
-                ttk.Combobox(
-                    row, textvariable=var, values=kind.split(":", 1)[1].split(","), width=12, state="readonly"
-                ).pack(side="right")
+            if p.kind == "bool":
+                var = tk.BooleanVar(value=bool(p.default))
+                ttk.Checkbutton(row, text=p.label, variable=var, style="Panel.TCheckbutton").pack(anchor="w")
+            elif p.choices:
+                var = tk.StringVar(value=str(p.default))
+                ttk.Label(row, text=p.label, style="Panel.TLabel").pack(side="left")
+                ttk.Combobox(row, textvariable=var, values=p.choices, width=12, state="readonly").pack(side="right")
+            elif p.kind == "port":
+                var = tk.StringVar(value=str(p.default))
+                ttk.Label(row, text=p.label, style="Panel.TLabel").pack(side="left")
+                ttk.Entry(row, textvariable=var, width=7).pack(side="right")
+                ttk.Label(row, text=f"default {PORTS[p.flag][2]}", style="PanelMuted.TLabel").pack(
+                    side="right", padx=(0, self._px(8))
+                )
             else:
-                var = tk.StringVar(value=str(initial))
-                ttk.Label(row, text=label, style="Panel.TLabel").pack(side="left")
+                var = tk.StringVar(value=str(p.default))
+                ttk.Label(row, text=p.label, style="Panel.TLabel").pack(side="left")
                 ttk.Entry(row, textvariable=var, width=12).pack(side="right")
-            self._param_vars[flag] = (var, default, kind)
-
-    def _collect_args(self) -> list[str]:
-        """CLI arguments for every parameter that differs from its default.
-
-        The "device" pseudo-parameter always expands to explicit ``--mic_device``
-        and ``--cloudxr_env`` flags (via ``_DEVICES``), so the launched teleop
-        session unambiguously matches the selected headset.
-        """
-        args = []
-        for flag, (var, default, kind) in self._param_vars.items():
-            value = var.get()
-            if flag == "device":
-                mic_device, cloudxr_env = _DEVICES[str(value)]
-                args += ["--mic_device", mic_device, "--cloudxr_env", cloudxr_env]
-            elif kind == "bool":
-                if value:
-                    args.append(flag)
-            elif str(value) != str(default) and str(value).strip() != "":
-                args += [flag, str(value).strip()]
-        return args
+            self._param_vars[p.flag] = (var, p.kind)
+        ttk.Label(groups["Network ports"], style="PanelMuted.TLabel", text=PORTS_NOTE.replace("; ", ";\n")).pack(
+            anchor="w", pady=(self._px(4), 0)
+        )
 
     # -- page 2: scenes & dataset ----------------------------------------------
 
@@ -313,30 +326,91 @@ class TeleopLauncher(tk.Tk):
 
         picker = ttk.Frame(page)
         picker.pack(fill="x", pady=self._px(8))
-        self._scene_dir = tk.StringVar(value=_DEFAULT_SCENE_DIR)
-        self._dataset = tk.StringVar(value=_DEFAULT_DATASET)
-        for row_i, (label, var, browse) in enumerate(
-            (
-                ("Scene directory", self._scene_dir, self._browse_scene_dir),
-                ("Dataset file (created if missing)", self._dataset, self._browse_dataset),
-            )
-        ):
-            ttk.Label(picker, text=label).grid(row=row_i, column=0, sticky="w", pady=self._px(3))
-            ttk.Entry(picker, textvariable=var).grid(row=row_i, column=1, sticky="ew", padx=self._px(8))
-            ttk.Button(picker, text="Browse", command=browse).grid(row=row_i, column=2, pady=self._px(3))
+        self._record_dir = tk.StringVar(value=self._settings["record_dir"])
+        ttk.Label(picker, text="Record directory (one HDF5 per episode)").grid(
+            row=0, column=0, sticky="w", pady=self._px(3)
+        )
+        ttk.Entry(picker, textvariable=self._record_dir).grid(row=0, column=1, sticky="ew", padx=self._px(8))
+        ttk.Button(picker, text="Browse", command=self._browse_record_dir).grid(row=0, column=2, pady=self._px(3))
         picker.columnconfigure(1, weight=1)
 
-        self._table = ttk.Treeview(page, columns=("sel", "success", "failure"), height=14)
+        # -- scene source: local directory XOR fleet server ---------------------
+        # The two modes are exclusive by construction: the radio button decides
+        # which pane is shown, which rows the table lists, and which arguments
+        # Start passes (see session_config.build_launch).
+        source_box = ttk.LabelFrame(page, text=" Scene source ")
+        source_box.pack(fill="x", pady=self._px(4))
+        self._scene_source = tk.StringVar(value="local")
+        radios = ttk.Frame(source_box, style="Panel.TFrame")
+        radios.pack(fill="x")
+        for value, label in (("local", "Local directory"), ("server", "Fleet server")):
+            ttk.Radiobutton(
+                radios, text=label, value=value, variable=self._scene_source,
+                style="Panel.TCheckbutton", command=self._on_source_change,
+            ).pack(side="left", padx=(0, self._px(24)))  # fmt: skip
+
+        # Both panes live in the same grid cell; _on_source_change shows one.
+        panes = ttk.Frame(source_box, style="Panel.TFrame")
+        panes.pack(fill="x", pady=(self._px(6), 0))
+        panes.columnconfigure(0, weight=1)
+
+        self._local_pane = ttk.Frame(panes, style="Panel.TFrame")
+        self._local_pane.grid(row=0, column=0, sticky="ew")
+        self._scene_dir = tk.StringVar(value=self._settings["scene_dir"])
+        ttk.Label(self._local_pane, text="Scene directory", style="Panel.TLabel").grid(
+            row=0, column=0, sticky="w", pady=self._px(3)
+        )
+        ttk.Entry(self._local_pane, textvariable=self._scene_dir).grid(row=0, column=1, sticky="ew", padx=self._px(8))
+        ttk.Button(self._local_pane, text="Browse", command=self._browse_scene_dir).grid(row=0, column=2)
+        self._local_pane.columnconfigure(1, weight=1)
+
+        self._server_pane = ttk.Frame(panes, style="Panel.TFrame")
+        self._server_pane.grid(row=0, column=0, sticky="ew")
+        self._fleet_server_var = tk.StringVar(value="")
+        self._collector_id_var = tk.StringVar(value="")
+        self._fleet_token_var = tk.StringVar(value="")
+        ttk.Label(self._server_pane, text="Server URL", style="Panel.TLabel").grid(
+            row=0, column=0, sticky="w", pady=self._px(3)
+        )
+        ttk.Entry(self._server_pane, textvariable=self._fleet_server_var).grid(
+            row=0, column=1, columnspan=3, sticky="ew", padx=self._px(8)
+        )
+        self._fleet_btn = ttk.Button(self._server_pane, text="Connect", command=self.connect_fleet)
+        self._fleet_btn.grid(row=0, column=4)
+        ttk.Label(self._server_pane, text="Collector ID (default: hostname)", style="Panel.TLabel").grid(
+            row=1, column=0, sticky="w", pady=self._px(3)
+        )
+        ttk.Entry(self._server_pane, textvariable=self._collector_id_var, width=16).grid(
+            row=1, column=1, sticky="w", padx=self._px(8)
+        )
+        ttk.Label(self._server_pane, text="Token (default: $FLEET_TOKEN)", style="Panel.TLabel").grid(
+            row=1, column=2, sticky="e"
+        )
+        ttk.Entry(self._server_pane, textvariable=self._fleet_token_var, width=16, show="*").grid(
+            row=1, column=3, sticky="w", padx=self._px(8)
+        )
+        self._fleet_status = ttk.Label(self._server_pane, text="Not connected.", style="Panel.TLabel")
+        self._fleet_status.config(foreground=_MUTED)
+        self._fleet_status.grid(row=2, column=0, columnspan=5, sticky="w", pady=(self._px(3), 0))
+        self._server_pane.columnconfigure(1, weight=1)
+        self._server_pane.grid_remove()  # local mode is the default
+
+        self._table = ttk.Treeview(page, columns=("sel", "success", "failure", "fleet", "workers"), height=12)
         self._table.heading("#0", text="Scene")
         self._table.heading("sel", text="Collect?")
         self._table.heading("success", text="Success")
         self._table.heading("failure", text="Failure")
-        self._table.column("#0", width=self._px(500))
+        self._table.heading("fleet", text="Fleet progress")
+        self._table.heading("workers", text="Working now")
+        self._table.column("#0", width=self._px(420))
         for col in ("sel", "success", "failure"):
-            self._table.column(col, width=self._px(100), anchor="center", stretch=False)
+            self._table.column(col, width=self._px(90), anchor="center", stretch=False)
+        self._table.column("fleet", width=self._px(120), anchor="center", stretch=False)
+        self._table.column("workers", width=self._px(150), anchor="w", stretch=False)
         self._table.tag_configure("odd", background=_STRIPE)
         self._table.tag_configure("off", foreground=_MUTED)
-        self._table.pack(fill="both", expand=True, pady=self._px(8))
+        self._table.tag_configure("fleet_done", foreground="#1a7f4e")
+        self._table.configure(displaycolumns=("sel", "success", "failure"))  # fleet columns appear in server mode
         # Excel-style toggling: click one row, drag to paint a run, Shift+Click
         # to extend the last toggle over a range (see _on_table_press).
         self._table.configure(selectmode="none")
@@ -348,17 +422,22 @@ class TeleopLauncher(tk.Tk):
         self._drag_origin: str | None = None  # row where the current drag started
         self._pre_drag: dict[str, bool] = {}  # states when the drag started
 
+        # The button row packs BEFORE the table (side bottom): when the window
+        # is short, the table shrinks instead of the buttons getting clipped.
         buttons = ttk.Frame(page)
-        buttons.pack(fill="x")
+        buttons.pack(side="bottom", fill="x")
         ttk.Button(buttons, text="<<  Parameters", command=lambda: self._show("params")).pack(side="left")
         ttk.Button(buttons, text="Refresh", command=self.refresh_table).pack(side="left", padx=self._px(8))
         ttk.Button(buttons, text="Select all", command=lambda: self._set_all(True)).pack(side="left")
         ttk.Button(buttons, text="Select none", command=lambda: self._set_all(False)).pack(
             side="left", padx=self._px(8)
         )
+        self._select_needed_btn = ttk.Button(
+            buttons, text="Select needed", command=self._select_needed, state="disabled"
+        )
+        self._select_needed_btn.pack(side="left")
         ttk.Button(buttons, text="Start teleop", style="Accent.TButton", command=self.start_teleop).pack(side="right")
-
-        self.refresh_table()
+        self._table.pack(fill="both", expand=True, pady=self._px(8))
 
     def _browse_scene_dir(self) -> None:
         path = filedialog.askdirectory(initialdir=self._scene_dir.get() or _HERE)
@@ -366,42 +445,135 @@ class TeleopLauncher(tk.Tk):
             self._scene_dir.set(path)
             self.refresh_table()
 
-    def _browse_dataset(self) -> None:
-        path = filedialog.asksaveasfilename(
-            initialdir=os.path.dirname(self._dataset.get()) or os.getcwd(),
-            defaultextension=".hdf5",
-            filetypes=[("HDF5 datasets", "*.hdf5")],
-            confirmoverwrite=False,
-        )
+    def _browse_record_dir(self) -> None:
+        path = filedialog.askdirectory(initialdir=self._record_dir.get() or os.getcwd())
         if path:
-            self._dataset.set(path)
+            self._record_dir.set(path)
             self.refresh_table()
+
+    def _fleet_connected(self) -> bool:
+        return self._monitor is not None and self._monitor.status()["connected"]
+
+    def _on_source_change(self) -> None:
+        """Swap the visible source pane, the table columns, and the helper buttons."""
+        server_mode = self._scene_source.get() == "server"
+        if server_mode:
+            self._local_pane.grid_remove()
+            self._server_pane.grid()
+            # Server mode shows only the server's numbers (fleet-wide progress);
+            # the local per-machine demo counts are a local-directory concern.
+            self._table.configure(displaycolumns=("sel", "fleet", "workers"))
+        else:
+            self._server_pane.grid_remove()
+            self._local_pane.grid()
+            self._table.configure(displaycolumns=("sel", "success", "failure"))
+        self._select_needed_btn.config(state="normal" if server_mode and self._fleet_connected() else "disabled")
+        self.refresh_table()
 
     def _row_tags(self, name: str) -> tuple[str, ...]:
         row = self._scene_rows[name]
         tags = ("odd",) if row["odd"] else ()
-        return tags if row["selected"].get() else (*tags, "off")
+        if not row["selected"].get():
+            return (*tags, "off")
+        if row["row"].get("done"):  # at target on the server
+            tags = (*tags, "fleet_done")
+        return tags
+
+    def _current_table(self) -> SceneTable:
+        """The scene table for the active source, computed from the UI's current settings."""
+        settings = self._current_settings()
+        if self._scene_source.get() == "server":
+            return server_scene_rows(settings, self._monitor.scenes if self._monitor is not None else None)
+        return local_scene_rows(settings)
 
     def refresh_table(self) -> None:
-        """Re-scan the scene directory and the dataset counts."""
-        previous = {name: row["selected"].get() for name, row in self._scene_rows.items()}
+        """Re-render the table for the active scene source.
+
+        Local mode lists the scene files under the scene directory with the
+        per-machine success/failure demo counts recorded under the record
+        directory. Server mode lists the fleet server's scenes (from the last
+        status poll) with the SERVER's numbers only — fleet-wide progress and
+        live workers.
+        """
+        table = self._current_table()  # reads the current toggles before they are cleared
+        self._settings = self._current_settings()  # ...and keeps them for the other source
         self._table.delete(*self._table.get_children())
         self._scene_rows.clear()
-        counts = scan_dataset(self._dataset.get())
-        for i, path in enumerate(scan_scene_dir(self._scene_dir.get())):
-            name = os.path.basename(path)
-            success, failure = counts.get(name, (0, 0))
-            selected = tk.BooleanVar(value=previous.get(name, True))
-            self._scene_rows[name] = {"path": path, "selected": selected, "odd": i % 2 == 1}
+        self._rows_source = table.source
+        if table.source == "server" and not self._fleet_connected():
             self._table.insert(
-                "", "end", iid=name, text=name, tags=self._row_tags(name),
-                values=("Yes" if selected.get() else "", success, failure),
+                "", "end", iid="<hint>", text="(press Connect to list the fleet server's scenes)",
+                tags=("off",), values=("", "", "", "", ""),
             )  # fmt: skip
-        untagged = counts.get("<untagged>")
-        if untagged:
+            return
+        for i, row in enumerate(table.rows):
+            name = row["name"]
+            selected = tk.BooleanVar(value=row["selected"])
+            self._scene_rows[name] = {"path": row["path"], "selected": selected, "odd": i % 2 == 1, "row": row}
+            if table.source == "server":
+                values = ("Yes" if selected.get() else "", "", "", row["progress"], ", ".join(row["workers"]))
+            else:
+                values = ("Yes" if selected.get() else "", row["success"], row["failure"], "", "")
+            self._table.insert("", "end", iid=name, text=name, tags=self._row_tags(name), values=values)
+        if table.untagged:
             self._table.insert(
-                "", "end", iid="<untagged>", text="(demos without a scene tag)", tags=("off",), values=("", *untagged)
-            )
+                "", "end", iid="<untagged>", text="(demos without a scene tag)", tags=("off",),
+                values=("", *table.untagged),
+            )  # fmt: skip
+
+    # -- fleet connection -------------------------------------------------------
+
+    def connect_fleet(self) -> None:
+        """Connect to (or immediately re-poll) the fleet server named in the server pane."""
+        server = normalize_server_url(self._fleet_server_var.get())
+        if not server:
+            messagebox.showerror("No fleet server", "Enter the fleet server URL first (e.g. http://fleet-host:8080).")
+            return
+        self._fleet_server_var.set(server)
+        token = str(self._fleet_token_var.get()).strip() or None
+        if self._monitor is None or not self._monitor.matches(server, token):
+            if self._monitor is not None:
+                self._monitor.stop()
+            self._monitor = FleetMonitor(server, token)
+            self._monitor_seen = 0.0
+            self._monitor.start()
+        self._fleet_btn.config(state="disabled")
+        self._fleet_status.config(text=f"Connecting to {server} ...", foreground=_MUTED)
+        self._monitor.poll_now()
+
+    def _watch_monitor(self) -> None:
+        """Apply new fleet snapshots to the UI (the monitor polls on its own thread; tkinter must never block)."""
+        self.after(500, self._watch_monitor)
+        if self._monitor is None:
+            return
+        status = self._monitor.status()
+        if status["polled_at"] <= self._monitor_seen:
+            return
+        self._monitor_seen = status["polled_at"]
+        self._fleet_btn.config(state="normal")
+        if status["error"] is not None:
+            self._fleet_status.config(text=f"Unreachable — {status['error']}", foreground=_DANGER)
+            return
+        self._fleet_btn.config(text="Refresh now")
+        t = status["totals"]
+        online = ", ".join(status["online"]) or "none"
+        self._fleet_status.config(
+            foreground=_MUTED,
+            text=(
+                f"Connected: {t['successes_toward_target']}/{t['target_successes']} successes across"
+                f" {t['scenes']} scenes — online: {online} (auto-refreshes every {int(status['interval_s'])} s)"
+            ),
+        )
+        if self._scene_source.get() == "server":
+            self._select_needed_btn.config(state="normal")
+            self.refresh_table()
+
+    def _select_needed(self) -> None:
+        """Tick exactly the server scenes the fleet still needs (under target, not retired)."""
+        scenes = self._monitor.scenes if self._monitor is not None else None
+        for name in self._scene_rows:
+            if scenes and name in scenes:
+                self._set_row(name, scene_needed(scenes[name]))
 
     def _set_row(self, name: str, value: bool) -> None:
         self._scene_rows[name]["selected"].set(value)
@@ -473,27 +645,24 @@ class TeleopLauncher(tk.Tk):
         )
 
     def start_teleop(self) -> None:
-        selected = [row["path"] for row in self._scene_rows.values() if row["selected"].get()]
-        if not selected:
-            messagebox.showerror("No scenes", "Select at least one scene to collect.")
+        """Launch the teleop with the active scene source's (exclusive) arguments (see :func:`build_launch`)."""
+        if self._scene_source.get() == "server" and not self._fleet_connected():
+            messagebox.showerror("Not connected", "Connect to the fleet server before starting.")
             return
-        dataset = os.path.abspath(self._dataset.get())
-        os.makedirs(os.path.dirname(dataset), exist_ok=True)
-        scene_list_path = os.path.splitext(dataset)[0] + ".scene_list.json"
-        with open(scene_list_path, "w") as f:
-            json.dump({"scenes": selected}, f, indent=2)
-
-        command = [
-            sys.executable,
-            _TELEOP_SCRIPT,
-            "--scene_list", scene_list_path,
-            "--dataset_file", dataset,
-            "--headless",
-            *self._collect_args(),
-        ]  # fmt: skip
-        print("[LAUNCHER] " + " ".join(command))
-        self._proc = subprocess.Popen(command)
-        self._running_label.config(text=f"Teleop running (pid {self._proc.pid}), {len(selected)} scene(s) selected.")
+        settings = self._current_settings()
+        try:
+            spec = build_launch(settings, self._current_table())
+        except ValueError as exc:
+            messagebox.showerror("Cannot start", str(exc))
+            if "port" in str(exc).lower():
+                self._show("params")
+            return
+        command = spec.command(sys.executable)
+        self._save_settings()  # remember everything the run was started with
+        shown_env = " ".join(f"{k}={'***' if k == 'FLEET_TOKEN' else v}" for k, v in spec.env.items())
+        print("[LAUNCHER] " + " ".join(filter(None, [shown_env, *command])))
+        self._proc = subprocess.Popen(command, env={**os.environ, **spec.env})
+        self._running_label.config(text=f"Teleop running (pid {self._proc.pid}), {spec.summary} selected.")
         self._show("running")
         self.after(1000, self._poll_process)
 
