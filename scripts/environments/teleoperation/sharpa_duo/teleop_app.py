@@ -50,6 +50,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.parse
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
@@ -408,7 +409,14 @@ class MicHub:
         finally:
             if connection is self._active:
                 self._active = None
-                print("[APP] Microphone page disconnected.")
+                # Who hung up matters for triage: a close the page sent means
+                # the browser gave up; one we sent is our keepalive timing out.
+                rcvd_first = getattr(connection.protocol, "close_rcvd_then_sent", None)
+                who = {True: "page", False: "app", None: "transport"}[rcvd_first]
+                print(
+                    f"[APP] Microphone page disconnected (closed by {who}, code {connection.close_code},"
+                    f" reason {connection.close_reason!r})."
+                )
 
     async def subscribe(self, connection) -> None:
         """Handle ``/subscribe``: a teleop process consuming the relayed audio."""
@@ -506,36 +514,45 @@ _PAGE = """<!doctype html>
   .danger { background: #c44; color: #fff; }
   #level { width: 60%; height: 0.9em; background: #333; margin: 0.8em auto; border-radius: 0.5em; overflow: hidden; }
   #bar { height: 100%; width: 0; background: #4c4; }
-  .row { margin: 0.8em 0; }
+  .row { margin: 0.8em 0; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 0.3em; }
   .dot { display: inline-block; width: 0.8em; height: 0.8em; border-radius: 50%; margin-right: 0.4em; }
   .on { background: #4c4; } .off { background: #666; }
-  #log { text-align: left; font-family: monospace; font-size: 0.75em; white-space: pre-wrap;
-         background: #000; padding: 0.6em; border-radius: 0.4em; max-height: 12em; overflow-y: auto; display: none; }
+  .booting { background: #ec4; animation: pulse 1.2s infinite; }
   #status { margin-top: 0.6em; font-size: 1.05em; color: #bbb; }
+  #status:empty { display: none; }
 </style>
 <h1>Teleop</h1>
 <div class="row"><span id="teleop_dot" class="dot off"></span><span id="teleop_state">checking...</span></div>
 <div class="row"><span id="mic_dot" class="dot off"></span><span id="mic_state">microphone idle</span></div>
 <div id="level"><div id="bar"></div></div>
 
-<button id="go" class="primary">Start session</button>
+<!-- Row 1: the whole session. Start brings up mic + teleop, Finish tears both down. -->
 <div class="row">
-  <button id="mic">Microphone only</button>
-  <button id="micstop">Stop microphone</button>
-  <!-- A real link, not window.open: a popup opened after the readiness wait is
-       no longer tied to the tap and gets blocked silently. -->
-  <a id="cxr" class="btn disabled" target="_blank" rel="noopener" href="#">Open CloudXR</a>
+  <button id="go" class="primary">Start session</button>
+  <button id="finish" class="primary danger">Finish session</button>
+</div>
+<!-- Row 2: the two taps the browser will not do for us. -->
+<div class="row">
   <!-- One-time per port: the NVIDIA-hosted client cannot open a socket back
        here until this self-signed certificate is accepted for this origin. -->
   <a id="cert" class="btn disabled" target="_blank" rel="noopener" href="#">Teleop not running</a>
+  <!-- A real link, not window.open: a popup opened after the readiness wait is
+       no longer tied to the tap and gets blocked silently. -->
+  <a id="cxr" class="btn disabled" target="_blank" rel="noopener" href="#">Open CloudXR</a>
 </div>
+<!-- Row 3: the parts, controlled one at a time. -->
 <div class="row">
   <button id="restart">Restart teleop</button>
   <button id="kill" class="danger">Kill teleop</button>
-  <button id="logbtn">Log</button>
+  <button id="mic">Start microphone</button>
+  <button id="micstop" class="danger">Stop microphone</button>
 </div>
-<div id="status">idle</div>
-<pre id="log"></pre>
+<!-- Row 4: the log opens as its own page, readable at headset distance. -->
+<div class="row">
+  <a class="btn" href="/log.html" target="_blank" rel="noopener">Log</a>
+</div>
+<!-- Progress/result of the last tap; hidden until there is one. -->
+<div id="status"></div>
 
 <script>
 // Registering this is what lets the headset offer "Install"/"Add to library".
@@ -599,10 +616,15 @@ async function refresh() {
         cert.classList.remove("ok");
       }
     }
-    $("teleop_dot").className = "dot " + (s.running ? "on" : "off");
-    $("teleop_state").textContent = s.running
-      ? "teleop running (pid " + s.pid + ", up " + Math.round(s.uptime_s) + "s)"
-      : "teleop stopped" + (s.exit_code === null ? "" : " (exit " + s.exit_code + ")");
+    // "running" means the process is alive; it spends ~30-60 s loading the
+    // sim before CloudXR listens. Calling that "running" next to a button
+    // saying "Preparing teleop..." read as a contradiction, so the process
+    // state is split into starting / running.
+    const up = " (pid " + s.pid + ", up " + Math.round(s.uptime_s) + "s)";
+    $("teleop_dot").className = "dot " + (!s.running ? "off" : s.cloudxr_ready ? "on" : "booting");
+    $("teleop_state").textContent = !s.running
+      ? "teleop stopped" + (s.exit_code === null ? "" : " (exit " + s.exit_code + ")")
+      : s.cloudxr_ready ? "teleop running" + up : "teleop starting - loading the simulator" + up;
     $("mic_dot").className = "dot " + (s.mic_connected ? "on" : "off");
     if (s.mic_connected && !started) {
       // The server sees a page streaming, but it is not this one: either a
@@ -758,11 +780,56 @@ $("go").onclick = async () => {
 };
 $("restart").onclick = async () => { status("restarting..."); status((await api("/restart", "POST")).message); };
 $("kill").onclick = async () => { status("killing..."); status((await api("/stop", "POST")).message); };
-$("logbtn").onclick = async () => {
-  const el = $("log");
-  el.style.display = el.style.display === "none" ? "block" : "none";
-  if (el.style.display === "block") { el.textContent = (await api("/log")).log; el.scrollTop = el.scrollHeight; }
+$("finish").onclick = async () => {
+  const b = $("finish");
+  b.disabled = true;
+  try {
+    stopMic();
+    status("finishing session - stopping teleop...");
+    status("session finished - " + (await api("/stop", "POST")).message);
+  } finally {
+    b.disabled = false;
+  }
 };
+</script>
+"""
+
+_LOG_PAGE = """<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teleop log</title>
+<style>
+  body { font-family: sans-serif; background: #111; color: #eee; margin: 0; padding: 1em; }
+  .bar { display: flex; align-items: center; gap: 1em; margin-bottom: 0.8em; font-size: 1.4em; }
+  .bar a, .bar button { font-size: 1em; padding: 0.4em 1em; border-radius: 0.5em; border: 0;
+                        background: #ddd; color: #111; text-decoration: none; }
+  #log { font-family: monospace; font-size: 1.35em; line-height: 1.35; white-space: pre-wrap;
+         word-break: break-word; background: #000; padding: 0.8em; border-radius: 0.4em; }
+  #meta { color: #999; }
+</style>
+<div class="bar">
+  <a href="/">Back to teleop</a>
+  <button id="pause">Pause</button>
+  <span id="meta">loading...</span>
+</div>
+<pre id="log"></pre>
+<script>
+const $ = id => document.getElementById(id);
+let live = true;
+async function load() {
+  if (!live) return;
+  try {
+    const r = await fetch("/log?lines=200", { cache: "no-store" });
+    const atEnd = window.innerHeight + window.scrollY >= document.body.offsetHeight - 40;
+    $("log").textContent = (await r.json()).log;
+    $("meta").textContent = "last 200 lines - " + new Date().toLocaleTimeString();
+    // Follow the tail unless the reader has scrolled up to look at something.
+    if (atEnd) window.scrollTo(0, document.body.scrollHeight);
+  } catch (e) { $("meta").textContent = "app unreachable"; }
+}
+$("pause").onclick = () => { live = !live; $("pause").textContent = live ? "Pause" : "Resume"; if (live) load(); };
+setInterval(load, 2000);
+load().then(() => window.scrollTo(0, document.body.scrollHeight));
 </script>
 """
 
@@ -816,7 +883,12 @@ class TeleopApp:
         host, proxy = _preferred_host(), self._proxy_port()
         # serverIP/port are query params the client reads on load, so its
         # connection fields arrive pre-filled instead of typed in the headset.
-        return f"{self._client_base()}/?serverIP={host}&port={proxy}"
+        # mic=0 keeps the client from capturing the headset microphone for
+        # CloudXR's own audio passthrough (unused here): the Quest grants the
+        # mic to one page at a time, so with it on, the client and this app's
+        # page steal the mic from each other every ~15 s and every hand-over
+        # chops the audio the voice labeler hears.
+        return f"{self._client_base()}/?serverIP={host}&port={proxy}&mic=0"
 
     def status(self) -> dict:
         """Everything the page polls, in one round trip."""
@@ -836,7 +908,7 @@ class TeleopApp:
         from websockets.asyncio.server import serve
 
         def process_request(connection, request):
-            path = (request.path or "/").split("?")[0]
+            path, _, query = (request.path or "/").partition("?")
             if "upgrade" in request.headers.get("Connection", "").lower():
                 return None  # websocket routes are handled in the handler
             if path == "/":
@@ -859,8 +931,15 @@ class TeleopApp:
                 return self._binary(_icon_png(512 if "512" in path else 192), "image/png")
             if path == "/status":
                 return self._json(connection, self.status())
+            if path == "/log.html":
+                r = connection.respond(http.HTTPStatus.OK, _LOG_PAGE)
+                r.headers["Content-Type"] = "text/html; charset=utf-8"
+                r.headers["Cache-Control"] = "no-store"
+                return r
             if path == "/log":
-                return self._json(connection, {"log": self._teleop.tail_log()})
+                lines = urllib.parse.parse_qs(query).get("lines", ["40"])[0]
+                lines = max(1, min(int(lines), 2000)) if lines.isdigit() else 40
+                return self._json(connection, {"log": self._teleop.tail_log(lines)})
             if path in ("/start", "/stop", "/restart"):
                 # The websockets server admits any method here, so a stray
                 # reload or a link prefetch of /stop would otherwise kill a live

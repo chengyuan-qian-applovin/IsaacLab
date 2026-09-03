@@ -182,7 +182,12 @@ query params so its connection fields arrive filled in.
 It runs as a **supervisor**, independent of any teleop run, so it is still
 reachable when teleop is stopped or wedged — which is when you need it. **Start
 session** starts the microphone, launches teleop if it is down, and opens the
-CloudXR client in a new tab. **Kill teleop** signals the whole process group
+CloudXR client in a new tab; **Finish session** next to it is the mirror image,
+stopping the microphone and teleop together. The rows below control the parts
+one at a time: the certificate and CloudXR links, then **Restart teleop**,
+**Kill teleop**, **Start microphone** and **Stop microphone**, then **Log**, which opens
+the last 200 lines of the run in its own live-updating page at a font readable
+inside the headset. **Kill teleop** signals the whole process group
 (SIGINT, then SIGTERM, then SIGKILL) and then reaps the CloudXR runtime that
 normally outlives it holding 49100/48322 — the thing `Ctrl-C` alone leaves
 behind. The sweep only touches runtimes younger than the run it just stopped
@@ -206,7 +211,10 @@ The certificate button doubles as the boot indicator: it reads "Teleop not
 running", then "Preparing teleop..." while the run boots (inert, since tapping
 would only wait on a dead port), then "Teleop ready - certificate OK" when the
 browser already trusts the proxy or "Teleop ready - accept certificate" when
-it does not. "Open CloudXR" is likewise inert until the proxy is up. During
+it does not. The status line at the top agrees with it: "teleop starting -
+loading the simulator" (amber, pulsing) while the process boots, "teleop
+running" (green) only once the proxy listens, "teleop stopped" otherwise.
+"Open CloudXR" is likewise inert until the proxy is up. During
 "Start session" the certificate is only asked for when the check says it is
 missing, and the flow moves on to "Open CloudXR" by itself as soon as you have
 accepted. Restarting the app itself (for a code update) leaves a running

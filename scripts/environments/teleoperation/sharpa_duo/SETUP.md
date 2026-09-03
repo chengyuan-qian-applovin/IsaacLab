@@ -42,7 +42,9 @@ cd ~/IsaacLab
 
 The last line must print `ok`. `isaacteleop` brings the CloudXR runtime and
 its WSS proxy; `websockets` serves the app page; `openai-whisper` does voice
-commands; Pillow draws the app icon.
+commands (its `base.en` weights, ~140 MB, download into `~/.cache/whisper`
+the first time teleop starts — do that once while online); Pillow draws the
+app icon.
 
 ### 1.2 System packages
 
@@ -183,9 +185,11 @@ profile, certificate acceptance and Library are per account).
    offset while stopped.
 6. Keep the app window open the whole time: the microphone runs there.
 
-When you are done, or whenever things look stuck: **Kill teleop** ends the
-whole process tree and the CloudXR runtime. **Restart teleop** does the same
-and starts fresh.
+When you are done: **Finish session** (the red button beside Start) stops the
+microphone and the whole teleop process tree, CloudXR runtime included.
+Whenever things look stuck: **Kill teleop** does the teleop half of that on
+its own, and **Restart teleop** does the same and starts fresh. **Log** opens
+the run's output in a separate page with large text that follows the tail.
 
 **If you left the scene** (took the headset off, exited VR, lost the tab), tap
 **Restart teleop** before connecting again. Rejoining a live run often hangs at
@@ -208,9 +212,11 @@ Then on the headset:
 
 - microphone: open `https://<hostname>.local:8444/` and tap "Start microphone"
   (`sudo ufw allow 8444/tcp` once);
-- video: open `https://nvidia.github.io/IsaacTeleop/client/release-1.3.x/?serverIP=<hostname>.local&port=48322`,
+- video: open `https://nvidia.github.io/IsaacTeleop/client/release-1.3.x/?serverIP=<hostname>.local&port=48322&mic=0`,
   accept the certificate at `https://<hostname>.local:48322/` first if asked,
-  tap Connect.
+  tap Connect. `mic=0` matters: without it the CloudXR client grabs the
+  headset microphone for its own audio passthrough and fights the mic page
+  for it every ~15 s, chopping the audio the voice commands hear.
 
 Other headsets: Apple Vision Pro uses the Isaac XR Teleop Sample Client with
 `--cloudxr_env avp` (port 48010/tcp). A workstation microphone instead of the
