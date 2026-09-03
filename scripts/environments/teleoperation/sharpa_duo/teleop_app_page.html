@@ -1,14 +1,24 @@
 <!doctype html>
 <!--
   The headset control page served by teleop_app.py at "/". Read from disk on
-  every request, so an edit shows up on the next reload without restarting the
-  service. Three tabs:
+  every request (as is its stylesheet, /app.css = teleop_app_page.css), so an
+  edit shows up on the next reload without restarting the service.
 
-  - Session: start/stop teleop, the microphone relay, the CloudXR link (the
-    original one-tap flow);
-  - Scenes: the record directory and the scene source (local directory or the
-    fleet server) with the scene table — what the desktop launcher's page 2 does;
-  - Parameters: the teleop knobs, rendered from the schema the server sends.
+  Layout, top to bottom:
+
+  - Header with a status bar that stays visible on every tab: the app link,
+    the teleop process (stopped / starting / running), the CloudXR proxy port,
+    the certificate, the microphone (with its level meter), the scene source.
+  - Three tabs. Session: the one-tap flow as three numbered steps (Start
+    session -> Accept certificate -> Open CloudXR), Finish session, and the
+    individual controls folded under "More controls". Scenes: the record
+    directory and the scene source (local directory or the fleet server) with
+    the scene table - what the desktop launcher's page 2 does. Parameters:
+    the teleop knobs, rendered from the schema the server sends.
+
+  Buttons that stop a live run (Finish, Kill) ask for a second tap within a
+  few seconds; buttons that cannot apply right now (Kill while stopped, Open
+  CloudXR before the port is up) are disabled rather than failing on tap.
 
   Everything that carries data goes over the /control WebSocket as JSON
   ("rpc" below): the HTTP layer of the app cannot read request bodies.
@@ -18,159 +28,172 @@
 <title>Teleop</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" type="image/png" href="/icon-192.png">
-<meta name="theme-color" content="#111111">
-<style>
-  body { font-family: sans-serif; background: #111; color: #eee; text-align: center; padding: 1em 1em 2em; margin: 0; }
-  h1 { margin: 0.4em 0; }
-  button, a.btn { font-size: 1.3em; padding: 0.6em 1em; border-radius: 0.5em; border: 0; margin: 0.3em;
-                  display: inline-block; background: #ddd; color: #111; text-decoration: none; cursor: pointer; }
-  button.small { font-size: 1.0em; padding: 0.45em 0.8em; }
-  button.sel { background: #4c4; }
-  /* Highlighted once the session is up and only the CloudXR tap is left. */
-  a.ready { background: #4c4; font-size: 1.7em; padding: 0.8em 1.6em; animation: pulse 1.2s infinite; }
-  @keyframes pulse { 50% { opacity: 0.55; } }
-  a.disabled { pointer-events: none; opacity: 0.35; }
-  a.ok { background: #2a5; color: #fff; }
-  .primary { background: #4c4; font-size: 1.7em; padding: 0.8em 1.6em; }
-  .danger { background: #c44; color: #fff; }
-  #level { width: 60%; height: 0.9em; background: #333; margin: 0.8em auto; border-radius: 0.5em; overflow: hidden; }
-  #bar { height: 100%; width: 0; background: #4c4; }
-  .row { margin: 0.8em 0; display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 0.3em; }
-  .dot { display: inline-block; width: 0.8em; height: 0.8em; border-radius: 50%; margin-right: 0.4em; }
-  .on { background: #4c4; } .off { background: #666; }
-  .booting { background: #ec4; animation: pulse 1.2s infinite; }
-  #status { margin-top: 0.6em; font-size: 1.05em; color: #bbb; }
-  #status:empty { display: none; }
-  .muted { color: #999; font-size: 0.95em; }
-  .warn { color: #fa6; }
-  /* Tabs */
-  nav.tabs { display: flex; justify-content: center; gap: 0.3em; margin-bottom: 0.8em; border-bottom: 1px solid #333; }
-  nav.tabs button { background: #222; color: #bbb; border-radius: 0.5em 0.5em 0 0; margin: 0; font-size: 1.15em; }
-  nav.tabs button.active { background: #333; color: #fff; }
-  section[hidden] { display: none; }
-  #dirty { display: none; color: #fc6; font-size: 0.95em; }
-  /* Forms */
-  .field { display: flex; align-items: center; gap: 0.6em; margin: 0.5em auto; max-width: 44em; text-align: left; }
-  .field label { flex: 1; }
-  .field input, .field select { font-size: 1.1em; padding: 0.4em 0.5em; border-radius: 0.4em; border: 1px solid #444;
-                                background: #1c1c1c; color: #eee; min-width: 8em; }
-  .field input.wide { flex: 2; min-width: 0; }
-  .field input[type=checkbox] { width: 1.6em; height: 1.6em; }
-  .field .hint { color: #888; font-size: 0.85em; margin-right: 0.4em; }
-  fieldset { border: 1px solid #333; border-radius: 0.6em; margin: 0.8em auto; max-width: 46em; text-align: left; padding: 0.4em 1em 0.8em; }
-  legend { color: #9c9; padding: 0 0.4em; }
-  .seg button { background: #333; color: #ddd; margin: 0; border-radius: 0; }
-  .seg button:first-child { border-radius: 0.5em 0 0 0.5em; } .seg button:last-child { border-radius: 0 0.5em 0.5em 0; }
-  .seg button.active { background: #4c4; color: #111; }
-  /* Scene table */
-  table { width: 100%; max-width: 50em; margin: 0.6em auto; border-collapse: collapse; text-align: left; font-size: 1.05em; }
-  th, td { padding: 0.55em 0.5em; border-bottom: 1px solid #2a2a2a; }
-  th { color: #9c9; font-weight: normal; }
-  td.num { text-align: right; width: 4em; }
-  tr.scene { cursor: pointer; }
-  tr.scene:active { background: #222; }
-  tr.off td { color: #777; }
-  td.tick { width: 1.4em; color: #4c4; font-weight: bold; }
-  tr.done td.name { color: #6d6; }
-  #scene_note { margin: 0.6em 0; }
-</style>
+<link rel="stylesheet" href="/app.css">
+<meta name="theme-color" content="#0e1015">
 
-<h1>Teleop</h1>
+<div class="page">
+<header>
+  <div class="title"><h1>Teleop</h1><span class="host" id="host"></span></div>
+  <a class="btn small" href="/log.html" target="_blank" rel="noopener">Log &#8599;</a>
+</header>
+
+<!-- Everything that is being monitored, on every tab. The certificate chip is
+     a real link: tapping it is how the browser gets to accept the certificate. -->
+<div class="statusbar" id="statusbar">
+  <span class="chip" id="c_app"><span class="dot"></span><span class="k">App</span><span class="v">connecting</span></span>
+  <span class="chip" id="c_teleop"><span class="dot"></span><span class="k">Teleop</span><span class="v">checking</span></span>
+  <span class="chip" id="c_cxr"><span class="dot"></span><span class="k">CloudXR</span><span class="v">&mdash;</span></span>
+  <a class="chip" id="c_cert" target="_blank" rel="noopener" href="#"><span class="dot"></span><span class="k">Certificate</span><span class="v">&mdash;</span></a>
+  <span class="chip" id="c_mic"><span class="dot"></span><span class="k">Mic</span><span class="v">idle</span><span class="meter"><span id="bar"></span></span></span>
+  <span class="chip" id="c_scenes"><span class="dot"></span><span class="k">Scenes</span><span class="v">&mdash;</span></span>
+</div>
+
 <nav class="tabs">
   <button data-tab="session" class="active">Session</button>
   <button data-tab="scenes">Scenes</button>
   <button data-tab="params">Parameters</button>
 </nav>
-<div id="dirty">Unsaved changes — tap Save on this tab (Start session saves too).</div>
+
+<div id="dirty" class="banner" hidden>
+  <span>Unsaved changes. Start session saves them too.</span>
+  <span class="actions"><button id="save_banner" class="small primary">Save</button><button id="discard_banner" class="small">Discard</button></span>
+</div>
 
 <!-- ============================ Session ============================ -->
-<section id="tab-session">
-  <div class="row"><span id="teleop_dot" class="dot off"></span><span id="teleop_state">checking...</span></div>
-  <div class="row muted" id="config_summary">loading configuration...</div>
-  <div class="row"><span id="mic_dot" class="dot off"></span><span id="mic_state">microphone idle</span></div>
-  <div id="level"><div id="bar"></div></div>
+<section id="tab-session" class="tab">
+  <div class="card">
+    <div class="row spread">
+      <h2 style="margin:0">Session</h2>
+      <span class="muted" id="config_summary">loading configuration...</span>
+    </div>
 
-  <!-- Row 1: the whole session. Start brings up mic + teleop, Finish tears both down. -->
-  <div class="row">
-    <button id="go" class="primary">Start session</button>
-    <button id="finish" class="primary danger">Finish session</button>
+    <!-- The path through a session, left to right. A step is "active" when it
+         is the next thing to do, "done" when its state has been reached, and
+         "pending" (dimmed) while an earlier step is still outstanding. -->
+    <div class="steps">
+      <div class="step" id="step1">
+        <div class="head"><span class="num">1</span><span class="name">Start session</span></div>
+        <div class="state" id="step1_state">checking...</div>
+        <!-- Start brings up mic + teleop and opens the client; with teleop
+             already up it (re)starts the mic in this tab and opens the client. -->
+        <button id="go" class="primary big">Start session</button>
+      </div>
+      <div class="step" id="step2">
+        <div class="head"><span class="num">2</span><span class="name">Accept certificate</span></div>
+        <div class="state" id="step2_state">waiting for teleop</div>
+        <!-- One-time per port: the NVIDIA-hosted client cannot open a socket back
+             here until this self-signed certificate is accepted for this origin. -->
+        <a id="cert" class="btn disabled" target="_blank" rel="noopener" href="#">Accept certificate</a>
+      </div>
+      <div class="step" id="step3">
+        <div class="head"><span class="num">3</span><span class="name">Open CloudXR</span></div>
+        <div class="state" id="step3_state">waiting for teleop</div>
+        <!-- A real link, not window.open: a popup opened after the readiness wait is
+             no longer tied to the tap and gets blocked silently. -->
+        <a id="cxr" class="btn disabled" target="_blank" rel="noopener" href="#">Open CloudXR</a>
+      </div>
+    </div>
+
+    <!-- Progress/result of the last tap; hidden until there is one. -->
+    <div id="status"></div>
+
+    <div class="row center">
+      <!-- Finish tears mic + teleop down. Two taps: the first arms it. -->
+      <button id="finish" class="danger" data-label="Finish session">Finish session</button>
+    </div>
+
+    <details class="more">
+      <summary>More controls</summary>
+      <div class="controls">
+        <div class="group">
+          <h3>Teleop process</h3>
+          <div class="row">
+            <button id="restart">Restart</button>
+            <button id="kill" class="danger" data-label="Kill">Kill</button>
+          </div>
+        </div>
+        <div class="group">
+          <h3>Microphone (this tab)</h3>
+          <div class="row"><button id="mictoggle">Start microphone</button></div>
+        </div>
+        <div class="group">
+          <h3>Diagnostics</h3>
+          <div class="row"><a class="btn" href="/log.html" target="_blank" rel="noopener">Open log</a></div>
+        </div>
+      </div>
+    </details>
   </div>
-  <!-- Row 2: the two taps the browser will not do for us. -->
-  <div class="row">
-    <!-- One-time per port: the NVIDIA-hosted client cannot open a socket back
-         here until this self-signed certificate is accepted for this origin. -->
-    <a id="cert" class="btn disabled" target="_blank" rel="noopener" href="#">Teleop not running</a>
-    <!-- A real link, not window.open: a popup opened after the readiness wait is
-         no longer tied to the tap and gets blocked silently. -->
-    <a id="cxr" class="btn disabled" target="_blank" rel="noopener" href="#">Open CloudXR</a>
-  </div>
-  <!-- Row 3: the parts, controlled one at a time. -->
-  <div class="row">
-    <button id="restart">Restart teleop</button>
-    <button id="kill" class="danger">Kill teleop</button>
-    <button id="mic">Start microphone</button>
-    <button id="micstop" class="danger">Stop microphone</button>
-  </div>
-  <!-- Row 4: the log opens as its own page, readable at headset distance. -->
-  <div class="row">
-    <a class="btn" href="/log.html" target="_blank" rel="noopener">Log</a>
-  </div>
-  <!-- Progress/result of the last tap; hidden until there is one. -->
-  <div id="status"></div>
 </section>
 
 <!-- ============================ Scenes ============================ -->
-<section id="tab-scenes" hidden>
-  <div class="field">
-    <label>Record directory <span class="hint">(one HDF5 per episode)</span></label>
-    <input id="record_dir" class="wide" data-key="record_dir">
-  </div>
-  <div class="row seg">
-    <button data-source="local">Local directory</button>
-    <button data-source="server">Fleet server</button>
-  </div>
-  <div id="local_pane">
+<section id="tab-scenes" class="tab" hidden>
+  <div class="card">
+    <h2>Recording</h2>
     <div class="field">
-      <label>Scene directory</label>
-      <input id="scene_dir" class="wide" data-key="scene_dir">
-      <button id="rescan" class="small">Rescan</button>
+      <label>Record directory <span class="hint">(one HDF5 per episode)</span></label>
+      <input id="record_dir" class="wide" data-key="record_dir">
     </div>
-    <div class="muted">Scenes found under the directory (recursive), with this machine's success / failure demo counts. Tap a row to toggle it.</div>
   </div>
-  <div id="server_pane" hidden>
-    <div class="field">
-      <label>Server URL</label>
-      <input id="fleet_server" class="wide" data-key="fleet_server" placeholder="http://fleet-host:8080">
-      <button id="connect" class="small">Connect</button>
+
+  <div class="card">
+    <div class="row spread">
+      <h2 style="margin:0">Scene source</h2>
+      <div class="seg">
+        <button data-source="local">Local directory</button>
+        <button data-source="server">Fleet server</button>
+      </div>
     </div>
-    <div class="field">
-      <label>Collector ID <span class="hint">(default: hostname)</span></label>
-      <input id="collector_id" data-key="collector_id">
-      <label>Token <span class="hint">(default: $FLEET_TOKEN)</span></label>
-      <input id="fleet_token" type="password" data-key="fleet_token">
+    <div id="local_pane">
+      <div class="field">
+        <label>Scene directory</label>
+        <input id="scene_dir" class="wide" data-key="scene_dir">
+        <button id="rescan" class="small">Rescan</button>
+      </div>
+      <div class="muted">Scenes found under the directory (recursive), with this machine's success / failure demo counts.</div>
     </div>
-    <div id="fleet_status" class="muted">Not connected.</div>
+    <div id="server_pane" hidden>
+      <div class="field">
+        <label>Server URL</label>
+        <input id="fleet_server" class="wide" data-key="fleet_server" placeholder="http://fleet-host:8080">
+        <button id="connect" class="small">Connect</button>
+      </div>
+      <div class="field">
+        <label>Collector ID <span class="hint">(default: hostname)</span></label>
+        <input id="collector_id" data-key="collector_id">
+        <label>Token <span class="hint">(default: $FLEET_TOKEN)</span></label>
+        <input id="fleet_token" type="password" data-key="fleet_token">
+      </div>
+      <div id="fleet_status" class="muted">Not connected.</div>
+    </div>
   </div>
-  <div class="row">
-    <button id="sel_all" class="small">Select all</button>
-    <button id="sel_none" class="small">Select none</button>
-    <button id="sel_needed" class="small" hidden>Select needed</button>
-    <span id="sel_count" class="muted"></span>
+
+  <div class="card">
+    <div class="row spread">
+      <h2 style="margin:0">Scenes to collect</h2>
+      <span id="sel_count" class="muted"></span>
+    </div>
+    <div class="row">
+      <button id="sel_all" class="small">Select all</button>
+      <button id="sel_none" class="small">Select none</button>
+      <button id="sel_needed" class="small" hidden>Select needed</button>
+      <span class="muted">Tap a row to toggle it.</span>
+    </div>
+    <div style="overflow-x:auto"><table id="scenes"><thead><tr id="scene_head"></tr></thead><tbody id="scene_body"></tbody></table></div>
+    <div id="scene_note" class="muted"></div>
   </div>
-  <table id="scenes"><thead><tr id="scene_head"></tr></thead><tbody id="scene_body"></tbody></table>
-  <div id="scene_note" class="muted"></div>
-  <div class="row"><button id="save_scenes" class="primary">Save</button></div>
+  <div class="row center"><button id="save_scenes" class="primary">Save</button></div>
 </section>
 
 <!-- ============================ Parameters ============================ -->
-<section id="tab-params" hidden>
-  <div class="muted">Only settings that differ from the defaults are passed to teleop.</div>
+<section id="tab-params" class="tab" hidden>
+  <div class="muted" style="margin:0 0 0.8em">Only settings that differ from the defaults are passed to teleop.</div>
   <div id="param_groups"></div>
-  <div class="row">
+  <div class="row center">
     <button id="save_params" class="primary">Save</button>
     <button id="reset_params">Reset to defaults</button>
   </div>
 </section>
+</div>
 
 <script>
 // Registering this is what lets the headset offer "Install"/"Add to library".
@@ -180,8 +203,8 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").cat
 
 const RATE = 16000, CHUNK = 1600, SUPERSEDED = 4001;
 const $ = id => document.getElementById(id);
-const status = t => $("status").textContent = t;
 let ws = null, started = false, micStream = null, cxrUrl = null, audioCtx = null;
+$("host").textContent = location.host;
 
 async function api(path, method) {
   const r = await fetch(path, { method: method || "GET", headers: { "X-Teleop-Control": "1" } });
@@ -227,14 +250,16 @@ function showTab(name) {
   activeTab = name;
   document.querySelectorAll("nav.tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
   for (const t of ["session", "scenes", "params"]) $("tab-" + t).hidden = t !== name;
+  history.replaceState(null, "", name === "session" ? location.pathname : "#" + name);  // so /#scenes can be bookmarked
   if (name !== "session") loadState();  // fresh counts / fleet numbers whenever a config tab is opened
 }
+if (["scenes", "params"].includes(location.hash.slice(1))) showTab(location.hash.slice(1));
 
 // ---- configuration model ---------------------------------------------------
 // `state` is what the server last sent (settings, schema, table rows, fleet
 // status); `settings` is the copy the operator edits until Save.
 let state = null, settings = null, dirty = false;
-function markDirty(flag) { dirty = flag; $("dirty").style.display = flag ? "block" : "none"; }
+function markDirty(flag) { dirty = flag; $("dirty").hidden = !flag; }
 const activeSource = () => settings.scene_source === "server" ? "server" : "local";
 
 async function loadState() {
@@ -253,6 +278,15 @@ async function saveAll() {
   markDirty(false);
   applyState(r.state);
 }
+function discardEdits() {
+  if (!state) return;
+  if (document.activeElement) document.activeElement.blur();  // render() leaves the focused input alone
+  settings = JSON.parse(JSON.stringify(state.settings));
+  markDirty(false);
+  render();
+}
+$("save_banner").onclick = () => saveAll().catch(e => alert(e.message));
+$("discard_banner").onclick = discardEdits;
 
 function render() {
   if (!settings) return;
@@ -314,7 +348,7 @@ function renderTable() {
     const cells = server
       ? [row.progress, row.workers.join(", ")]
       : [row.success, row.failure];
-    tr.innerHTML = `<td class="tick">${on ? "&#10003;" : ""}</td><td class="name">${row.name}</td>`
+    tr.innerHTML = `<td class="tick"><span>${on ? "&#10003;" : ""}</span></td><td class="name">${row.name}</td>`
       + cells.map((c, i) => `<td class="${server ? "" : "num"}">${c}</td>`).join("");
     tr.onclick = () => { setRow(row.name, !on); renderTable(); };
     body.appendChild(tr);
@@ -362,6 +396,7 @@ function renderParams() {
   for (const group of state.groups) {
     const fs = document.createElement("fieldset");
     fs.innerHTML = `<legend>${group}</legend>`;
+    const grid = document.createElement("div"); grid.className = "grid2";
     let shown = 0;
     for (const p of state.schema.filter(p => p.group === group)) {
       if (hidden.has(p.flag)) continue;
@@ -383,8 +418,9 @@ function renderParams() {
         f.querySelector("input").value = v === undefined || v === null ? "" : v;
         f.querySelector("input").oninput = e => { settings.params[p.flag] = e.target.value; markDirty(true); };
       }
-      fs.appendChild(f);
+      grid.appendChild(f);
     }
+    fs.appendChild(grid);
     if (group === "Network ports") { const n = document.createElement("div"); n.className = "muted"; n.textContent = state.ports_note; fs.appendChild(n); }
     if (shown) host.appendChild(fs);
   }
@@ -395,7 +431,44 @@ $("reset_params").onclick = () => {
   markDirty(true); renderParams();
 };
 
-// ---- status polling -------------------------------------------------------
+// ---- live status ------------------------------------------------------------
+// `live` is the last /status poll; `ui` is what the session flow wants shown
+// on top of it (busy while a tap is in progress, which step to draw attention
+// to). Everything on the status bar and the session card is derived from the
+// two in renderLive(), so no button ever has to remember its own state.
+let live = { s: null, appOk: null };
+let ui = { busy: false, certPrompt: false, cxrPrompt: false };
+const status = t => { $("status").textContent = t; };
+function setBusy(flag) { ui.busy = flag; $("status").classList.toggle("busy", flag); renderLive(); }
+
+function fmtDur(sec) {
+  sec = Math.round(sec);
+  if (sec < 60) return sec + " s";
+  const m = Math.floor(sec / 60), s = sec % 60;
+  if (m < 60) return m + " m " + String(s).padStart(2, "0") + " s";
+  return Math.floor(m / 60) + " h " + String(m % 60).padStart(2, "0") + " m";
+}
+function chip(id, tone, value, href) {
+  const el = $(id);
+  el.querySelector(".dot").className = "dot" + (tone ? " " + tone : "");
+  el.querySelector(".v").textContent = value;
+  if (el.tagName === "A") {
+    el.classList.toggle("tap", !!href);
+    if (href) el.href = href; else el.removeAttribute("href");
+  }
+}
+function setStep(n, mode, text, tone) {
+  $("step" + n).className = "step " + mode;
+  const st = $("step" + n + "_state");
+  st.textContent = text;
+  st.className = "state" + (tone ? " " + tone : "");
+}
+function setLink(el, enabled, attention) {
+  el.classList.toggle("disabled", !enabled);
+  el.setAttribute("aria-disabled", enabled ? "false" : "true");
+  el.classList.toggle("attention", !!(enabled && attention));
+}
+
 // Whether this browser already trusts the proxy's certificate. A no-cors fetch
 // resolves (opaque) once the certificate has been accepted for that host and
 // port, and rejects while it has not. Only meaningful while the port is up,
@@ -412,59 +485,82 @@ async function probeCert(url) {
 async function refresh() {
   try {
     const s = await api("/status");
+    live.s = s; live.appOk = true;
     cxrUrl = s.cloudxr_url;
     $("cxr").href = cxrUrl;  // kept current, so the link is always tappable
-    const cert = $("cert"), cxr = $("cxr");
-    cert.href = s.cert_url;
+    $("cert").href = s.cert_url;
     if (!s.cloudxr_ready) {
-      // The proxy port is not listening yet. The certificate button doubles as
-      // the boot indicator here: tapping it now would hang on a dead port for
-      // as long as teleop takes to come up, so it is inert until then. The
-      // CloudXR link likewise sheds any "ready" glow left over from a previous
-      // run, which otherwise survives a kill/restart and lies.
-      cert.classList.add("disabled"); cert.classList.remove("ready", "ok");
-      cert.textContent = s.running ? "Preparing teleop..." : "Teleop not running";
-      cxr.classList.add("disabled"); cxr.classList.remove("ready");
-      certOk = null;
-    } else {
-      cert.classList.remove("disabled");
-      cxr.classList.remove("disabled");
-      if (certOk !== true && Date.now() - lastProbe > 3000) {
-        lastProbe = Date.now();
-        certOk = await probeCert(s.cert_url);
-      }
-      if (certOk) {
-        cert.textContent = "Teleop ready - certificate OK";
-        cert.classList.add("ok"); cert.classList.remove("ready");
-      } else {
-        cert.textContent = "Teleop ready - accept certificate";
-        cert.classList.remove("ok");
-      }
+      // The proxy port is not listening yet: a leftover "accepted" from a
+      // previous run would lie after a kill/restart, so forget it.
+      certOk = null; ui.cxrPrompt = false;
+    } else if (certOk !== true && Date.now() - lastProbe > 3000) {
+      lastProbe = Date.now();
+      certOk = await probeCert(s.cert_url);
     }
-    // "running" means the process is alive; it spends ~30-60 s loading the
-    // sim before CloudXR listens. Calling that "running" next to a button
-    // saying "Preparing teleop..." read as a contradiction, so the process
-    // state is split into starting / running.
-    const up = " (pid " + s.pid + ", up " + Math.round(s.uptime_s) + "s)";
-    $("teleop_dot").className = "dot " + (!s.running ? "off" : s.cloudxr_ready ? "on" : "booting");
-    $("teleop_state").textContent = !s.running
-      ? "teleop stopped" + (s.exit_code === null ? "" : " (exit " + s.exit_code + ")")
-      : s.cloudxr_ready ? "teleop running" + up : "teleop starting - loading the simulator" + up;
+    if (certOk === true) ui.certPrompt = false;
     if (s.summary && !dirty) $("config_summary").textContent = s.summary;
-    $("mic_dot").className = "dot " + (s.mic_connected ? "on" : "off");
-    if (s.mic_connected && !started) {
-      // The server sees a page streaming, but it is not this one: either a
-      // second app tab, or a socket this page just closed that the server has
-      // not timed out yet. Saying "streaming" here read as Stop having failed.
-      $("mic_state").textContent = "microphone streaming from another tab";
-    } else if (s.mic_connected) {
-      const age = s.mic_silent_s;
-      $("mic_state").textContent = (age !== null && age > 4)
-        ? "microphone connected but silent " + age + "s" : "microphone streaming";
-    } else {
-      $("mic_state").textContent = started ? "microphone starting..." : "microphone idle";
-    }
-  } catch (e) { $("teleop_state").textContent = "app unreachable"; }
+  } catch (e) { live.appOk = false; }
+  renderLive();
+}
+
+function renderLive() {
+  const s = live.s, app = live.appOk;
+  chip("c_app", app === null ? "warn" : app ? "ok" : "bad", app === null ? "connecting" : app ? "connected" : "unreachable");
+  $("statusbar").classList.toggle("stale", app === false);  // the other chips are the last thing we heard
+  if (!s) return;
+  const ready = s.running && s.cloudxr_ready;
+  const up = s.running ? fmtDur(s.uptime_s) : "";
+
+  // -- status bar --
+  // "running" means the process is alive; it spends ~30-60 s loading the sim
+  // before CloudXR listens, so the process state is split into starting /
+  // running rather than calling a still-booting run "running".
+  chip("c_teleop", !s.running ? "" : ready ? "ok" : "warn",
+       !s.running ? "stopped" + (s.exit_code === null ? "" : " (exit " + s.exit_code + ")")
+                  : ready ? "running " + up : "starting " + up);
+  chip("c_cxr", ready ? "ok" : s.running ? "warn" : "", ready ? "ready :" + s.proxy_port : s.running ? "port :" + s.proxy_port + " not up" : "off");
+  chip("c_cert", !ready ? "" : certOk ? "ok" : "warn",
+       !ready ? "—" : certOk ? "accepted" : certOk === false ? "tap to accept" : "checking", ready && !certOk ? s.cert_url : null);
+  if (s.mic_connected && !started) {
+    // The server sees a page streaming, but it is not this one: either a
+    // second app tab, or a socket this page just closed that the server has
+    // not timed out yet. Saying "streaming" here read as Stop having failed.
+    chip("c_mic", "warn", "another tab");
+  } else if (s.mic_connected) {
+    const age = s.mic_silent_s;
+    if (age !== null && age > 4) chip("c_mic", "warn", "silent " + Math.round(age) + " s");
+    else chip("c_mic", "ok", s.consumers ? "streaming → teleop" : "streaming");
+  } else {
+    chip("c_mic", started ? "warn" : "", started ? "connecting" : "idle");
+  }
+  if (s.scene_source === "server") {
+    const f = s.fleet;
+    chip("c_scenes", !f ? "warn" : f.connected ? "ok" : f.error ? "bad" : "warn",
+         !f ? "fleet: no server" : f.connected ? "fleet · " + f.online + " online" : f.error ? "fleet unreachable" : "fleet connecting");
+  } else chip("c_scenes", "", "local directory");
+
+  // -- steps --
+  if (!s.running) setStep(1, "active", "Teleop is stopped. Start brings up the microphone and teleop.");
+  else if (!ready) setStep(1, "active", "Starting: loading the simulator, " + up, "warn");
+  else setStep(1, "done", "Running for " + up + (started ? "" : ". Resume restarts the mic in this tab."));
+  if (!ready) setStep(2, "pending", "Waiting for teleop");
+  else if (certOk) setStep(2, "done", "Accepted for this browser");
+  else setStep(2, "active", "Tap, accept the browser warning, then come back here", "warn");
+  if (!ready) setStep(3, "pending", "Waiting for teleop");
+  else setStep(3, ready && certOk ? "active" : "pending", "Opens in a new tab. Keep this tab open: the mic runs here.");
+
+  // -- buttons --
+  const go = $("go");
+  go.textContent = ui.busy ? "Working..." : s.running ? "Resume session" : "Start session";
+  go.disabled = ui.busy || !app;
+  setLink($("cert"), ready && certOk !== true, ui.certPrompt);
+  setLink($("cxr"), ready, ui.cxrPrompt);
+  $("finish").disabled = ui.busy || (!s.running && !started && !s.mic_connected);
+  $("restart").disabled = ui.busy || !s.running;
+  $("kill").disabled = ui.busy || !s.running;
+  const mt = $("mictoggle");
+  mt.textContent = started ? "Stop microphone" : "Start microphone";
+  mt.classList.toggle("danger", started);
 }
 setInterval(refresh, 1500);
 refresh();
@@ -476,6 +572,7 @@ setInterval(() => { if (activeTab === "scenes" && settings && activeSource() ===
 function standDown(msg) {
   status(msg); started = false; $("bar").style.width = "0%";
   if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  renderLive();
 }
 
 function connect() {
@@ -502,6 +599,7 @@ async function startMic() {
     return false;
   }
   started = true; micStream = stream;
+  renderLive();
   const ctx = audioCtx = new AudioContext();
   // A tab that is PLAYING audio is exempt from Chromium's background-tab
   // freezing, which otherwise kills capture minutes into an immersive session.
@@ -538,9 +636,6 @@ async function startMic() {
   return true;
 }
 
-// ---- buttons --------------------------------------------------------------
-$("mic").onclick = () => startMic();
-
 function stopMic() {
   // Detach handlers before tearing down: onclose would otherwise reconnect and
   // the track's onended would treat this as a lost mic and start it again.
@@ -549,12 +644,31 @@ function stopMic() {
   if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
   started = false; $("bar").style.width = "0%";
   status("microphone stopped");
+  renderLive();
 }
-$("micstop").onclick = stopMic;
+
+// ---- buttons --------------------------------------------------------------
+// Stopping a live run loses the episode being recorded, so Finish and Kill
+// take two taps: the first arms the button for a few seconds, the second fires.
+function confirmTap(btn, action) {
+  let timer = null;
+  const disarm = () => { clearTimeout(timer); timer = null; btn.classList.remove("armed"); btn.textContent = btn.dataset.label; };
+  btn.onclick = () => {
+    if (timer === null) {
+      btn.classList.add("armed"); btn.textContent = "Tap again to confirm";
+      timer = setTimeout(disarm, 4000);
+      return;
+    }
+    disarm();
+    action();
+  };
+}
+
+$("mictoggle").onclick = () => started ? stopMic() : startMic();
+$("cxr").onclick = () => { ui.cxrPrompt = false; renderLive(); };
 
 $("go").onclick = async () => {
-  const go = $("go");
-  go.disabled = true;
+  setBusy(true);
   try {
     if (dirty) {
       status("saving settings...");
@@ -575,27 +689,26 @@ $("go").onclick = async () => {
       await new Promise(r => setTimeout(r, 2000));
       s = await api("/status");
       if (!s.running && s.exit_code !== null) {
-        status("teleop exited (code " + s.exit_code + ") - tap Log to see why");
+        status("teleop exited (code " + s.exit_code + ") - open the log to see why");
         return;
       }
-      status("waiting for teleop to come up... " + Math.round((Date.now() - (deadline - 180000)) / 1000) + "s");
+      status("waiting for teleop to come up... " + Math.round((Date.now() - (deadline - 180000)) / 1000) + " s");
     }
-    if (!s.cloudxr_ready) { status("teleop did not come up in 3 min - tap Log"); return; }
+    if (!s.cloudxr_ready) { status("teleop did not come up in 3 min - open the log"); return; }
     // Certificate gate. The NVIDIA-hosted client cannot open its socket to the
     // proxy until this browser has accepted the proxy's certificate, and that
     // acceptance is not always remembered between sessions. Only ask when the
     // probe says it is actually missing, then advance as soon as it is granted.
     if (!(await probeCert(s.cert_url))) {
-      const cert = $("cert");
-      cert.classList.remove("disabled"); cert.classList.add("ready");
-      status("tap the green certificate button, accept the warning, then come back to this tab");
+      certOk = false; ui.certPrompt = true; renderLive();
+      status("step 2: tap 'Accept certificate', accept the warning, then come back to this tab");
       const certDeadline = Date.now() + 300000;
       while (Date.now() < certDeadline && !(await probeCert(s.cert_url))) {
         await new Promise(r => setTimeout(r, 2000));
       }
-      cert.classList.remove("ready");
+      ui.certPrompt = false;
       if (!(await probeCert(s.cert_url))) {
-        status("certificate still not accepted - tap the certificate button, then 'Open CloudXR'");
+        status("certificate still not accepted - tap 'Accept certificate', then 'Open CloudXR'");
         return;
       }
     }
@@ -603,32 +716,35 @@ $("go").onclick = async () => {
     // Try to open it directly, but the tap that started this is long expired,
     // so the browser may refuse. window.open returns null when it does.
     const w = window.open(s.cloudxr_url, "_blank");
-    const cxr = $("cxr");
-    cxr.href = s.cloudxr_url;
+    $("cxr").href = s.cloudxr_url;
     if (w) {
       status("running - keep THIS tab open, the mic runs here");
     } else {
-      cxr.classList.add("ready");
-      status("ready - tap 'Open CloudXR' below (keep THIS tab open, the mic runs here)");
+      ui.cxrPrompt = true;
+      status("ready - step 3: tap 'Open CloudXR' (keep THIS tab open, the mic runs here)");
     }
   } finally {
-    go.disabled = false;
+    setBusy(false);
   }
 };
 $("restart").onclick = async () => {
-  if (dirty) { try { await saveAll(); } catch (e) { status("could not save settings: " + e.message); return; } }
-  status("restarting..."); status((await api("/restart", "POST")).message);
+  setBusy(true);
+  try {
+    if (dirty) { try { await saveAll(); } catch (e) { status("could not save settings: " + e.message); return; } }
+    status("restarting..."); status((await api("/restart", "POST")).message);
+  } finally { setBusy(false); }
 };
-$("kill").onclick = async () => { status("killing..."); status((await api("/stop", "POST")).message); };
-$("finish").onclick = async () => {
-  const b = $("finish");
-  b.disabled = true;
+confirmTap($("kill"), async () => {
+  setBusy(true);
+  try { status("killing..."); status((await api("/stop", "POST")).message); }
+  finally { setBusy(false); }
+});
+confirmTap($("finish"), async () => {
+  setBusy(true);
   try {
     stopMic();
     status("finishing session - stopping teleop...");
     status("session finished - " + (await api("/stop", "POST")).message);
-  } finally {
-    b.disabled = false;
-  }
-};
+  } finally { setBusy(false); }
+});
 </script>

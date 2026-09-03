@@ -306,14 +306,28 @@ link rather than baking them in, and hands the client `serverIP` and `port` as
 query params so its connection fields arrive filled in.
 
 It runs as a **supervisor**, independent of any teleop run, so it is still
-reachable when teleop is stopped or wedged — which is when you need it. **Start
-session** starts the microphone, launches teleop if it is down, and opens the
-CloudXR client in a new tab; **Finish session** next to it is the mirror image,
-stopping the microphone and teleop together. The rows below control the parts
-one at a time: the certificate and CloudXR links, then **Restart teleop**,
-**Kill teleop**, **Start microphone** and **Stop microphone**, then **Log**, which opens
-the last 200 lines of the run in its own live-updating page at a font readable
-inside the headset. **Kill teleop** signals the whole process group
+reachable when teleop is stopped or wedged — which is when you need it. A
+**status bar** under the title stays visible on every tab and shows everything
+the app monitors: its own link to the page, the teleop process (stopped /
+starting / running with its uptime), the CloudXR proxy port, whether this
+browser has accepted the proxy's certificate (the chip is a link while it has
+not), the microphone (idle / streaming / silent, with a level meter, and
+"another tab" when a different page holds it), and the scene source (local
+directory, or the fleet server's connection state). The Session tab lays the
+flow out as three numbered steps, left to right: **1 Start session** starts the
+microphone, launches teleop if it is down, waits for the XR stack, and opens
+the CloudXR client; **2 Accept certificate** lights up only when the browser
+still needs to accept the proxy's certificate; **3 Open CloudXR** is the link
+to tap when the browser refused to open the client by itself. Steps that do
+not apply yet are dimmed and their buttons disabled. **Finish session** below
+is the mirror image of Start, stopping the microphone and teleop together; it
+and **Kill** ask for a second tap within a few seconds, since stopping a live
+run loses the episode being recorded. **More controls** folds away the parts
+one at a time — **Restart** and **Kill** for the teleop process (disabled while
+it is not running), a single **Start/Stop microphone** toggle for this tab, and
+**Open log**, which shows the last 200 lines of the run in its own
+live-updating page at a font readable inside the headset (also reachable from
+the **Log** button in the header). **Kill** signals the whole process group
 (SIGINT, then SIGTERM, then SIGKILL) and then reaps the CloudXR runtime that
 normally outlives it holding 49100/48322 — the thing `Ctrl-C` alone leaves
 behind. The sweep only touches runtimes younger than the run it just stopped

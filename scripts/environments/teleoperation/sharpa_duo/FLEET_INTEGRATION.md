@@ -29,6 +29,7 @@ the configuration logic.
         ├── teleop_launcher.py   desktop (tkinter): renders the schema, Tk widgets only
         └── teleop_app.py        headset service: SessionConfigurator + /control JSON channel
               └── teleop_app_page.html   Session | Scenes | Parameters tabs
+                  teleop_app_page.css    its stylesheet (served at /app.css)
  fleet_client.py   ── FleetClient (used by make_teleop_scene.py during a run)
                       FleetMonitor (read-only status poller used by both UIs)
 ```
@@ -63,7 +64,14 @@ changes, so the two never fight.
   links, Restart/Kill/Start mic/Stop mic, the Log link to `/log.html`, the
   starting/running split of the status line) with two tabs added. The log
   page itself stays an inline constant in `teleop_app.py`, as upstream wrote
-  it.
+  it. The page was later restyled: the stylesheet moved to
+  `teleop_app_page.css` (read per request like the page), a status bar on
+  every tab shows what the app monitors (app link, teleop process, CloudXR
+  port, certificate, microphone with level meter, scene source — the last two
+  come from new `scene_source` / `fleet` fields in `/status`), the Session
+  tab became three numbered steps with buttons disabled while they cannot
+  apply, Finish/Kill need a confirming second tap, and the tab can be picked
+  by URL hash (`/#scenes`, `/#params`).
 - **`fleet_client.py`**, **`fleet_push_scenes.py`** — copied from
   `cyqian/fleet-collection` (pure stdlib). `FleetMonitor` was added to
   `fleet_client.py`: a thread that polls `/api/status` every 15 s and exposes

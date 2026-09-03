@@ -134,8 +134,9 @@ After editing `teleop_app.py` (or `session_config.py`, `fleet_client.py`):
 systemctl --user restart teleop-app.service
 ```
 
-An edit to the page itself, `teleop_app_page.html`, needs no restart: the
-app reads it from disk on every request, so a reload on the headset shows it.
+An edit to the page itself, `teleop_app_page.html`, or to its stylesheet,
+`teleop_app_page.css`, needs no restart: the app reads both from disk on
+every request, so a reload on the headset shows it.
 
 A running teleop survives this (the unit uses `KillMode=process`) and the new
 instance adopts it, so status and Kill keep working. Headset tabs that are

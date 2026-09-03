@@ -1,0 +1,206 @@
+/*
+  Stylesheet for the headset control page (teleop_app_page.html) and the log
+  page, served by teleop_app.py at /app.css and read from disk per request, so
+  an edit shows on the next reload.
+
+  Designed for the Quest browser at arm's length: dark, high contrast, large
+  tap targets (every control is at least 2.75em tall), no hover-only cues, and
+  state shown by colour AND text (the pulsing amber "booting" dot, for example,
+  always sits next to the word "starting").
+*/
+
+:root {
+  --bg: #0e1015;
+  --surface: #171a21;
+  --surface-2: #1f232c;
+  --border: #2b303b;
+  --text: #e9ecf2;
+  --muted: #98a1b3;
+  --ok: #3ecf6d;
+  --ok-dim: #1f5c33;
+  --warn: #f2b83b;
+  --bad: #ef5a45;
+  --bad-dim: #6b2a22;
+  --accent: #58a6ff;
+  --radius: 0.75em;
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; padding: 0 1em 2.5em;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 17px; line-height: 1.35;
+  background: var(--bg); color: var(--text);
+  text-align: center;
+}
+.page { max-width: 62em; margin: 0 auto; }
+h1 { margin: 0; font-size: 1.5em; font-weight: 650; letter-spacing: 0.01em; }
+h2 { margin: 0 0 0.4em; font-size: 1.05em; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.muted { color: var(--muted); font-size: 0.95em; }
+.warn { color: var(--warn); }
+.bad { color: var(--bad); }
+[hidden] { display: none !important; }
+@keyframes pulse { 50% { opacity: 0.45; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- header + status bar ------------------------------------------------- */
+header { display: flex; align-items: center; justify-content: space-between; gap: 1em; padding: 0.9em 0 0.6em; }
+header .title { display: flex; align-items: baseline; gap: 0.7em; }
+header .host { color: var(--muted); font-size: 0.9em; }
+
+.statusbar {
+  display: flex; flex-wrap: wrap; gap: 0.5em; justify-content: center;
+  padding: 0.6em; margin-bottom: 0.8em;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.chip {
+  display: inline-flex; align-items: center; gap: 0.55em;
+  padding: 0.45em 0.85em 0.45em 0.7em; min-height: 2.4em;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px;
+  font-size: 0.95em; text-align: left; color: var(--text); text-decoration: none;
+}
+.chip .k { color: var(--muted); }
+.chip .v { font-weight: 550; white-space: nowrap; }
+.chip.tap { cursor: pointer; }
+.chip.tap:active { background: var(--border); }
+.chip.tap .v::after { content: " \2197"; color: var(--muted); }
+.statusbar.stale .chip:not(#c_app) { opacity: 0.45; }
+.dot { flex: none; width: 0.75em; height: 0.75em; border-radius: 50%; background: #5b6472; box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.25); }
+.dot.ok { background: var(--ok); box-shadow: 0 0 0 2px rgba(62, 207, 109, 0.25); }
+.dot.warn { background: var(--warn); animation: pulse 1.2s infinite; }
+.dot.bad { background: var(--bad); }
+/* Microphone level, inline in its chip. */
+.meter { width: 4.5em; height: 0.55em; background: #0b0d11; border-radius: 999px; overflow: hidden; border: 1px solid var(--border); }
+.meter > span { display: block; height: 100%; width: 0; background: var(--ok); transition: width 0.12s linear; }
+
+/* ---- tabs ---------------------------------------------------------------- */
+nav.tabs { display: flex; gap: 0.35em; margin-bottom: 0.8em; padding: 0.3em; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+nav.tabs button {
+  flex: 1; margin: 0; min-height: 2.9em; font-size: 1.05em; font-weight: 600;
+  background: transparent; color: var(--muted); border: 0; border-radius: calc(var(--radius) - 0.25em);
+}
+nav.tabs button.active { background: var(--surface-2); color: var(--text); box-shadow: var(--shadow); }
+section.tab { text-align: left; }
+
+/* Unsaved-changes banner: sticky so the Save is always one tap away. */
+.banner {
+  position: sticky; top: 0.4em; z-index: 5;
+  display: flex; align-items: center; justify-content: space-between; gap: 0.8em; flex-wrap: wrap;
+  margin: 0 0 0.8em; padding: 0.55em 0.55em 0.55em 1em;
+  background: #3a2f12; border: 1px solid #6a5417; border-radius: var(--radius); color: #ffd98a; text-align: left;
+}
+.banner .actions { display: flex; gap: 0.4em; }
+
+/* ---- cards --------------------------------------------------------------- */
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 1em 1.1em; margin: 0 0 0.8em; text-align: left; box-shadow: var(--shadow);
+}
+.card.plain { box-shadow: none; }
+
+/* ---- buttons ------------------------------------------------------------- */
+button, .btn {
+  -webkit-appearance: none; appearance: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5em;
+  min-height: 2.75em; padding: 0.55em 1.1em; margin: 0;
+  font: inherit; font-size: 1.05em; font-weight: 600; line-height: 1.2;
+  color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: calc(var(--radius) - 0.15em);
+  text-decoration: none; cursor: pointer; user-select: none; white-space: nowrap;
+  transition: transform 0.05s ease, background 0.15s ease, opacity 0.15s ease;
+}
+button:active, .btn:active { transform: scale(0.98); background: var(--border); }
+button:disabled, .btn.disabled, .btn[aria-disabled="true"] { opacity: 0.4; cursor: default; pointer-events: none; }
+button.small, .btn.small { min-height: 2.3em; font-size: 0.95em; padding: 0.35em 0.85em; }
+button.primary, .btn.primary { background: var(--ok); color: #06210f; border-color: transparent; }
+button.primary:active, .btn.primary:active { background: #35b85f; }
+button.danger, .btn.danger { background: transparent; color: var(--bad); border-color: var(--bad-dim); }
+button.danger:active, .btn.danger:active { background: var(--bad-dim); }
+button.danger.armed { background: var(--bad); color: #fff; border-color: transparent; animation: pulse 0.9s infinite; }
+button.big, .btn.big { font-size: 1.3em; min-height: 3.2em; padding: 0.6em 1.6em; }
+.btn.attention { animation: pulse 1.2s infinite; box-shadow: 0 0 0 3px rgba(62, 207, 109, 0.35); }
+button.sel { background: var(--ok); color: #06210f; }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5em; margin: 0.6em 0; }
+.row.center { justify-content: center; }
+.row.spread { justify-content: space-between; }
+.busy::before {
+  content: ""; width: 0.9em; height: 0.9em; border-radius: 50%;
+  border: 2px solid var(--muted); border-top-color: var(--text); animation: spin 0.8s linear infinite;
+}
+
+/* ---- session flow: three numbered steps ---------------------------------- */
+.steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.7em; margin: 0.6em 0 0.8em; }
+@media (max-width: 720px) { .steps { grid-template-columns: 1fr; } }
+.step {
+  position: relative; display: flex; flex-direction: column; gap: 0.5em;
+  padding: 0.9em 1em 1em; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.step.active { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
+.step.done { border-color: var(--ok-dim); }
+.step.pending { opacity: 0.6; }
+.step .head { display: flex; align-items: center; gap: 0.6em; }
+.step .num {
+  flex: none; width: 1.7em; height: 1.7em; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 0.9em; font-weight: 700; background: var(--border); color: var(--text);
+}
+.step.active .num { background: var(--ok); color: #06210f; }
+.step.done .num { background: var(--ok-dim); color: var(--ok); }
+.step .name { font-weight: 650; }
+.step .state { color: var(--muted); font-size: 0.95em; min-height: 1.3em; }
+.step .state.warn { color: var(--warn); }
+.step .state.bad { color: var(--bad); }
+.step .btn, .step button { align-self: stretch; }
+
+/* Progress / result of the last tap. */
+#status { display: flex; align-items: center; justify-content: center; gap: 0.6em; margin: 0.2em 0 0.4em; min-height: 1.6em; color: var(--muted); text-align: center; }
+#status:empty { display: none; }
+
+/* Secondary controls, folded away. */
+details.more { margin-top: 0.4em; }
+details.more > summary { list-style: none; cursor: pointer; color: var(--muted); padding: 0.6em 0; font-weight: 600; }
+details.more > summary::before { content: "\25B8"; display: inline-block; width: 1.2em; }
+details.more[open] > summary::before { content: "\25BE"; }
+details.more > summary::-webkit-details-marker { display: none; }
+.controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(16em, 1fr)); gap: 0.7em; }
+.controls .group { padding: 0.8em 0.9em; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); }
+.controls .group h3 { margin: 0 0 0.5em; font-size: 0.9em; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; }
+.controls .group .row { margin: 0; }
+.controls .group button, .controls .group .btn { flex: 1; }
+
+/* ---- forms --------------------------------------------------------------- */
+.field { display: flex; align-items: center; gap: 0.7em; margin: 0.55em 0; text-align: left; }
+.field label { flex: 1; min-width: 8em; }
+.field input, .field select {
+  font: inherit; font-size: 1.05em; padding: 0.5em 0.65em; min-height: 2.6em; min-width: 8em;
+  color: var(--text); background: #0b0d11; border: 1px solid var(--border); border-radius: calc(var(--radius) - 0.25em);
+}
+.field input:focus, .field select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.25); }
+.field input.wide { flex: 2; min-width: 0; }
+.field input[type=checkbox] { width: 1.7em; height: 1.7em; min-height: 0; min-width: 0; accent-color: var(--ok); }
+.field .hint { color: var(--muted); font-size: 0.85em; }
+fieldset { border: 1px solid var(--border); border-radius: var(--radius); margin: 0 0 0.8em; padding: 0.4em 1.1em 0.9em; background: var(--surface); text-align: left; }
+legend { color: var(--ok); padding: 0 0.4em; font-weight: 600; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(20em, 1fr)); column-gap: 1.5em; }
+.seg { display: inline-flex; padding: 0.25em; background: var(--surface-2); border: 1px solid var(--border); border-radius: calc(var(--radius) - 0.1em); }
+.seg button { background: transparent; border: 0; color: var(--muted); border-radius: calc(var(--radius) - 0.3em); }
+.seg button.active { background: var(--ok); color: #06210f; }
+
+/* ---- scene table --------------------------------------------------------- */
+table { width: 100%; border-collapse: collapse; text-align: left; font-size: 1.02em; }
+th, td { padding: 0.7em 0.6em; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 600; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.06em; }
+td.num, th.num { text-align: right; width: 5em; font-variant-numeric: tabular-nums; }
+tr.scene { cursor: pointer; }
+tr.scene:active { background: var(--surface-2); }
+tr.off td { color: #6f7887; }
+td.tick { width: 2em; }
+td.tick span {
+  display: inline-flex; width: 1.35em; height: 1.35em; align-items: center; justify-content: center;
+  border-radius: 0.3em; border: 1px solid var(--border); color: #06210f; font-weight: 700; font-size: 0.9em;
+}
+tr:not(.off) td.tick span { background: var(--ok); border-color: var(--ok); }
+tr.done td.name { color: var(--ok); }
+#scene_note { margin: 0.6em 0 0; }

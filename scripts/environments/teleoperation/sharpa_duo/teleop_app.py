@@ -94,6 +94,9 @@ _ISAACLAB_SH = os.path.abspath(os.path.join(_HERE, "..", "..", "..", "..", "isaa
 _PAGE_PATH = os.path.join(_HERE, "teleop_app_page.html")
 """The control page, read per request so an edit shows on the next reload."""
 
+_CSS_PATH = os.path.join(_HERE, "teleop_app_page.css")
+"""The page's stylesheet (served at ``/app.css``), read per request like the page."""
+
 _SUPERSEDED = 4001
 """Close code telling an older mic page a newer one took over (see :mod:`headset_mic`)."""
 
@@ -715,23 +718,31 @@ def _page_html() -> str:
         return f"<!doctype html><meta charset=utf-8><pre>cannot read {_PAGE_PATH}: {exc}</pre>"
 
 
+def _page_css() -> str:
+    """The stylesheet shared by the control page and the log page, read per request."""
+    try:
+        with open(_CSS_PATH, encoding="utf-8") as f:
+            return f.read()
+    except OSError as exc:
+        return f"/* cannot read {_CSS_PATH}: {exc} */"
+
+
 _LOG_PAGE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Teleop log</title>
+<link rel="stylesheet" href="/app.css">
 <style>
-  body { font-family: sans-serif; background: #111; color: #eee; margin: 0; padding: 1em; }
-  .bar { display: flex; align-items: center; gap: 1em; margin-bottom: 0.8em; font-size: 1.4em; }
-  .bar a, .bar button { font-size: 1em; padding: 0.4em 1em; border-radius: 0.5em; border: 0;
-                        background: #ddd; color: #111; text-decoration: none; }
-  #log { font-family: monospace; font-size: 1.35em; line-height: 1.35; white-space: pre-wrap;
-         word-break: break-word; background: #000; padding: 0.8em; border-radius: 0.4em; }
-  #meta { color: #999; }
+  body { text-align: left; }
+  .bar { display: flex; align-items: center; gap: 0.8em; margin-bottom: 0.8em; flex-wrap: wrap; }
+  #log { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 1.3em; line-height: 1.35;
+         white-space: pre-wrap; word-break: break-word; background: #000; color: #dfe3ea; padding: 0.8em;
+         border-radius: 0.6em; border: 1px solid var(--border); }
 </style>
 <div class="bar">
-  <a href="/">Back to teleop</a>
-  <button id="pause">Pause</button>
-  <span id="meta">loading...</span>
+  <a class="btn" href="/">&#8592; Back to teleop</a>
+  <button id="pause" class="btn">Pause</button>
+  <span id="meta" class="muted">loading...</span>
 </div>
 <pre id="log"></pre>
 <script>
@@ -823,8 +834,10 @@ class TeleopApp:
         """Everything the page polls, in one round trip."""
         try:
             summary = self._config.summary()
+            scene_source = self._config.settings().get("scene_source", "local")
+            fleet = self._config.fleet_status()
         except Exception as exc:  # noqa: BLE001 — a broken settings file must not take the page down
-            summary = f"configuration unavailable: {exc}"
+            summary, scene_source, fleet = f"configuration unavailable: {exc}", "local", None
         return {
             **self._teleop.status(),
             **self._mic.status(),
@@ -834,7 +847,19 @@ class TeleopApp:
             # nothing about the XR stack being up. The proxy port going live is
             # the signal that the client has something to connect to.
             "cloudxr_ready": _port_in_use(self._proxy_port()),
+            "proxy_port": self._proxy_port(),
             "summary": summary,
+            "scene_source": scene_source,
+            # Just enough of the fleet monitor for the status bar; the Scenes
+            # tab fetches the full picture (rows, totals) over /control.
+            "fleet": None
+            if fleet is None
+            else {
+                "connected": fleet["connected"],
+                "error": fleet["error"],
+                "online": len(fleet["online"]),
+                "server_url": fleet["server_url"],
+            },
         }
 
     # -- control channel -----------------------------------------------------
@@ -883,31 +908,22 @@ class TeleopApp:
             path, _, query = (request.path or "/").partition("?")
             if "upgrade" in request.headers.get("Connection", "").lower():
                 return None  # websocket routes are handled in the handler
+            # The page and its stylesheet change whenever the app is updated; a
+            # reload on the headset must always fetch them, never a cached copy.
             if path == "/":
-                r = connection.respond(http.HTTPStatus.OK, _page_html())
-                r.headers["Content-Type"] = "text/html; charset=utf-8"
-                # The page changes whenever the app is updated; a reload on the
-                # headset must always fetch it, never replay a cached copy.
-                r.headers["Cache-Control"] = "no-store"
-                return r
+                return self._text(connection, _page_html(), "text/html; charset=utf-8")
+            if path == "/app.css":
+                return self._text(connection, _page_css(), "text/css; charset=utf-8")
             if path == "/manifest.webmanifest":
-                r = connection.respond(http.HTTPStatus.OK, json.dumps(_MANIFEST))
-                r.headers["Content-Type"] = "application/manifest+json"
-                return r
+                return self._text(connection, json.dumps(_MANIFEST), "application/manifest+json")
             if path == "/sw.js":
-                r = connection.respond(http.HTTPStatus.OK, _SERVICE_WORKER)
-                r.headers["Content-Type"] = "text/javascript"
-                r.headers["Cache-Control"] = "no-store"
-                return r
+                return self._text(connection, _SERVICE_WORKER, "text/javascript")
             if path in ("/icon-192.png", "/icon-512.png"):
                 return self._binary(_icon_png(512 if "512" in path else 192), "image/png")
             if path == "/status":
                 return self._json(connection, self.status())
             if path == "/log.html":
-                r = connection.respond(http.HTTPStatus.OK, _LOG_PAGE)
-                r.headers["Content-Type"] = "text/html; charset=utf-8"
-                r.headers["Cache-Control"] = "no-store"
-                return r
+                return self._text(connection, _LOG_PAGE, "text/html; charset=utf-8")
             if path == "/log":
                 lines = urllib.parse.parse_qs(query).get("lines", ["40"])[0]
                 lines = max(1, min(int(lines), 2000)) if lines.isdigit() else 40
@@ -955,10 +971,23 @@ class TeleopApp:
             await asyncio.Future()  # run forever
 
     @staticmethod
-    def _json(connection, payload: dict):
-        r = connection.respond(http.HTTPStatus.OK, json.dumps(payload))
-        r.headers["Content-Type"] = "application/json"
+    def _text(connection, body: str, content_type: str):
+        """Serve text with the given type, uncached.
+
+        ``connection.respond`` stamps ``text/plain`` on its own, and assigning
+        the header again *adds* a second value rather than replacing it. The
+        browser then sees the first one, which is fatal for a stylesheet (the
+        MIME check is strict there), so the default is removed first.
+        """
+        r = connection.respond(http.HTTPStatus.OK, body)
+        del r.headers["Content-Type"]
+        r.headers["Content-Type"] = content_type
+        r.headers["Cache-Control"] = "no-store"
         return r
+
+    @classmethod
+    def _json(cls, connection, payload: dict):
+        return cls._text(connection, json.dumps(payload), "application/json")
 
     @staticmethod
     def _binary(body: bytes, content_type: str):
