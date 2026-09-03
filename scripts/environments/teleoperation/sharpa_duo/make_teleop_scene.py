@@ -671,6 +671,10 @@ def to_root_frame(env: ManagerBasedRLEnv, action: torch.Tensor) -> torch.Tensor:
     return out
 
 
+_FRAME_USD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "frame_prim.usd")
+"""Vendored Isaac Sim axis-frame prop (``Props/UIElements/frame_prim.usd``) for the auto-start markers."""
+
+
 class AutoStartMatcher:
     """Start teleop automatically when the operator's wrists match the robot's hands.
 
@@ -726,15 +730,18 @@ class AutoStartMatcher:
         try:
             import isaaclab.sim as sim_utils
             from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
-            from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 
-            frame_usd = f"{ISAAC_NUCLEUS_DIR}/Props/UIElements/frame_prim.usd"
+            # The vendored copy of Isaac Sim's frame_prim.usd, not the one on the
+            # cloud asset server: that download is cached under /tmp/Assets, a
+            # path shared by every user of the workstation, and a copy another
+            # account cached with owner-only permissions loads as an empty
+            # prototype — the frames then silently draw nothing.
             self._frame_markers = VisualizationMarkers(
                 VisualizationMarkersCfg(
                     prim_path="/Visuals/auto_start_frames",
                     markers={
-                        "flange": sim_utils.UsdFileCfg(usd_path=frame_usd, scale=(0.15, 0.15, 0.15)),
-                        "target": sim_utils.UsdFileCfg(usd_path=frame_usd, scale=(0.08, 0.08, 0.08)),
+                        "flange": sim_utils.UsdFileCfg(usd_path=_FRAME_USD, scale=(0.15, 0.15, 0.15)),
+                        "target": sim_utils.UsdFileCfg(usd_path=_FRAME_USD, scale=(0.08, 0.08, 0.08)),
                     },
                 )
             )
