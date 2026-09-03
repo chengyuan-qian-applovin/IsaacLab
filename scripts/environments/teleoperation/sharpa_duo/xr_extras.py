@@ -240,6 +240,31 @@ def current_head_pose() -> np.ndarray | None:
     return pose
 
 
+def bind_stage_anchor(teleop) -> None:
+    """Point the XR compositor at THIS scene's anchor prim.
+
+    Kit binds its stage anchor to the prim named by ``/xrstage/customAnchor``
+    when XR is enabled or the setting changes. Our multi-scene session keeps XR
+    enabled across scene switches while every switch rebuilds the stage and
+    recreates ``/World/XRAnchor`` under the same path — so the setting never
+    changes and the compositor stays bound to the deleted prim. Nobody notices
+    at first (the new prim starts where the old one ended, since the anchor is
+    carried across scenes), but from then on the renderer ignores every anchor
+    write: "align" moves the hand targets and not the view. Re-binding after
+    each scene's device is up makes the compositor follow the live prim again.
+    """
+    manager = teleop._anchor_manager
+    core, path = manager.xr_core, manager.anchor_headset_path
+    if core is None:
+        return
+    try:
+        bound = core.get_stage_anchor_prim_path()
+        core.schedule_set_stage_anchor(path)
+        print(f"[XR] Stage anchor bound to {path}" + ("" if bound == path else f" (compositor had {bound!r})"))
+    except Exception as exc:
+        print(f"[WARNING] Could not bind the XR stage anchor to {path}: {exc}")
+
+
 class AnchorAligner:
     """Re-anchor the XR session so the workspace sits straight in front of the user.
 
@@ -259,11 +284,17 @@ class AnchorAligner:
     pre-sync update (a direct write would be clobbered a frame later), so the
     aligner mutates that shared config instead — the synchronizer then propagates
     the new anchor to both the renderer and the pipeline's ``world_T_anchor``.
+    :meth:`align` also runs that push right away, and :meth:`verify` (called a
+    moment later) compares what the compositor actually renders with what the
+    pipeline uses, so a renderer that stopped following the anchor prim (see
+    :func:`bind_stage_anchor`) is reported instead of silently misaligning the
+    hand targets.
     """
 
     def __init__(
         self, teleop, target_head_xy: tuple[float, float], robot_yaw: float, target_head_z: float | None = None
     ):
+        self._teleop = teleop
         self._xr_cfg = teleop._anchor_manager._xr_cfg
         self._target_xy = np.asarray(target_head_xy, dtype=np.float64)
         self._target_z = None if target_head_z is None else float(target_head_z)
@@ -302,8 +333,42 @@ class AnchorAligner:
 
         self._xr_cfg.anchor_pos = tuple(float(v) for v in new_pos)
         self._xr_cfg.anchor_rot = tuple(float(v) for v in new_quat.as_quat())
+        self._push()
         print(
             f"[ALIGN] Re-anchored: yaw {np.degrees(dyaw):+.1f} deg, head xy ->"
             f" ({self._target_xy[0]:.2f}, {self._target_xy[1]:.2f}){height_note}"
         )
         return True
+
+    def _push(self) -> None:
+        """Write the new anchor to the renderer and the pipeline now, not at the next pre-sync update."""
+        sync = getattr(self._teleop._anchor_manager, "_anchor_sync", None)
+        if sync is not None:
+            sync.sync_headset_to_anchor()
+
+    def verify(self, tolerance_m: float = 0.02) -> str | None:
+        """Check that the compositor renders from the anchor the pipeline uses.
+
+        Compares the translation of the compositor's physical-to-virtual
+        transform (what the headset actually sees) with the anchor position
+        the synchronizer last pushed (what the hand targets are computed
+        from). Returns a description of the mismatch, or None when they agree
+        or the compositor exposes no transform (no XR session yet).
+        """
+        manager = self._teleop._anchor_manager
+        sync = getattr(manager, "_anchor_sync", None)
+        core = manager.xr_core
+        if sync is None or core is None:
+            return None
+        pushed = sync.get_world_transform()
+        rendered = core.get_physical_to_virtual_world_transform()
+        if pushed is None or rendered is None:
+            return None
+        rendered_pos = np.array(rendered.ExtractTranslation(), dtype=np.float64)
+        gap = float(np.linalg.norm(rendered_pos - pushed[0]))
+        if gap <= tolerance_m:
+            return None
+        return (
+            f"the headset renders from anchor {np.round(rendered_pos, 3).tolist()} but the hand targets use"
+            f" {np.round(pushed[0], 3).tolist()} ({gap:.2f} m apart)"
+        )

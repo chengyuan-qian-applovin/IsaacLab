@@ -1462,6 +1462,7 @@ def run_teleop(
         XR_CONTROLLERS_DIM,
         XR_EXTRAS_DIM,
         AnchorAligner,
+        bind_stage_anchor,
         HandJointMarkers,
         apply_arm_visual,
         current_head_pose,
@@ -1616,10 +1617,14 @@ def run_teleop(
         "Episode timeout discards without export."
     )
     stdin_reader = _AdjustStdinReader(flow) if flow.adjuster is not None else None
+    align_verify_at: float | None = None  # when to check that an "align" reached the renderer
     with teleop, torch.inference_mode():
         env.reset()
         settle_scene(env)
         teleop.reset()
+        # This scene's stage recreated the anchor prim; the compositor is still
+        # bound to the previous scene's (deleted) one until told otherwise.
+        bind_stage_anchor(teleop)
         while simulation_app.is_running():
             # An exception escaping this loop means simulation_app.close() under a
             # live XR session, which can deadlock kit's shutdown — catch, report,
@@ -1641,7 +1646,14 @@ def run_teleop(
                 action = teleop.advance()
                 flow.handle_control_events(poll_control_events)
 
-                serve_align(flow, aligner, current_head_pose)
+                if serve_align(flow, aligner, current_head_pose):
+                    align_verify_at = time.monotonic() + 0.5  # the compositor applies the anchor on its next frame
+                if align_verify_at is not None and time.monotonic() >= align_verify_at:
+                    align_verify_at = None
+                    mismatch = aligner.verify()
+                    if mismatch is not None:
+                        print(f"[ALIGN] WARNING: the view did not follow — {mismatch}. Re-binding; say 'align' again.")
+                        bind_stage_anchor(teleop)
 
                 # action is None until the XR session has started.
                 if action is None:

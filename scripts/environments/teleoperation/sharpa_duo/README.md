@@ -175,7 +175,15 @@ until you face the robot's forward axis, moves you to `--align_head_xy`
 floor calibration instead — the port of the source branch's AVP Align
 button, with voice replacing the button. The head pose is
 queried from XRCore on demand; do NOT put a head tracker in the retargeting
-pipeline (it makes every session step fail on this stack).
+pipeline (it makes every session step fail on this stack). The new anchor is
+pushed to the renderer and the retargeting pipeline at once, and half a
+second later the two are compared: if the headset view did not follow (the
+symptom is the small wrist-target frames jumping away from your hands while
+the scene stays put), the log says so, the compositor is re-bound to the
+scene's anchor prim, and you say "align" again. That re-binding also happens
+at every scene start: Kit keeps its XR session across "next" while each scene
+rebuilds the stage, so without it the compositor stays attached to the
+previous scene's deleted anchor prim.
 Every transcription is printed to the console, labels and mis-hearings alike,
 and echoed in the headset on a floating panel: `Heard: "..."` for an utterance
 that matched no command, and `Detected "..." - executed: ...` naming the effect
