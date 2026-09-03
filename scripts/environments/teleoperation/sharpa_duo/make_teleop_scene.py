@@ -865,6 +865,15 @@ class AutoStartMatcher:
             flow.request_client_start()
 
 
+_RESET_ECHO_FRAMES = 5
+"""Pulse-free pipeline frames after a host reset before a reset pulse counts as the operator's again.
+
+The device's echo returns within one or two frames; the burst the control
+channel emits when a session starts is a few frames long. At 30 Hz this is a
+fraction of a second, so a deliberate "reset" is never lost.
+"""
+
+
 class EpisodeFlow:
     """Episode lifecycle state for the teleop loop.
 
@@ -890,6 +899,7 @@ class EpisodeFlow:
         self.awaiting_label = False  # an episode was closed; waiting for the voice label
         self.align_requested = False  # voice "align" heard; served by the loop
         self.suppress_active_frames = 0  # ignore the client's stale "playing" state after a host stop
+        self._reset_echo_frames = 0  # pipeline frames during which reset pulses echo our own reset_device()
         self.demo_count = 0
         self.success_count = 0
         # --- "initial" (adjust) mode state (see :mod:`adjust_mode`). --------------
@@ -920,8 +930,24 @@ class EpisodeFlow:
     def on_stop(self) -> None:
         self.teleop_active = False
 
-    def on_reset(self) -> None:
-        self.reset_requested = True
+    # Reset pulses are read from the control events in handle_control_events;
+    # there is deliberately no RESET callback, which would report the same pulse
+    # a second time.
+
+    def reset_device(self) -> None:
+        """Reset the teleop device (anchor sync, retargeter state) and expect its echo.
+
+        ``IsaacTeleopDevice.reset`` injects a reset pulse into the control
+        pipeline so the retargeters reinitialize. That pulse comes back to us
+        as ``should_reset`` on the next pipeline frames, indistinguishable from
+        the operator pressing Reset — and would trigger another full scene
+        reset, whose device reset echoes again. Every host-initiated reset
+        (scene start, a labeled export, a timeout) therefore showed up as two
+        or three resets in a row. The pulses that arrive in the next few
+        pipeline frames are swallowed instead (see :meth:`handle_control_events`).
+        """
+        self.teleop.reset()
+        self._reset_echo_frames = _RESET_ECHO_FRAMES
 
     # -- episode bookkeeping ------------------------------------------------
 
@@ -1152,7 +1178,7 @@ class EpisodeFlow:
             self.env.recorder_manager.reset()
         self.env.reset()
         settle_scene(self.env)
-        self.teleop.reset()
+        self.reset_device()
         self.awaiting_label = False
         self.reset_requested = False
         print("[INFO] Scene reset; teleop stopped — press Play, say 'play', or match the start pose.")
@@ -1169,7 +1195,16 @@ class EpisodeFlow:
         if self.suppress_active_frames > 0:
             self.suppress_active_frames -= 1
         if ctrl.should_reset:
+            if self._reset_echo_frames > 0:
+                # The device's own reset pulse (see reset_device) — or the burst
+                # the control channel emits right after a session starts. The
+                # scene was just reset; doing it again only costs the operator
+                # another settle wait. The window is NOT cleared here, so a
+                # startup burst of several pulses is swallowed whole.
+                return
             self.reset_requested = True
+        elif ctrl.is_active is not None and self._reset_echo_frames > 0:
+            self._reset_echo_frames -= 1  # a pulse-free pipeline frame; the window closes after a few
 
 
 def serve_align(flow: EpisodeFlow, aligner, head_pose_fn) -> bool:
@@ -1580,7 +1615,7 @@ def run_teleop(
     flow.teleop = teleop = create_isaac_teleop_device(
         teleop_cfg,
         sim_device=env.device,
-        callbacks={"START": flow.on_start, "STOP": flow.on_stop, "RESET": flow.on_reset},
+        callbacks={"START": flow.on_start, "STOP": flow.on_stop},
         cloudxr_env_file=None,
         auto_launch_cloudxr=False,
     )
@@ -1621,7 +1656,7 @@ def run_teleop(
     with teleop, torch.inference_mode():
         env.reset()
         settle_scene(env)
-        teleop.reset()
+        flow.reset_device()
         # This scene's stage recreated the anchor prim; the compositor is still
         # bound to the previous scene's (deleted) one until told otherwise.
         bind_stage_anchor(teleop)
