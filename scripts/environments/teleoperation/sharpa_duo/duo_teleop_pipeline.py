@@ -75,9 +75,8 @@ def build_duo_pipeline(
             Defaults to the Franka duo flange offsets.
 
     Returns:
-        A tuple ``(pipeline, retargeters)``: the ``OutputCombiner`` with the
-        single ``"action"`` output that :class:`~isaaclab_teleop.IsaacTeleopDevice`
-        expects, and the list of retargeter nodes for the tuning UI.
+        The ``OutputCombiner`` with the single ``"action"`` output that
+        :class:`~isaaclab_teleop.IsaacTeleopDevice` expects.
     """
     from isaacteleop.retargeters import Se3AbsRetargeter, Se3RetargeterConfig, TensorReorderer
     from isaacteleop.retargeting_engine.deviceio_source_nodes import HandsSource
@@ -109,7 +108,6 @@ def build_duo_pipeline(
     sides = {"left": HandsSource.LEFT, "right": HandsSource.RIGHT}
     se3_nodes = {}
     dex_nodes = {}
-    retargeters = []
     for side, source in sides.items():
         # q_flange = q_wrist ⊗ q_corr ⊗ q_offset: the wrist-side calibration
         # rotation composes into the constant wrist→flange offset, so the arm
@@ -135,7 +133,6 @@ def build_duo_pipeline(
 
         dex = make_sharpa_dex_node(side, sided(FINGER_JOINTS, side), cal)
         dex_nodes[side] = dex.connect({f"hand_{side}": hands.output(source)})
-        retargeters += [se3, dex]
 
     # Se3AbsRetargeter output element order is [x, y, z, qx, qy, qz, qw] — already
     # the xyzw layout the IK actions expect, so the wrists pass through unchanged.
@@ -195,5 +192,4 @@ def build_duo_pipeline(
     )
     connected_reorderer = reorderer.connect(connections)
 
-    pipeline = OutputCombiner({"action": connected_reorderer.output("output")})
-    return pipeline, retargeters
+    return OutputCombiner({"action": connected_reorderer.output("output")})

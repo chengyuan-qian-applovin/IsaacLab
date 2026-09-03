@@ -73,7 +73,11 @@ AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 args_cli.xr = True
 
-if not args_cli.headless and not os.environ.get("DISPLAY"):
+if args_cli.headless:
+    # Headless XR renders through GL interop; a forwarded X DISPLAY (``ssh -Y``)
+    # makes Kit create it via GLX and fail with "GLXBadFBConfig".
+    os.environ.pop("DISPLAY", None)
+elif not os.environ.get("DISPLAY"):
     print("[WARNING] XR in GUI mode without a DISPLAY: the AR session will never start. Add --headless.")
 
 app_launcher = AppLauncher(vars(args_cli))

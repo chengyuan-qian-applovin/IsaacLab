@@ -432,7 +432,12 @@ if args_cli.voice_test is not None:
 
 if args_cli.smoke is None:
     args_cli.xr = True
-    if not args_cli.headless and not os.environ.get("DISPLAY"):
+    if args_cli.headless:
+        # Headless XR renders through GL interop. With DISPLAY set (e.g. under
+        # ``ssh -Y``) Kit creates that GL context via GLX on the forwarded X
+        # display and dies with "GLXBadFBConfig"; without DISPLAY it works.
+        os.environ.pop("DISPLAY", None)
+    elif not os.environ.get("DISPLAY"):
         print("[WARNING] XR in GUI mode without a DISPLAY: the AR session will never start. Add --headless.")
 
 app_launcher = AppLauncher(vars(args_cli))
@@ -1132,18 +1137,12 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple, 
     if args_cli.user and hand_calibration == parser.get_default("hand_calibration"):
         hand_calibration = f"hand_calibration_{args_cli.user}.yml"
         print(f"[INFO] Using user '{args_cli.user}' hand calibration: {hand_calibration}")
-    pipeline, retargeters = build_duo_pipeline(
+    pipeline = build_duo_pipeline(
         include_xr_hands=True, hand_calibration=hand_calibration, wrist_offsets_xyzw=SPEC.wrist_offsets_xyzw
     )
-    # The tuning UI is a GLFW (X11) window, not a Kit one: without a display
-    # its thread dies with "Failed to initialize GLFW", so don't request it.
-    has_display = bool(os.environ.get("DISPLAY"))
-    if not has_display:
-        print("[INFO] No DISPLAY: skipping the retargeter tuning UI.")
     teleop_cfg = IsaacTeleopCfg(
         xr_cfg=XrCfg(anchor_pos=tuple(anchor[0]), anchor_rot=tuple(anchor[1])),
         pipeline_builder=lambda: pipeline,
-        retargeters_to_tune=(lambda: retargeters) if has_display else None,
         sim_device=env.device,
     )
     # The CloudXR runtime is owned by main() and survives scene switches, so
