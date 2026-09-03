@@ -87,6 +87,56 @@ def _execution_events_to_control(ee: ExecutionEvents) -> ControlEvents:
     return ControlEvents(is_active=is_active, should_reset=ee.reset)
 
 
+def patch_cloudxr_wss_backend_port(server_port: int | None = None) -> int | None:
+    """Make the CloudXR WSS proxy dial the runtime's actual signaling port.
+
+    isaacteleop's :class:`~isaacteleop.cloudxr.CloudXRLauncher` starts the WSS
+    proxy with ``wss.run()`` and never passes ``backend_port``, so the proxy
+    always dials the runtime on 49100 even when ``NV_CXR_SERVER_PORT`` moves
+    the native runtime to another port. That breaks parallel teleop sessions
+    on one host: the second session's proxy shows up on its own ``PROXY_PORT``
+    but forwards to the first session's runtime.
+
+    This patches the default of ``wss.run``'s ``backend_port`` keyword so the
+    proxy follows the runtime. Call it before constructing a
+    :class:`~isaacteleop.cloudxr.CloudXRLauncher`; a no-op unless a port is
+    given or ``NV_CXR_SERVER_PORT`` is set, and idempotent (re-applying with a
+    different port replaces the earlier patch).
+
+    Args:
+        server_port: Signaling port the runtime binds. Defaults to the
+            ``NV_CXR_SERVER_PORT`` environment variable.
+
+    Returns:
+        The backend port the proxy now dials, or ``None`` when nothing was
+        patched.
+    """
+    import functools
+
+    from isaacteleop.cloudxr import wss as _cxr_wss
+
+    if server_port is None:
+        raw = os.environ.get("NV_CXR_SERVER_PORT", "").strip()
+        if not raw:
+            return None
+        server_port = int(raw)
+
+    current = _cxr_wss.run
+    if getattr(current, "_isaaclab_backend_port", None) == server_port:
+        return server_port
+    original = getattr(current, "_isaaclab_original", current)
+
+    @functools.wraps(original)
+    async def _patched_wss_run(*args, backend_port: int = server_port, **kwargs):
+        return await original(*args, backend_port=backend_port, **kwargs)
+
+    _patched_wss_run._isaaclab_backend_port = server_port  # type: ignore[attr-defined]
+    _patched_wss_run._isaaclab_original = original  # type: ignore[attr-defined]
+    _cxr_wss.run = _patched_wss_run
+    logger.info("Patched CloudXR WSS proxy to dial backend port %d", server_port)
+    return server_port
+
+
 class TeleopSessionLifecycle:
     """Manages the IsaacTeleop session lifecycle.
 
@@ -836,30 +886,11 @@ class TeleopSessionLifecycle:
             logger.info("CloudXR auto-launch disabled (auto_launch_cloudxr=False)")
             return
 
-        # Plumb NV_CXR_SERVER_PORT through to the WSS proxy backend.
-        # isaacteleop's launcher calls wss.run() without backend_port, so the
-        # proxy always dials 49100 even when the runtime binds a different port.
-        # This monkey-patches wss.run's default so the proxy follows the runtime
-        # when NV_CXR_SERVER_PORT is set — required to run parallel sessions on
-        # one host (each user picks a distinct signaling port).
-        import functools
         from pathlib import Path
 
         from isaacteleop.cloudxr import CloudXRLauncher as _CloudXRLauncher
-        from isaacteleop.cloudxr import wss as _cxr_wss
 
-        _backend_port_env = os.environ.get("NV_CXR_SERVER_PORT", "").strip()
-        if _backend_port_env and not getattr(_cxr_wss.run, "_isaaclab_patched", False):
-            _orig_wss_run = _cxr_wss.run
-            _backend_port = int(_backend_port_env)
-
-            @functools.wraps(_orig_wss_run)
-            async def _patched_wss_run(*args, backend_port: int = _backend_port, **kwargs):
-                return await _orig_wss_run(*args, backend_port=backend_port, **kwargs)
-
-            _patched_wss_run._isaaclab_patched = True  # type: ignore[attr-defined]
-            _cxr_wss.run = _patched_wss_run
-            logger.info("Patched CloudXR WSS proxy to dial backend port %d", _backend_port)
+        patch_cloudxr_wss_backend_port()
 
         self._cloudxr_launcher = _CloudXRLauncher(
             install_dir=str(Path.home() / ".cloudxr"),

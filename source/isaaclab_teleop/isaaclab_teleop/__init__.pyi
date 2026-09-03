@@ -15,6 +15,7 @@ __all__ = [
     "XrAnchorSynchronizer",
     "XrCfg",
     "create_isaac_teleop_device",
+    "patch_cloudxr_wss_backend_port",
     "poll_control_events",
     "remove_camera_configs",
 ]
@@ -22,5 +23,6 @@ __all__ = [
 from .control_events import TELEOP_CONTROL_CHANNEL_UUID, ControlEvents, SupportsControlEvents, poll_control_events
 from .isaac_teleop_cfg import CLOUDXR_AVP_ENV, CLOUDXR_JS_ENV, IsaacTeleopCfg
 from .isaac_teleop_device import IsaacTeleopDevice, create_isaac_teleop_device
+from .session_lifecycle import patch_cloudxr_wss_backend_port
 from .xr_anchor_utils import XrAnchorSynchronizer
 from .xr_cfg import XrAnchorRotationMode, XrCfg, remove_camera_configs
