@@ -18,16 +18,19 @@ Built on Isaac Lab's recorder manager. Each demo carries:
   all action terms, i.e. the differential-IK *output* for the arms,
 - a boolean ``success`` attribute (the voice label).
 
-All demos of a session land in one timestamped file (the HDF5 handler truncates
-its file at env creation, so a fixed name would wipe earlier sessions). Exports
-happen only through the teleop script's explicit calls — an env reset means
-"discard", never "export".
+Every episode is exported to its OWN HDF5 file (as ``demo_0``), named
+``<prefix>_<timestamp>_<uuid8>.hdf5`` — one trajectory per file, so a fleet
+uploader can ship each labeled trajectory the moment it is closed, and a
+partially written file can never corrupt earlier demos. Exports happen only
+through the teleop script's explicit calls — an env reset means "discard",
+never "export".
 
 Import only after AppLauncher.
 """
 
 from __future__ import annotations
 
+import json
 import os
 
 import torch
@@ -42,22 +45,62 @@ from isaaclab.utils.configclass import configclass
 from isaaclab.utils.datasets import HDF5DatasetFileHandler
 
 
-class AppendableHDF5DatasetFileHandler(HDF5DatasetFileHandler):
-    """HDF5 handler that APPENDS to an existing dataset file instead of truncating.
+class PerEpisodeHDF5DatasetFileHandler(HDF5DatasetFileHandler):
+    """HDF5 handler that writes each exported episode to its own file.
 
-    The stock handler opens its file in "w" mode at env creation, wiping earlier
-    demos — fine for one file per session, wrong for a shared dataset accumulated
-    across sessions and scene switches. When the file already exists, open it in
-    append mode; demo numbering continues from the episodes already present.
+    The recorder manager treats its handler as one dataset file created at env
+    creation; this handler instead remembers the directory + filename prefix it
+    was created with and opens a fresh file per :meth:`write_episode` (each
+    holding a single ``demo_0``). The teleop flow names the next file by
+    assigning :attr:`next_episode_stem` before exporting, tags extra attributes
+    on the freshly written (still open) file, then calls :meth:`close`; the
+    completed file's path is left in :attr:`last_file_path`.
     """
 
+    def __init__(self):
+        super().__init__()
+        self._dir = "."
+        self._prefix = "episode"
+        self._env_name = None
+        self._session_count = 0
+        self.next_episode_stem: str | None = None
+        self.last_file_path: str | None = None
+
     def create(self, file_path: str, env_name: str | None = None):
-        if not file_path.endswith(".hdf5"):
-            file_path += ".hdf5"
-        if os.path.exists(file_path):
-            self.open(file_path, mode="a")
-        else:
-            super().create(file_path, env_name=env_name)
+        # Called once by the recorder manager with <export_dir>/<dataset_filename>;
+        # only remember where episode files should go — no file is opened yet.
+        if file_path.endswith(".hdf5"):
+            file_path = file_path[:-5]
+        self._dir = os.path.dirname(file_path) or "."
+        self._prefix = os.path.basename(file_path)
+        self._env_name = env_name
+        os.makedirs(self._dir, exist_ok=True)
+
+    def add_env_args(self, env_args: dict):
+        # The recorder manager sets env args before write_episode, when no file
+        # is open yet: buffer them, and (re-)stamp them whenever a file IS open.
+        self._env_args.update(env_args)
+        if self._hdf5_file_stream is not None:
+            self._hdf5_data_group.attrs["env_args"] = json.dumps(self._env_args)
+
+    def write_episode(self, episode, demo_id: int | None = None, dataset_compression: bool = True):
+        if episode.is_empty():
+            return
+        self.close()  # the previous episode's file, if the flow left it open
+        stem = self.next_episode_stem or f"{self._prefix}_{self._session_count:04d}"
+        self.next_episode_stem = None
+        path = os.path.join(self._dir, f"{stem}.hdf5")
+        super().create(path, env_name=self._env_name)
+        super().write_episode(episode, demo_id=demo_id, dataset_compression=dataset_compression)
+        self._session_count += 1
+        self.last_file_path = path
+
+    def flush(self):
+        if self._hdf5_file_stream is not None:
+            super().flush()
+
+    def get_num_episodes(self) -> int:
+        return self._session_count
 
 
 class XrHandsRecorder(RecorderTerm):
