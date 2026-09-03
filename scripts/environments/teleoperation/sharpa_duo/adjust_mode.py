@@ -51,7 +51,9 @@ from scipy.spatial.transform import Rotation as R
 
 # OpenXR hand-joint indices in the 26-joint layout emitted by :mod:`xr_extras`.
 _THUMB_TIP = 5
+_THUMB_DISTAL = 4
 _INDEX_TIP = 10
+_INDEX_DISTAL = 9
 _WRIST = 1
 _INDEX_PROXIMAL = 7
 _LITTLE_PROXIMAL = 22
@@ -101,6 +103,11 @@ _STICK_RELEASE = 0.4
 _STICK_REPEAT_S = 0.30
 """Auto-repeat period [s] while a thumbstick axis stays deflected."""
 
+_GRIP_SMOOTHING = 0.4
+"""Fraction of the newest grip-rotation sample blended in per frame while an
+object is held. The grip axis runs across the pinch — a short baseline — so a
+little low-pass keeps a held object from trembling with fingertip jitter."""
+
 _NAV_DOLLY_GAIN = 2.0
 """World-grab zoom: metres the world dollies toward your head per metre of
 extra hand separation (hands apart = zoom in, together = zoom out)."""
@@ -145,6 +152,35 @@ def _hand_rotation(joints: np.ndarray) -> R | None:
     z /= np.linalg.norm(z)
     y = np.cross(z, x)
     return R.from_matrix(np.stack([x, y, z], axis=1))
+
+
+def _grip_rotation(joints: np.ndarray) -> R | None:
+    """Orientation of the pinch GRIP itself — what a held object should copy.
+
+    The primary axis runs from the thumb to the index finger ACROSS the pinch
+    (tip+distal midpoints, for a steadier baseline than the tips alone), so
+    twirling the fingertips around each other — turning the pinch like a
+    little dial — rotates this frame directly; the hand-back normal from
+    :func:`_hand_frame` only supplies the remaining twist axis. Whole-hand
+    turns rotate both references, so they still work as before. Returns None
+    while any needed joint is untracked or the geometry is degenerate.
+    """
+    pts = joints[[_THUMB_DISTAL, _THUMB_TIP, _INDEX_DISTAL, _INDEX_TIP], :3]
+    if float(np.min(np.linalg.norm(pts, axis=1))) < 1e-6:
+        return None
+    across = 0.5 * (pts[2] + pts[3]) - 0.5 * (pts[0] + pts[1])
+    if np.linalg.norm(across) < 3e-3:
+        return None
+    x = across / np.linalg.norm(across)
+    frame = _hand_frame(joints)
+    if frame is None:
+        return None
+    up = np.cross(frame[0], frame[1])
+    z = np.cross(x, up)
+    if np.linalg.norm(z) < 1e-6:
+        return None
+    z /= np.linalg.norm(z)
+    return R.from_matrix(np.stack([x, np.cross(z, x), z], axis=1))
 
 
 class RobotParker:
@@ -379,8 +415,10 @@ class ObjectAdjuster:
         # while the mode is open; :meth:`step_sim` re-pins the sim to it.
         self._edited: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
         # Per hand: (name, offset_pos np(3), offset_quat np(4)) — the object's
-        # pose expressed in the hand frame at grab time (the rigid weld).
+        # pose expressed in the grip frame at grab time (the rigid weld).
         self._grabs: list[tuple | None] = [None, None]
+        # Per hand: the low-passed grip rotation while an object is held.
+        self._grip_smooth: list[R | None] = [None, None]
         # Per hand: a pinch that hit neither panel nor object ("empty air").
         # Both hands empty-pinching engages the world-grab view navigation.
         self._empty_pinch: list[bool] = [False, False]
@@ -469,6 +507,7 @@ class ObjectAdjuster:
         self._trigger_consumed = [False, False]
         self._stick_next_fire = [[None, None], [None, None]]
         self._grabs = [None, None]
+        self._grip_smooth = [None, None]
         self._empty_pinch = [False, False]
         self._nav_ref = None
         if self._xr_cfg is not None:
@@ -493,6 +532,7 @@ class ObjectAdjuster:
         Returns the number of objects restored.
         """
         self._grabs = [None, None]
+        self._grip_smooth = [None, None]
         for name, (pos, quat) in self._entry_poses.items():
             self._edited[name] = (
                 torch.tensor(pos, dtype=torch.float32, device=self._env.device),
@@ -502,7 +542,7 @@ class ObjectAdjuster:
             self._zero_object_velocity(name)
         return len(self._entry_poses)
 
-    def exit(self) -> int:
+    def exit(self, dr_params: dict | None = None) -> int:
         """Save the sidecar, refresh the authored poses, restore the rig and visuals.
 
         Poses are recorded from the editor's own edited state, verbatim —
@@ -511,14 +551,31 @@ class ObjectAdjuster:
         Saving from :attr:`_edited` rather than a sim snapshot means even a
         solver depenetration nudge between the last pin and the save cannot
         leak into the sidecar. Returns the number of objects saved.
+
+        Args:
+            dr_params: The live ``dr_objects`` param dict (see
+                ``_live_dr_params`` in the teleop script). Its ``xy_range`` [m]
+                and ``yaw_range`` [rad] are written to the sidecar next to the
+                poses, so the ranges tuned in the editor follow the scene across
+                sessions exactly like the poses do. None keeps whatever block the
+                sidecar already holds.
         """
         self._active = False
         self._grabs = [None, None]
         overrides = self._edited_poses_local() if self._edited else self._current_poses_local()
         from usda_scene import save_pose_overrides  # noqa: PLC0415
 
-        path = save_pose_overrides(self._scene_usda, overrides)
-        print(f"[ADJUST] Saved authored poses for {len(overrides)} object(s) to {path}")
+        randomization = None
+        if dr_params is not None:
+            randomization = {k: float(dr_params[k]) for k in ("xy_range", "yaw_range") if k in dr_params}
+        path = save_pose_overrides(self._scene_usda, overrides, randomization)
+        ranges = ""
+        if randomization:
+            ranges = (
+                f" and randomization ranges (xy ±{randomization.get('xy_range', float('nan')):.3f} m,"
+                f" yaw ±{math.degrees(randomization.get('yaw_range', float('nan'))):.1f} deg)"
+            )
+        print(f"[ADJUST] Saved authored poses for {len(overrides)} object(s){ranges} to {path}")
 
         # Refresh this session's cached authored pose. randomize_tracked_objects
         # reads cfg.init_state each call, so future resets perturb around the new
@@ -585,6 +642,7 @@ class ObjectAdjuster:
             if np.linalg.norm(thumb) < 1e-6 or np.linalg.norm(index) < 1e-6:
                 self._button_consumed[hand] = False  # tracking lost
                 self._grabs[hand] = None
+                self._grip_smooth[hand] = None
                 self._empty_pinch[hand] = False
                 continue
             pinch = float(np.linalg.norm(thumb - index))
@@ -593,6 +651,7 @@ class ObjectAdjuster:
             if pinch > _PINCH_RELEASE_M:
                 self._button_consumed[hand] = False
                 self._grabs[hand] = None  # released: the object stays where it is
+                self._grip_smooth[hand] = None
                 self._empty_pinch[hand] = False
                 continue
             if not self._button_consumed[hand] and pinch < _PINCH_ENGAGE_M:
@@ -613,10 +672,10 @@ class ObjectAdjuster:
                         # alike are just empty air.
                         name, _, in_plane, depth = nearest
                         print(f"[ADJUST] tap missed: nearest '{name}' in-plane {in_plane:.2f} m, depth {depth:.2f} m")
-            # While held: the object stays welded to the hand.
+            # While held: the object stays welded to the grip.
             grab = self._grabs[hand]
             if grab is not None:
-                self._drag(grab, mid, hands[hand])
+                self._drag(hand, grab, mid, hands[hand])
         self._update_view_nav(hands, mids)
         self._update_grab_markers()
 
@@ -777,7 +836,7 @@ class ObjectAdjuster:
         """Weld the nearest object around ``mid`` to the hand, if any; returns success."""
         from usda_scene import FOOTPRINT_RADII  # noqa: PLC0415
 
-        hand_rot = _hand_rotation(joints)
+        hand_rot = _grip_rotation(joints)
         if hand_rot is None:
             return False  # rotation reference untracked; try again next pinch
         held_elsewhere = {grab[0] for grab in self._grabs if grab is not None}
@@ -796,26 +855,28 @@ class ObjectAdjuster:
             return False
         name = best[1]
         pos, quat = self._edited[name]
-        # The rigid weld: the object's pose expressed in the hand frame. While
-        # held, re-applying it under the LIVE hand frame reproduces exactly how
+        # The rigid weld: the object's pose expressed in the GRIP frame. While
+        # held, re-applying it under the live grip frame reproduces exactly how
         # a real grabbed object moves — the grabbed spot stays under the
-        # fingers and rotation pivots about the grip with its natural lever arm.
+        # fingers, and twirling the fingertips (or turning the whole hand)
+        # rotates the object about the grip with its natural lever arm.
         offset_pos = hand_rot.inv().apply(pos.detach().cpu().numpy() - mid)
         offset_rot = hand_rot.inv() * R.from_quat(quat.detach().cpu().numpy())
         self._grabs[hand] = (name, offset_pos, offset_rot.as_quat())
-        print(f"[ADJUST] Grabbed '{name}' — welded to your hand 1:1; release to place.")
+        self._grip_smooth[hand] = hand_rot
+        print(f"[ADJUST] Grabbed '{name}' — welded to your fingertips 1:1; release to place.")
         return True
 
-    def _drag(self, grab: tuple, mid: np.ndarray, joints: np.ndarray) -> None:
-        """Re-apply the rigid weld under the hand's current pose.
+    def _drag(self, hand: int, grab: tuple, mid: np.ndarray, joints: np.ndarray) -> None:
+        """Re-apply the rigid weld under the grip's current pose.
 
         ``T_obj = H(t) ∘ O`` with the offset ``O`` recorded at grab time: the
         object moves exactly like a real object held at the pinch point — the
-        grabbed spot stays under the fingers, and turning or tilting the hand
-        pivots the object about the grip with its natural lever arm. The hand
-        frame comes from wrist/knuckle POSITIONS (:func:`_hand_rotation`),
-        which track far better than the wrist's orientation estimate. While
-        the frame is untracked, the held object freezes.
+        grabbed spot stays under the fingers, and twirling the fingertips or
+        turning the hand pivots the object about the grip with its natural
+        lever arm. The grip frame (:func:`_grip_rotation`) is low-passed by
+        :data:`_GRIP_SMOOTHING` against fingertip jitter. While the frame is
+        untracked, the held object freezes.
 
         The tabletop is a HARD FLOOR: the pose is clamped so the object's
         lowest mesh point (its rotated convex-hull vertices, see
@@ -827,9 +888,15 @@ class ObjectAdjuster:
         from usda_scene import OBJECT_SUPPORT_POINTS, SUPPORT_SURFACE_Z  # noqa: PLC0415
 
         name, offset_pos, offset_quat = grab
-        hand_rot = _hand_rotation(joints)
-        if hand_rot is None:
+        raw = _grip_rotation(joints)
+        if raw is None:
             return  # rotation reference dropped out: freeze until it returns
+        prev = self._grip_smooth[hand]
+        if prev is None:
+            hand_rot = raw
+        else:
+            hand_rot = R.from_rotvec((raw * prev.inv()).as_rotvec() * _GRIP_SMOOTHING) * prev
+        self._grip_smooth[hand] = hand_rot
         pos = mid + hand_rot.apply(offset_pos)
         rot = hand_rot * R.from_quat(offset_quat)
         support = OBJECT_SUPPORT_POINTS.get(name)

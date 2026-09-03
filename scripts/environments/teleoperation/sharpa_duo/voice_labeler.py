@@ -48,7 +48,8 @@ _COMMAND_RES = (
     ("stop", re.compile(r"\b(stop|pause)\b")),
     ("reset", re.compile(r"\breset\w*\b")),
     ("next", re.compile(r"\b(next|skip)\b")),
-    ("adjust", re.compile(r"\b(adjust|edit)\s+(objects?|poses?)\b")),
+    # "initial" (any suffix): open the initial-pose editor (internal command name "adjust").
+    ("adjust", re.compile(r"\binitial\w*\b")),
     ("done", re.compile(r"\b(done|finish\w*)\b")),
 )
 

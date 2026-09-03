@@ -251,7 +251,7 @@ On by default (`--no_dr` disables), applied at every episode reset:
   its authored pose. `--dr_object_bias` additionally shifts the whole
   randomization center that many metres horizontally toward the robot base
   (never past it), to bring objects within easier reach; it is **0 by default**
-  so a scene's authored layout — including one saved by "adjust object" — is
+  so a scene's authored layout — including one saved by the "initial" editor — is
   used as the center as-is. Turn it on only for scenes authored out of reach,
   and be aware that it compounds: adjust mode saves where objects currently
   are, so re-saving a shifted layout shifts it again on the next run.
@@ -264,7 +264,19 @@ On by default (`--no_dr` disables), applied at every episode reset:
 
 ### Adjusting where objects start
 
-Saying **"adjust object"** opens a pose-authoring mode that lets you re-author
+**Quick start.** Say **"initial"**: the robot disappears, the desk turns
+translucent, and green ghosts mark where each object starts. **Pinch** an
+object (thumb and index tip touching) to grab it — move your hand to move it,
+twirl your fingertips to rotate it, open your fingers to drop it where it is;
+the table is a hard floor. Pinch empty air with both hands to move, rotate, or
+zoom your view. Hold a **Quest controller** and flick the **thumbstick** to set
+the randomization: left/right = xy range (1 cm steps), up/down = yaw range (5°
+steps); the floating panel shows the values. "reset" puts objects back on their
+ghosts. **"finish"** writes `<scene>.usda.poses.json` to disk **immediately** —
+poses and ranges together — and it takes effect at once: the next reset uses
+the new layout and ranges, and every later launch of the scene loads it.
+
+Saying **"initial"** opens a pose-authoring mode that lets you re-author
 a scene's object layout from inside the headset, without editing the USDA.
 
 It is a **kinematic pose editor** — nothing is simulated while it is open, so
@@ -272,11 +284,13 @@ nothing can be flung, topple, or drift. On entry the arm rig parks out of
 sight, the desk turns translucent, a translucent green **ghost** of every
 object marks where it stood, and your tracked hand becomes the cursor (small
 red joint spheres). **Pinch directly on an object to grab it**: it is
-**welded to your hand 1:1** like a real object held at the pinch point — the
-grabbed spot stays under your fingers, turning your hand pivots it about the
-grip with the natural lever arm (large turns: re-grab and keep turning, as in
-real life), tilting leans it (e.g. a brush resting only its head on the
-table) — and it stays exactly where you release it, verbatim:
+**welded to your fingertips 1:1** like a real object held at the pinch point —
+the grabbed spot stays under your fingers, and rotation follows the pinch
+grip itself: twirl your fingertips like turning a small dial, or turn the
+whole hand; either pivots the object about the grip with the natural lever
+arm (large turns: re-grab and keep turning, as in real life), and tilting
+leans it (e.g. a brush resting only its head on the table). It stays exactly
+where you release it, verbatim:
 nothing settles or snaps, so what you place is what is saved. The one
 constraint is the **tabletop, which is a hard floor**: no part of a mesh can
 be dragged below it, so pushing down rests the object exactly on the surface —
@@ -296,14 +310,18 @@ XY randomization region per object (the yaw range is shown only as a number on
 the range panel). It follows the objects as you move them and resizes live as
 you retune the ranges (no overlay with `--no_dr`).
 
-- **"done"** writes the edited poses to a sidecar `<scene>.usda.poses.json`
-  next to the scene file and restores the rig exactly where it stood. The USDA
-  is never modified, and the next load picks the sidecar up automatically. The
-  saved poses also become the centre of the randomization for the rest of the
-  session. (Poses are saved exactly as placed: an object left hovering will
-  drop on the next reset, and deliberately overlapped objects get separated by
-  stock physics there — delete the sidecar to fall back to the USDA's authored
-  poses.)
+- **"finish"** (or "done") writes the edited poses **and the randomization ranges you
+  tuned** (`xy_range` in m, `yaw_range_deg`) to a sidecar
+  `<scene>.usda.poses.json` next to the scene file, and restores the rig
+  exactly where it stood. The USDA is never modified, and the next load picks
+  the sidecar up automatically — both the poses (as the new randomization
+  centre) and the ranges (over the `--dr_object_xy`/`--dr_object_yaw`
+  defaults; a value explicitly changed on the command line still wins). Range
+  edits are live from the moment you make them; "done" is what persists them.
+  (Poses are saved exactly as placed: an object left hovering will drop on the
+  next reset, and deliberately overlapped objects get separated by stock
+  physics there — delete the sidecar to fall back to the USDA's authored poses
+  and the default ranges.)
 - **"reset"** means *undo* while the mode is open: every object snaps back
   onto its ghost. It does not reset the scene.
 
@@ -472,7 +490,7 @@ never shifts pinch timing.
 | `duo_teleop_pipeline.py` | The IsaacTeleop retargeting pipeline (hand tracking → 58-D action). |
 | `sharpa_retargeting.py` | Calibrated DexPilot finger retargeting (hand-shape calibration, raw-distance pinch hysteresis). |
 | `usda_scene.py` | References the scene USDA into the env and registers its rigid bodies so resets restore their poses. |
-| `adjust_mode.py` | The "adjust object" kinematic pose editor: pinch-grab objects in full 6-DoF, ghosts, translucent desk, robot park/restore, sidecar save. |
+| `adjust_mode.py` | The "initial" (adjust-mode) kinematic pose editor: pinch-grab objects in full 6-DoF, ghosts, translucent desk, robot park/restore, sidecar save. |
 | `region_overlay.py` | Adjust mode's in-headset preview of the object-randomization region (XY square per object). |
 | `teleop_app.py` | Always-on headset control app: start/restart/kill teleop, own the microphone across runs, hand out an up-to-date CloudXR link. |
 | `SETUP.md` | From-scratch procedure: workstation install, app service, per-headset onboarding, terminal-only use, troubleshooting. |

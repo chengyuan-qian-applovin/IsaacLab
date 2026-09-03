@@ -145,7 +145,7 @@ parser.add_argument(
     help=(
         "DR: fixed shift [m] moving every object's randomization center horizontally toward the robot"
         " base (never past it), bringing objects within easier reach. Off by default, so a scene's"
-        " authored layout (including one saved by 'adjust object') is used as the center as-is;"
+        " authored layout (including one saved by the 'initial' editor) is used as the center as-is;"
         " note that a nonzero shift compounds if you then re-save the shifted layout."
     ),
 )
@@ -202,7 +202,7 @@ parser.add_argument(
     "--no_adjust",
     action="store_true",
     help=(
-        "Disable the 'adjust object' pose editor entirely: no panels, no controller block in the"
+        "Disable the 'initial' pose editor (adjust mode) entirely: no panels, no controller block in the"
         " pipeline. Normal teleop runs exactly as before the feature existed."
     ),
 )
@@ -521,12 +521,29 @@ def build_env_cfg(scene_usda: str) -> ManagerBasedRLEnvCfg:
                 "asset_cfg": SceneEntityCfg("robot", joint_names=[SPEC.arm_joint_regex]),
             },
         )
+        # Ranges: the scene's sidecar (written by the "initial" editor's "done")
+        # wins over the CLI defaults, so tuned ranges follow the scene across
+        # sessions like the poses do; a --dr_object_* value explicitly changed
+        # from its default still wins over the sidecar.
+        from usda_scene import load_randomization_overrides
+
+        xy_range, yaw_range = args_cli.dr_object_xy, math.radians(args_cli.dr_object_yaw)
+        saved = load_randomization_overrides(scene_usda)
+        if saved:
+            if "xy_range" in saved and args_cli.dr_object_xy == parser.get_default("dr_object_xy"):
+                xy_range = saved["xy_range"]
+            if "yaw_range" in saved and args_cli.dr_object_yaw == parser.get_default("dr_object_yaw"):
+                yaw_range = saved["yaw_range"]
+            print(
+                f"[INFO] Randomization ranges from the scene sidecar: xy ±{xy_range:.3f} m,"
+                f" yaw ±{math.degrees(yaw_range):.1f} deg"
+            )
         env_cfg.events.dr_objects = EventTermCfg(
             func=randomize_tracked_objects,
             mode="reset",
             params={
-                "xy_range": args_cli.dr_object_xy,
-                "yaw_range": math.radians(args_cli.dr_object_yaw),
+                "xy_range": xy_range,
+                "yaw_range": yaw_range,
                 "margin": 0.01,
                 "bias_toward": (args_cli.robot_pos[0], args_cli.robot_pos[1]),
                 "bias_dist": args_cli.dr_object_bias,
@@ -821,7 +838,7 @@ class EpisodeFlow:
         self.suppress_active_frames = 0  # ignore the client's stale "playing" state after a host stop
         self.demo_count = 0
         self.success_count = 0
-        # --- "adjust object" mode state (see :mod:`adjust_mode`). --------------
+        # --- "initial" (adjust) mode state (see :mod:`adjust_mode`). --------------
         # ``adjuster`` and ``range_panel`` are bound after they are spawned in
         # :func:`run_teleop`; ``dr_object_params`` is the live event-term param
         # dict for :func:`randomize_tracked_objects`, mutated by the stdin
@@ -1025,9 +1042,9 @@ class EpisodeFlow:
             return "adjust - pinch an object to grab it"
         if label == "done":
             if not self.adjust_mode:
-                return "done ignored - not in adjust mode"
+                return "finish ignored - not in adjust mode"
             self.exit_adjust_requested = True
-            return "done - saving authored poses"
+            return "finish - saving poses and randomization ranges"
         if not self.recording:
             return f"{label} ignored - recording is disabled"
         if not self.awaiting_label and self.episode_has_data():
@@ -1298,7 +1315,7 @@ def _serve_adjust_transitions(flow: "EpisodeFlow", stdin_reader, auto_start) -> 
             flow.region_overlay.show()
         if stdin_reader is not None:
             stdin_reader.start()
-        flow.show_voice_message("Adjust: pinch an object to grab it. 'reset' undoes, 'done' saves.")
+        flow.show_voice_message("Adjust: pinch an object to grab it. 'reset' undoes, 'finish' saves.")
         print(
             "[ADJUST] Entered adjust mode — a kinematic pose editor; the rig is parked and"
             " nothing is recorded or simulated. Pinch directly on an object to grab it: it is"
@@ -1309,7 +1326,7 @@ def _serve_adjust_transitions(flow: "EpisodeFlow", stdin_reader, auto_start) -> 
             " Retune xy_range and yaw_range (degrees) with a controller thumbstick"
             " (left/right = xy, up/down = yaw), by pinching the panel's '-' / '+' keys, or"
             " by typing 'xy_range=0.08' / 'yaw_range=45' at the terminal. Say 'reset' to"
-            " undo every change since entering, 'done' to save."
+            " undo every change since entering, 'finish' to save."
         )
     if flow.adjust_reset_requested and flow.adjust_mode:
         flow.adjust_reset_requested = False
@@ -1318,7 +1335,7 @@ def _serve_adjust_transitions(flow: "EpisodeFlow", stdin_reader, auto_start) -> 
     if flow.exit_adjust_requested and flow.adjust_mode:
         flow.exit_adjust_requested = False
         flow.stop_teleop()  # belt and braces: leave the mode with teleop stopped
-        flow.adjuster.exit()  # saves the sidecar, restores the rig, clears the visual aids
+        flow.adjuster.exit(flow.dr_object_params)  # saves poses + ranges, restores the rig, clears the aids
         flow.discard_episode()
         flow.adjust_mode = False
         _hide_range_panel(flow)
@@ -1338,7 +1355,7 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple, 
         scene_name: Stamped on every exported demo as its ``scene`` HDF5 attr.
         anchor: ``(anchor_pos, anchor_rot)`` xyzw to start from, so "align"
             adjustments carry across scene switches.
-        scene_usda: Absolute path to the scene USDA — the "adjust object" mode
+        scene_usda: Absolute path to the scene USDA — the "initial" (adjust) mode
             writes edited poses to ``<scene_usda>.poses.json`` next to it.
 
     Returns:
@@ -1401,7 +1418,7 @@ def run_teleop(env: ManagerBasedRLEnv, labeler, scene_name: str, anchor: tuple, 
         hand_calibration = f"hand_calibration_{args_cli.user}.yml"
         print(f"[INFO] Using user '{args_cli.user}' hand calibration: {hand_calibration}")
 
-    # "adjust object" mode: park the rig and edit tracked object poses
+    # "initial" (adjust) mode: park the rig and edit tracked object poses
     # kinematically by pinch-grabbing them. Spawn the panels + wire the
     # ObjectAdjuster only if the scene actually has tracked objects; otherwise
     # leave flow.adjuster None so the voice dispatcher explains the no-op.
@@ -1722,12 +1739,20 @@ def run_adjust_smoke(env: ManagerBasedRLEnv, num_steps: int, scene_usda: str) ->
 
     def set_hand(offset: torch.Tensor, gap: float, frac: float) -> None:
         mid = torch.tensor([float(start[0]), float(start[1]), float(start[2]) + 0.05]) + offset
-        xr_hands[1, _t] = torch.cat([mid + torch.tensor([0.0, gap / 2, 0.0]), _IDENT])
-        xr_hands[1, _i] = torch.cat([mid - torch.tensor([0.0, gap / 2, 0.0]), _IDENT])
-        # A rigid synthetic hand: wrist + two knuckles rotating together — the
-        # editor reads the hand's rotation from these POSITIONS (_hand_frame).
+
+        # A rigid synthetic hand rotating as one piece: thumb/index tip+distal
+        # (the grip frame the editor welds to) plus wrist + two knuckles (its
+        # twist reference) — all read as POSITIONS by _grip_rotation.
         rot = R.from_euler("zx", [90.0 * frac, 30.0 * frac], degrees=True)
-        wrist = mid + torch.tensor(rot.apply([-0.08, 0.0, 0.0]), dtype=torch.float32)
+
+        def place(local) -> torch.Tensor:
+            return mid + torch.tensor(rot.apply(local), dtype=torch.float32)
+
+        xr_hands[1, _t] = torch.cat([place([0.0, gap / 2, 0.0]), _IDENT])
+        xr_hands[1, 4] = torch.cat([place([-0.02, gap / 2, 0.0]), _IDENT])
+        xr_hands[1, _i] = torch.cat([place([0.0, -gap / 2, 0.0]), _IDENT])
+        xr_hands[1, 9] = torch.cat([place([-0.02, -gap / 2, 0.0]), _IDENT])
+        wrist = place([-0.08, 0.0, 0.0])
         xr_hands[1, 1] = torch.cat([wrist, wrist_rot(frac)])
         xr_hands[1, 7] = torch.cat([wrist + torch.tensor(rot.apply([0.07, 0.02, 0.0]), dtype=torch.float32), _IDENT])
         xr_hands[1, 22] = torch.cat([wrist + torch.tensor(rot.apply([0.06, -0.03, 0.0]), dtype=torch.float32), _IDENT])
@@ -1817,7 +1842,7 @@ def run_adjust_smoke(env: ManagerBasedRLEnv, num_steps: int, scene_usda: str) ->
         if os.path.exists(sidecar):
             with open(sidecar) as f:
                 backup = f.read()
-        adjuster.exit()
+        adjuster.exit(dr_params)
         if backup is not None:
             with open(sidecar, "w") as f:
                 f.write(backup)

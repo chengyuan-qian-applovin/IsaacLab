@@ -69,28 +69,74 @@ def sidecar_path(usda_path: str) -> str:
     return os.path.abspath(usda_path) + ".poses.json"
 
 
+def _load_sidecar(usda_path: str) -> dict:
+    """The parsed sidecar JSON, or an empty dict when absent."""
+    path = sidecar_path(usda_path)
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        return json.load(f) or {}
+
+
 def load_pose_overrides(usda_path: str) -> dict[str, dict[str, list[float]]]:
     """Load ``{name: {"pos": [x,y,z], "rot": [x,y,z,w]}}`` from ``<scene>.usda.poses.json``.
 
     Returns an empty dict when the sidecar is absent. Rotations are stored in
     ``(x, y, z, w)`` order to match :attr:`RigidObjectCfg.InitialStateCfg.rot`.
     """
-    path = sidecar_path(usda_path)
-    if not os.path.exists(path):
-        return {}
-    with open(path) as f:
-        data = json.load(f)
-    return data.get("objects", {}) or {}
+    return _load_sidecar(usda_path).get("objects", {}) or {}
 
 
-def save_pose_overrides(usda_path: str, overrides: dict[str, dict[str, list[float]]]) -> str:
-    """Write ``overrides`` to the pose sidecar next to ``usda_path`` and return the path.
+def load_randomization_overrides(usda_path: str) -> dict[str, float] | None:
+    """Load the randomization ranges saved with the scene, or None when absent.
+
+    Returns ``{"xy_range": m, "yaw_range": rad}`` — the same keys and units as
+    :func:`randomize_tracked_objects`'s parameters. The sidecar stores the yaw
+    range in degrees (``yaw_range_deg``) because operators type and read it that
+    way; it is converted here.
+    """
+    block = _load_sidecar(usda_path).get("randomization")
+    if not isinstance(block, dict):
+        return None
+    out: dict[str, float] = {}
+    if "xy_range" in block:
+        out["xy_range"] = float(block["xy_range"])
+    if "yaw_range_deg" in block:
+        import math
+
+        out["yaw_range"] = math.radians(float(block["yaw_range_deg"]))
+    return out or None
+
+
+def save_pose_overrides(
+    usda_path: str,
+    overrides: dict[str, dict[str, list[float]]],
+    randomization: dict[str, float] | None = None,
+) -> str:
+    """Write the sidecar next to ``usda_path`` and return its path.
 
     ``overrides`` maps tracked-object name to ``{"pos": [x,y,z], "rot": [x,y,z,w]}``.
+    ``randomization`` (optional) is ``{"xy_range": m, "yaw_range": rad}`` as
+    used by :func:`randomize_tracked_objects`; it is stored as ``xy_range`` [m]
+    and ``yaw_range_deg`` [deg]. When omitted, a previously saved block is kept.
     """
     path = sidecar_path(usda_path)
+    data = {"objects": overrides}
+    if randomization is not None:
+        import math
+
+        block: dict[str, float] = {}
+        if "xy_range" in randomization:
+            block["xy_range"] = float(randomization["xy_range"])
+        if "yaw_range" in randomization:
+            block["yaw_range_deg"] = math.degrees(float(randomization["yaw_range"]))
+        data["randomization"] = block
+    else:
+        previous = _load_sidecar(usda_path).get("randomization")
+        if isinstance(previous, dict):
+            data["randomization"] = previous
     with open(path, "w") as f:
-        json.dump({"objects": overrides}, f, indent=2)
+        json.dump(data, f, indent=2)
     return path
 
 
