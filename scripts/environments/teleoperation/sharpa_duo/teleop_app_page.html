@@ -34,7 +34,7 @@
 <div class="page">
 <header>
   <div class="title"><h1>Teleop</h1><span class="host" id="host"></span></div>
-  <a class="btn small" href="/log.html" target="_blank" rel="noopener">Log &#8599;</a>
+  <a class="btn small" href="/log.html" target="teleop_log" rel="noopener" onclick="window.open(this.href, 'teleop_log'); return false;">Log &#8599;</a>
 </header>
 
 <!-- Everything that is being monitored, on every tab. The certificate chip is
@@ -115,10 +115,19 @@
         <div class="group">
           <h3>Microphone (this tab)</h3>
           <div class="row"><button id="mictoggle">Start microphone</button></div>
+          <!-- Which input the browser captures. Automatic starts from the headset's
+               default route and moves on when that delivers silence or keeps ending
+               (a paired Bluetooth or wired headset takes the route over), locking in
+               the first input that produces sound. The list is an override; it fills
+               in once the microphone permission has been granted. -->
+          <div class="row field">
+            <label for="mic_device">Input</label>
+            <select id="mic_device"><option value="">Automatic (recommended)</option></select>
+          </div>
         </div>
         <div class="group">
           <h3>Diagnostics</h3>
-          <div class="row"><a class="btn" href="/log.html" target="_blank" rel="noopener">Open log</a></div>
+          <div class="row"><a class="btn" href="/log.html" target="teleop_log" rel="noopener" onclick="window.open(this.href, 'teleop_log'); return false;">Open log</a></div>
         </div>
       </div>
     </details>
@@ -204,6 +213,7 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").cat
 const RATE = 16000, CHUNK = 1600, SUPERSEDED = 4001;
 const $ = id => document.getElementById(id);
 let ws = null, started = false, micStream = null, cxrUrl = null, audioCtx = null;
+let handedOver = false, handedOverAt = 0, goneCount = 0;  // the CloudXR window holds the mic; take it back when it leaves
 $("host").textContent = location.host;
 
 async function api(path, method) {
@@ -526,14 +536,40 @@ function renderLive() {
   chip("c_cxr", ready ? "ok" : s.running ? "warn" : "", ready ? "ready :" + s.proxy_port : s.running ? "port :" + s.proxy_port + " not up" : "off");
   chip("c_cert", !ready ? "" : certOk ? "ok" : "warn",
        !ready ? "—" : certOk ? "accepted" : certOk === false ? "tap to accept" : "checking", ready && !certOk ? s.cert_url : null);
-  if (s.mic_connected && !started) {
+  const inClient = s.mic_connected && s.mic_source === "client";
+  if (inClient) {
+    // The CloudXR window captures (the app serves the client with a mic
+    // script); this page only reports, and its meter mirrors the hub's.
+    handedOver = true; goneCount = 0;
+    $("bar").style.width = Math.min(100, (s.mic_peak || 0) * 400) + "%";
+    const age = s.mic_silent_s, paused = age !== null && age > 4;
+    chip("c_mic", paused ? "warn" : "ok",
+         paused ? "CloudXR window, no frames " + Math.round(age) + " s" : "CloudXR window" + (s.mic_peak > 0.01 ? " " + Math.round(s.mic_peak * 100) + "%" : ""));
+  } else if (handedOver && !started && !s.mic_connected) {
+    // The CloudXR window is gone: take the microphone back here, once this
+    // window is in front (a capture started while hidden delivers nothing).
+    // Two consecutive polls, so the client's reload at the end of an XR
+    // session (its socket drops for a second) does not trigger a hand-back.
+    if (!document.hidden && ++goneCount >= 2) {
+      handedOver = false; goneCount = 0; $("bar").style.width = "0%";
+      status("CloudXR window closed - microphone back on this page");
+      startMic();
+    }
+    chip("c_mic", "warn", "taking back");
+  } else if (s.mic_connected && !started) {
     // The server sees a page streaming, but it is not this one: either a
     // second app tab, or a socket this page just closed that the server has
     // not timed out yet. Saying "streaming" here read as Stop having failed.
     chip("c_mic", "warn", "another tab");
   } else if (s.mic_connected) {
-    const age = s.mic_silent_s;
-    if (age !== null && age > 4) chip("c_mic", "warn", "silent " + Math.round(age) + " s");
+    // No frames at all means the headset paused this window's capture (about
+    // a minute after it goes to the background). Silent frames are normal
+    // between voice commands - noise suppression gates pauses to exact zeros -
+    // so silence is shown as time since a voice was last heard, not "muted".
+    const age = s.mic_silent_s, heard = s.mic_heard_s;
+    if (age !== null && age > 4) chip("c_mic", "warn", "no frames " + Math.round(age) + " s - bring this window to the front");
+    else if (heard === null && (s.mic_chunks || 0) > 300) chip("c_mic", "warn", "no voice heard yet - say something");
+    else if (heard !== null && heard > 60) chip("c_mic", "ok", "streaming, voice " + Math.round(heard) + " s ago");
     else chip("c_mic", "ok", s.consumers ? "streaming → teleop" : "streaming");
   } else {
     chip("c_mic", started ? "warn" : "", started ? "connecting" : "idle");
@@ -552,7 +588,7 @@ function renderLive() {
   else if (certOk) setStep(2, "done", "Accepted for this browser");
   else setStep(2, "active", "Tap, accept the browser warning, then come back here", "warn");
   if (!ready) setStep(3, "pending", "Waiting for teleop");
-  else setStep(3, ready && certOk ? "active" : "pending", "Opens in a new tab. Keep this tab open: the mic runs here.");
+  else setStep(3, ready && certOk ? "active" : "pending", "Opens in a new tab; the CloudXR window takes over the microphone.");
 
   // -- buttons --
   const go = $("go");
@@ -574,54 +610,296 @@ loadState();
 setInterval(() => { if (activeTab === "scenes" && settings && activeSource() === "server") loadState(); }, 15000);
 
 // ---- microphone -----------------------------------------------------------
-function standDown(msg) {
-  status(msg); started = false; $("bar").style.width = "0%";
-  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+// `started` is the operator's intent (Start tapped, Stop not yet); `micStream`
+// is the live capture, which comes and goes underneath it: the headset ends
+// our track whenever another page or app takes the microphone, and gives it
+// back later. Losing the track therefore re-acquires it with a backoff, over
+// the SAME audio socket - the socket is ours for as long as the mic is wanted.
+// Input selection. `micDeviceId` is an explicit pick from the dropdown ("" is
+// Automatic). In Automatic, `autoDeviceId` is the input currently in use ("" is
+// the browser default) and it moves on whenever the current one proves useless:
+// frames that stay silent, or a track the headset keeps ending. The first input
+// heard producing sound is locked in and remembered, so the next session starts
+// on it. Both survive reloads.
+const SOUND_PEAK = 0.02;        // above this, the input is delivering a voice, not a noise floor
+const SILENT_CHUNKS = 80;       // 8 s of silent frames before Automatic tries the next input
+let micDeviceId = "", autoDeviceId = "", autoLocked = false, autoTried = 0, inputs = [];
+try {
+  micDeviceId = localStorage.getItem("mic_device") || "";
+  autoDeviceId = localStorage.getItem("mic_device_auto") || "";
+} catch (e) {}
+function micConstraints() {
+  const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 };
+  const id = micDeviceId || autoDeviceId;
+  if (id) audio.deviceId = { exact: id };
+  return { audio };
+}
+// Automatic's order: the browser default first, then inputs whose label says
+// built-in (on the Quest that is "Speakerphone"), then everything else.
+function candidates() {
+  const rank = d => /speakerphone|built|internal/i.test(d.label) ? 0 : 1;
+  const ids = inputs.filter(d => d.deviceId && d.deviceId !== "default").sort((a, b) => rank(a) - rank(b)).map(d => d.deviceId);
+  return ["", ...ids];
+}
+// Advance Automatic to the next input. After one full round without a sound
+// it stays where it is: cycling forever would only add capture gaps when the
+// operator is simply quiet.
+function nextCandidate(reason) {
+  const c = candidates();
+  if (c.length < 2 || autoTried >= c.length) return false;
+  autoDeviceId = c[(c.indexOf(autoDeviceId) + 1) % c.length];
+  autoTried++;
+  diag("input auto-switch", { reason, to: autoDeviceId.slice(0, 8) || "default", tried: autoTried });
+  return true;
+}
+function rememberAuto() {
+  try { autoDeviceId ? localStorage.setItem("mic_device_auto", autoDeviceId) : localStorage.removeItem("mic_device_auto"); } catch (e) {}
+}
+// Once a second: lock in an input that is heard working; in Automatic, leave
+// one that has only ever delivered silence. Also notice a live track that has
+// stopped delivering frames - the headset pauses a background window's capture
+// - and re-acquire as soon as this window is visible again, since a track
+// requested while hidden stays frameless.
+let curChunks = 0, curPeak = 0, seenChunks = 0, lastFrameAt = 0, stalled = false;
+function frameStallCheck() {
+  if (curChunks !== seenChunks) { seenChunks = curChunks; lastFrameAt = Date.now(); if (stalled) { stalled = false; diag("frames resumed"); } return; }
+  if (!lastFrameAt) lastFrameAt = Date.now();
+  if (Date.now() - lastFrameAt < 5000) return;
+  if (!stalled) { stalled = true; diag("frames stalled"); }
+  if (document.hidden) { status("headset paused the mic - this window is in the background; bring it to the front"); return; }
+  // Visible and still nothing: the track is dead in all but name. Fetch a new one.
+  diag("reacquire after stall"); lastFrameAt = Date.now();
+  dropTrack(); status("mic stalled - re-acquiring"); reacquire();
+}
+function watchInput() {
+  if (!started || !micStream || reacquiring) return;
+  frameStallCheck();
+  if (curPeak > SOUND_PEAK) {
+    if (!micDeviceId && !autoLocked) { autoLocked = true; autoTried = 0; rememberAuto(); diag("input confirmed", { deviceId: autoDeviceId.slice(0, 8) || "default" }); }
+    return;
+  }
+  if (!micDeviceId && !autoLocked && curChunks >= SILENT_CHUNKS && nextCandidate("silent")) {
+    dropTrack();
+    status("no sound from this input - trying another...");
+    reacquire();
+  }
+}
+// Fill the input list. Labels are only available once permission is granted,
+// so this runs after every successful capture; a remembered device that has
+// since gone away drops back to Default rather than failing forever.
+async function listInputs() {
+  inputs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audioinput");
+  const sel = $("mic_device");
+  sel.replaceChildren(new Option("Automatic (recommended)", ""),
+    ...inputs.filter(d => d.deviceId && d.deviceId !== "default").map(d => new Option(d.label || d.deviceId.slice(0, 8), d.deviceId)));
+  if (micDeviceId && !inputs.some(d => d.deviceId === micDeviceId)) {
+    micDeviceId = ""; try { localStorage.removeItem("mic_device"); } catch (e) {}
+  }
+  if (autoDeviceId && !inputs.some(d => d.deviceId === autoDeviceId)) { autoDeviceId = ""; autoLocked = false; rememberAuto(); }
+  sel.value = micDeviceId;
+  return inputs;
+}
+$("mic_device").onchange = async () => {
+  micDeviceId = $("mic_device").value;
+  try { micDeviceId ? localStorage.setItem("mic_device", micDeviceId) : localStorage.removeItem("mic_device"); } catch (e) {}
+  diag("input changed", { deviceId: micDeviceId.slice(0, 8) || "automatic" });
+  if (!started) return;
+  // Switch live: drop the current track and fetch the new device on the same socket.
+  dropTrack();
+  status("switching microphone input...");
+  reacquire();
+};
+let lastPeak = 0, frames = 0, reacquiring = false, tick = null, watch = null;
+
+// A tab that is playing audio is what Chromium exempts from background-tab
+// throttling. The worklet path used an oscillator for this; the processor path
+// has no AudioContext, so a looping, effectively silent clip (1 LSB square at
+// 1 % volume) plays for as long as the mic is wanted. Its play/pause events go
+// to the log: whether the headset lets it keep playing behind the CloudXR
+// window is what decides if background capture survives.
+let keepAlive = null;
+function keepAliveClip() {
+  const rate = 8000, n = rate * 10, data = new Int16Array(n);  // 10 s, looped
+  for (let i = 0; i < n; i++) data[i] = (i >> 6) & 1;
+  const buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const str = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt "); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, "data"); v.setUint32(40, n * 2, true);
+  new Int16Array(buf, 44).set(data);
+  return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+}
+function startKeepAlive() {
+  if (keepAlive) return;
+  const a = new Audio(keepAliveClip());
+  a.loop = true; a.volume = 0.01;
+  ["play", "pause", "stalled", "ended"].forEach(ev => a.addEventListener(ev, () => diag("keepalive " + ev)));
+  a.play().catch(err => diag("keepalive refused", { error: err.name }));
+  keepAlive = a;
+}
+function stopKeepAlive() {
+  if (!keepAlive) return;
+  keepAlive.pause(); keepAlive.src = ""; keepAlive = null;
+}
+
+function dropTrack() {
+  if (micStream) { micStream.getTracks().forEach(t => { t.onended = null; t.stop(); }); micStream = null; }
+  if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
+}
+function stopMic() {
+  // Detach handlers before tearing down: onclose would otherwise reconnect and
+  // the track's onended would treat this as a lost mic and re-acquire it.
+  started = false; handedOver = false; goneCount = 0;
+  if (ws) { ws.onclose = null; ws.onerror = null; try { ws.close(); } catch (e) {} ws = null; }
+  dropTrack();
+  stopKeepAlive();
+  if (tick) { clearInterval(tick); tick = null; }
+  if (watch) { clearInterval(watch); watch = null; }
+  $("bar").style.width = "0%";
+  status("microphone stopped");
   renderLive();
 }
+function standDown(msg) { stopMic(); status(msg); }
+
+// Diagnostics for headset-side mic trouble (silent frames, tracks that keep
+// ending): the track's own state goes to the app log as text frames on the
+// audio socket, so the workstation log shows what the browser is doing.
+let pendingDiag = [];
+function trackState(t) {
+  if (!t) return { track: null };
+  const s = t.getSettings ? t.getSettings() : {};
+  return { label: t.label, muted: t.muted, enabled: t.enabled, readyState: t.readyState,
+           deviceId: (s.deviceId || "").slice(0, 8), sampleRate: s.sampleRate, hidden: document.hidden,
+           visibility: document.visibilityState, ctx: audioCtx ? audioCtx.state : null };
+}
+function diag(event, extra) {
+  const msg = JSON.stringify({ t: new Date().toISOString().slice(11, 19), source: "app", event, ...(extra || {}),
+                               ...trackState(micStream && micStream.getTracks()[0]) });
+  if (ws && ws.readyState === 1) ws.send(msg); else pendingDiag.push(msg);
+}
+document.addEventListener("visibilitychange", () => {
+  if (!started) return;
+  diag("visibility");
+  // Back in front with a stalled track: do not wait for the next check.
+  if (!document.hidden && stalled && micStream && !reacquiring) { diag("reacquire on visible"); dropTrack(); reacquire(); }
+});
+navigator.mediaDevices.addEventListener && navigator.mediaDevices.addEventListener("devicechange", () => diag("devicechange"));
 
 function connect() {
   if (ws) { ws.onclose = null; ws.onerror = null; try { ws.close(); } catch (e) {} }
-  ws = new WebSocket("wss://" + location.host + "/audio");
+  ws = new WebSocket("wss://" + location.host + "/audio?source=app");
   ws.binaryType = "arraybuffer";
-  ws.onopen = () => status("microphone streaming");
+  ws.onopen = () => {
+    status(micStream ? "microphone streaming" : "audio link up - waiting for the microphone");
+    pendingDiag.forEach(m => ws.send(m)); pendingDiag = []; diag("socket open");
+  };
   ws.onclose = (ev) => {
-    if (ev.code === SUPERSEDED) { standDown("superseded by a newer tab - close this one"); return; }
-    status("mic disconnected - retrying"); setTimeout(connect, 1000);
+    if (ev.code === SUPERSEDED) {
+      // A newer page took the microphone. The CloudXR window (its capture
+      // script rides in the foreground) is the expected one: refresh() then
+      // reports it and takes the mic back here when that window goes away. Any
+      // other page is a stale copy of this one.
+      if (/client/.test(ev.reason || "")) {
+        standDown("microphone handed over to the CloudXR window");
+        handedOver = true; handedOverAt = Date.now(); goneCount = 0;
+      } else {
+        standDown("superseded by a newer tab - close this one");
+      }
+      return;
+    }
+    status("mic disconnected - retrying");
+    setTimeout(() => { if (started) connect(); }, 1000);
   };
   ws.onerror = () => ws.close();
+}
+
+function micHint(err) {
+  if (err.name === "NotAllowedError") return "allow the microphone for this site in the browser, then tap again";
+  if (err.name === "OverconstrainedError" || err.name === "NotFoundError") return "the chosen input is gone - pick another under Input";
+  return "another page or app (the CloudXR client?) holds the mic - close it, then tap again";
 }
 
 async function startMic() {
   if (started) return true;
   let stream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-    });
+    stream = await navigator.mediaDevices.getUserMedia(micConstraints());
   } catch (err) {
-    status("mic failed: " + err.name + " - close any other copy of this page, then tap again");
+    status("mic failed: " + err.name + " - " + micHint(err));
     return false;
   }
-  started = true; micStream = stream;
+  started = true;
   renderLive();
-  const ctx = audioCtx = new AudioContext();
-  // A tab that is PLAYING audio is exempt from Chromium's background-tab
-  // freezing, which otherwise kills capture minutes into an immersive session.
-  const osc = ctx.createOscillator(), g = ctx.createGain();
-  g.gain.value = 0.001; osc.frequency.value = 30;
-  osc.connect(g).connect(ctx.destination); osc.start();
-  ctx.onstatechange = () => { if (ctx.state !== "running") ctx.resume(); };
-  stream.getTracks()[0].onended = () => { status("mic lost - restarting"); started = false; startMic(); };
-  const code = `registerProcessor("grab", class extends AudioWorkletProcessor {
-      process(i) { if (i[0] && i[0][0]) this.port.postMessage(i[0][0]); return true; } });`;
-  await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([code], { type: "text/javascript" })));
-  const node = new AudioWorkletNode(ctx, "grab");
-  ctx.createMediaStreamSource(stream).connect(node);
-  const ratio = ctx.sampleRate / RATE;
-  let buf = [], acc = 0, out = new Int16Array(CHUNK), oi = 0, peak = 0, frames = 0;
-  node.port.onmessage = (e) => {
-    const x = e.data;
+  startKeepAlive();
+  await attachTrack(stream);
+  if (!ws) connect();
+  if (!tick) tick = setInterval(() => diag("tick", { peak: +lastPeak.toFixed(4), frames }), 20000);
+  if (!watch) watch = setInterval(watchInput, 1000);
+  return true;
+}
+
+// The headset ended our track: it handed the mic to someone else. Ask for it
+// back until it is free again, waiting longer each time, or until Stop. A
+// permission revoked outright is the one failure that cannot be retried.
+async function reacquire() {
+  if (!started || reacquiring) return;
+  reacquiring = true;
+  try {
+    let delay = 1000;
+    while (started) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(micConstraints());
+        if (!started) { stream.getTracks().forEach(t => t.stop()); return; }
+        await attachTrack(stream);
+        status("microphone streaming");
+        return;
+      } catch (err) {
+        diag("reacquire failed", { error: err.name, retry_ms: delay });
+        if (err.name === "NotAllowedError") {
+          standDown("mic permission revoked - allow the microphone for this site, then tap Start");
+          return;
+        }
+        if (!micDeviceId && autoDeviceId && (err.name === "OverconstrainedError" || err.name === "NotFoundError")) {
+          autoDeviceId = ""; autoLocked = false; rememberAuto();  // that input is gone; the default is always there
+          continue;
+        }
+        status("mic taken by another page/app - retrying in " + Math.round(delay / 1000) + "s");
+        await new Promise(r => setTimeout(r, delay));
+        delay = Math.min(delay * 2, 10000);
+      }
+    }
+  } finally {
+    reacquiring = false;
+  }
+}
+
+async function attachTrack(stream) {
+  dropTrack();
+  micStream = stream;
+  const track = stream.getTracks()[0];
+  track.onended = () => {
+    diag("track ended");
+    micStream = null;  // stops this track's capture loop below
+    // An input the headset keeps ending before it was ever heard is the
+    // route a headset took over; Automatic moves on rather than re-asking.
+    if (!micDeviceId && !autoLocked) { autoTried = 0; nextCandidate("track ended"); }
+    status("mic lost - waiting for the headset to give it back");
+    reacquire();
+  };
+  // muted=true is the browser saying "granted, but I am not getting audio from
+  // the device right now" - the headset gave the mic to something else.
+  track.onmute = () => { diag("track muted"); status("mic MUTED by headset - another app/page has the mic?"); };
+  track.onunmute = () => { diag("track unmuted"); status("microphone streaming"); };
+  curChunks = 0; curPeak = 0; seenChunks = 0; lastFrameAt = Date.now(); stalled = false;
+  await listInputs();
+  diag("track started", { devices: inputs.map(d => d.label || d.deviceId.slice(0, 8)),
+                          chosen: (micDeviceId || autoDeviceId).slice(0, 8) || "default", mode: micDeviceId ? "manual" : "automatic" });
+
+  // Resample whatever the device delivers (48 kHz on Quest) to 16 kHz PCM16
+  // chunks for the hub. Fed by one of the two capture paths below.
+  let buf = [], acc = 0, out = new Int16Array(CHUNK), oi = 0, peak = 0;
+  const feed = (x, srcRate) => {
+    const ratio = srcRate / RATE;
     for (let i = 0; i < x.length; i++) buf.push(x[i]);
     while (acc + ratio < buf.length) {
       const j = Math.floor(acc), f = acc - j;
@@ -632,24 +910,68 @@ async function startMic() {
       if (oi === CHUNK) {
         if (ws && ws.readyState === 1) ws.send(out.buffer.slice(0));
         oi = 0;
-        if (++frames % 5 === 0) { $("bar").style.width = Math.min(100, peak * 400) + "%"; peak = 0; }
+        curChunks++;
+        if (++frames % 5 === 0) { $("bar").style.width = Math.min(100, peak * 400) + "%"; lastPeak = peak; curPeak = Math.max(curPeak, peak); peak = 0; }
       }
     }
     const drop = Math.floor(acc); buf = buf.slice(drop); acc -= drop;
   };
-  connect();
-  return true;
-}
 
-function stopMic() {
-  // Detach handlers before tearing down: onclose would otherwise reconnect and
-  // the track's onended would treat this as a lost mic and start it again.
-  if (ws) { ws.onclose = null; ws.onerror = null; try { ws.close(); } catch (e) {} ws = null; }
-  if (micStream) { micStream.getTracks().forEach(t => { t.onended = null; t.stop(); }); micStream = null; }
-  if (audioCtx) { audioCtx.close().catch(() => {}); audioCtx = null; }
-  started = false; $("bar").style.width = "0%";
-  status("microphone stopped");
-  renderLive();
+  if (window.MediaStreamTrackProcessor) {
+    // Preferred: read frames straight off the track. This does not involve an
+    // AudioContext, which the Quest Browser suspends (and will not resume)
+    // whenever another window - the CloudXR stream - holds audio focus; with
+    // the worklet path that showed up as a live, unmuted track delivering
+    // nothing at all.
+    diag("capture via MediaStreamTrackProcessor");
+    const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
+    (async () => {
+      let f32 = new Float32Array(0);
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) { diag("track processor ended"); break; }
+        if (micStream !== stream) { value.close(); break; }
+        const n = value.numberOfFrames;
+        if (f32.length < n) f32 = new Float32Array(n);
+        try {
+          value.copyTo(f32, { planeIndex: 0, format: "f32-planar" });
+        } catch (e) {
+          // Older WebCodecs without format conversion: take the native layout.
+          if (value.format === "s16" || value.format === "s16-planar") {
+            const ch = value.format === "s16" ? value.numberOfChannels : 1;
+            const s16 = new Int16Array(n * ch); value.copyTo(s16, { planeIndex: 0 });
+            for (let i = 0; i < n; i++) f32[i] = s16[i * ch] / 32768;
+          } else {
+            const ch = value.format === "f32" ? value.numberOfChannels : 1;
+            const raw = new Float32Array(n * ch); value.copyTo(raw, { planeIndex: 0 });
+            for (let i = 0; i < n; i++) f32[i] = raw[i * ch];
+          }
+        }
+        const rate = value.sampleRate; value.close();
+        feed(f32.subarray(0, n), rate);
+      }
+    })().catch(e => diag("track processor error", { error: String(e) }));
+  } else {
+    // Fallback: AudioWorklet. Needs a running AudioContext.
+    diag("capture via AudioWorklet");
+    const ctx = audioCtx = new AudioContext();
+    // A tab that is PLAYING audio is exempt from Chromium's background-tab
+    // freezing, which otherwise kills capture minutes into an immersive session.
+    const osc = ctx.createOscillator(), g = ctx.createGain();
+    g.gain.value = 0.001; osc.frequency.value = 30;
+    osc.connect(g).connect(ctx.destination); osc.start();
+    ctx.onstatechange = () => {
+      if (ctx.state !== "running") { ctx.resume(); status("mic paused by the browser (audio context " + ctx.state + ") - bring this window to the front"); }
+      else status("microphone streaming");
+      diag("audiocontext " + ctx.state);
+    };
+    const code = `registerProcessor("grab", class extends AudioWorkletProcessor {
+        process(i) { if (i[0] && i[0][0]) this.port.postMessage(i[0][0]); return true; } });`;
+    await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([code], { type: "text/javascript" })));
+    const node = new AudioWorkletNode(ctx, "grab");
+    ctx.createMediaStreamSource(stream).connect(node);
+    node.port.onmessage = (e) => feed(e.data, ctx.sampleRate);
+  }
 }
 
 // ---- buttons --------------------------------------------------------------
@@ -723,10 +1045,10 @@ $("go").onclick = async () => {
     const w = window.open(s.cloudxr_url, "_blank");
     $("cxr").href = s.cloudxr_url;
     if (w) {
-      status("running - keep THIS tab open, the mic runs here");
+      status("running - the CloudXR window takes over the microphone");
     } else {
       ui.cxrPrompt = true;
-      status("ready - step 3: tap 'Open CloudXR' (keep THIS tab open, the mic runs here)");
+      status("ready - step 3: tap 'Open CloudXR' - the CloudXR window takes over the microphone");
     }
   } finally {
     setBusy(false);

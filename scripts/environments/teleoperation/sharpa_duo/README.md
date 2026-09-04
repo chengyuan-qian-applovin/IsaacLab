@@ -359,9 +359,22 @@ the app rather than in the teleop process, **it survives teleop restarts**: tap
 page streams — an older tab is evicted with close code 4001 and told to release
 the microphone, which is what stops a pile of stale tabs from fighting over it.
 
-Keep the app tab open while you teleoperate. Capture stops if that page is
-closed, so the CloudXR client is deliberately opened in a *new* tab rather than
-navigated to. Flags the Parameters tab does not cover can still be forwarded
+Capture starts on the app page but does not stay there. The headset pauses a
+background window's microphone about a minute after it is hidden and ends its
+track whenever you switch windows, so a page behind the immersive session
+cannot hold the mic. The app therefore serves NVIDIA's WebXR client itself at
+`https://<hostname>.local:8500/client/` (the version-matched build, cached under
+`~/.cache/teleop_app/client/` and refreshed by ETag) with `client_mic.js`
+added: the CloudXR window — the one window the headset keeps in the foreground —
+captures the microphone and streams it to the same relay, evicting the app
+page, which takes the mic back when that window closes. The Mic chip reads
+"CloudXR window" while this is the case. If the client cannot be downloaded
+(offline first start) the link falls back to nvidia.github.io and the app page
+keeps capturing; the journal says which.
+
+The CloudXR client is opened in a *new* window rather than navigated to, so
+the app page stays available to hand the microphone back to and to end the
+session from. Flags the Parameters tab does not cover can still be forwarded
 once per argument with `--teleop-arg` (e.g. `--teleop-arg --robot_pos ...`);
 they go first on the command line, so the saved settings win where both name
 a flag, and scenes must come from the Scenes tab rather than `--teleop-arg
@@ -534,7 +547,9 @@ Audio can come from two places:
 - **Headset microphone** (`--mic_device quest` or `--mic_device avp`): nothing
   in the CloudXR stack streams the headset mic to the server, so
   `headset_mic.py` provides the path — a WSS server the headset streams 16 kHz
-  PCM to, putting the mic at your mouth instead of across the room. Open the
+  PCM to, putting the mic at your mouth instead of across the room. A
+  browser page can only capture while the headset keeps it awake, which is why
+  the app moves capture into the CloudXR window itself (see the app section). Open the
   port first (`sudo ufw allow 8444/tcp`; `quest:<port>` / `avp:<port>` changes
   it). Stay quiet for the first ~2 s after the stream starts — the energy gate
   calibrates on that ambient. The two clients differ in how the stream starts:
@@ -677,6 +692,7 @@ never shifts pinch timing.
 | `recording.py` | Recorder terms + the per-episode HDF5 handler (one file per labeled trajectory). |
 | `session_config.py` | What a session is launched with, shared by both UIs: parameter schema, ports, headset devices, the persisted settings file, scene/record-dir scanning, scene table rows, and settings → command line. |
 | `teleop_app.py` / `teleop_app_page.html` | Always-on headset control app: start/restart/kill teleop, own the microphone across runs, hand out an up-to-date CloudXR link, and configure the session (scenes, fleet server, parameters) from the headset. |
+| `client_mic.js` | Microphone capture script the app adds to the WebXR client it serves at `/client/`, so the CloudXR window (the one the headset keeps awake) holds the mic during the session. |
 | `teleop_launcher.py` | Desktop (tkinter) launcher with the same pages: parameters, scene source, per-scene counts, fleet progress. |
 | `fleet_client.py` | Client for the duo-fleet-server: startup check-in, presence, scene download, crash-safe episode upload outbox; plus the read-only status monitor both UIs poll. |
 | `fleet_push_scenes.py` | Seeds the fleet server with self-contained scene packages (`.usdz`), targets, and task descriptions over HTTP. |

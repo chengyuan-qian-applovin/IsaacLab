@@ -16,7 +16,7 @@ What you end up with:
                                       └─ CloudXR runtime  (49100/tcp, 47998/udp)
                                          + WSS proxy      (48322/tcp)
    NVIDIA CloudXR client  ◀──────────── video / hand tracking ────────────┘
-   (nvidia.github.io, opened by the page)
+   (NVIDIA's build served by the app at :8500/client/ + mic script, opened by the page)
 ```
 
 Only the workstation is set up per machine. A headset needs nothing installed:
@@ -211,7 +211,11 @@ profile, certificate acceptance and Library are per account).
    "play"). Voice: **success** / **failure** end an episode, **reset**
    discards it, **next** switches scene, **align** adjusts the workspace
    offset while stopped.
-7. Keep the app window open the whole time: the microphone runs there.
+7. When the CloudXR window opens it takes over the microphone (the app serves
+   the client with a capture script, because the headset pauses a background
+   window's mic). The Mic chip reads "CloudXR window" and the app page takes
+   the mic back by itself when that window closes. Leave the app page open in
+   the background; you finish the session from it.
 
 When you are done: **Finish session** (the red button beside Start) stops the
 microphone and the whole teleop process tree, CloudXR runtime included.
@@ -244,7 +248,7 @@ Then on the headset:
   accept the certificate at `https://<hostname>.local:48322/` first if asked,
   tap Connect. `mic=0` matters: without it the CloudXR client grabs the
   headset microphone for its own audio passthrough and fights the mic page
-  for it every ~15 s, chopping the audio the voice commands hear.
+  for it every ~15 s, chopping the audio the voice commands hear. Without the app the mic page is a background window during the session, and the headset pauses its capture about a minute after it is hidden; the app path avoids that by capturing inside the CloudXR window.
 
 Other headsets: Apple Vision Pro uses the Isaac XR Teleop Sample Client with
 `--cloudxr_env avp` (port 48010/tcp). A workstation microphone instead of the
@@ -268,6 +272,8 @@ keeps 48322 and 8444 bound and the next start fails with "port already in use".
 | Connect turns grey, "Starting XR session" forever | Rejoin of a live run after a disconnect. **Restart teleop**, then connect. |
 | No hands in the scene | Controller awake, hand tracking off in headset settings, or VR permission denied for the NVIDIA page. Server log shows `XDev does not support hand tracking` when the headset never offered hands. |
 | Mic shows "streaming from another tab" | Another app tab is streaming, or one you just closed has not timed out (≤10 s). Close extra tabs. |
+| Mic chip reads "CloudXR window" | Expected while the CloudXR window is open: it holds the microphone. The app page resumes when it closes. |
+| Open CloudXR lands on nvidia.github.io instead of `<hostname>.local:8500/client/` | The app could not download the client (first start offline). `journalctl --user -u teleop-app` shows `WebXR client not available`; it retries every minute. The app page keeps the mic meanwhile, which the headset pauses ~1 min after the window is hidden. |
 | Voice never triggers | Stay quiet the first 1.5 s after the mic starts (ambient calibration). Check the level bar moves when you speak. |
 | Robot is Franka but you expected YAM | Set **Robot embodiment** on the Parameters tab, Save, then Restart teleop. |
 | Start session says "Select at least one scene" / "Connect to the fleet server" | Scenes tab: tick scenes, or Connect to the server first (check the URL/token; the status line shows the server's error). |

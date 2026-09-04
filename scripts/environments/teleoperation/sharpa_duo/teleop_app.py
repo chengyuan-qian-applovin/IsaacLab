@@ -63,6 +63,7 @@ import sys
 import threading
 import time
 import urllib.parse
+from collections import deque
 from collections.abc import Callable
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -97,8 +98,21 @@ _PAGE_PATH = os.path.join(_HERE, "teleop_app_page.html")
 _CSS_PATH = os.path.join(_HERE, "teleop_app_page.css")
 """The page's stylesheet (served at ``/app.css``), read per request like the page."""
 
+_CLIENT_MIC_PATH = os.path.join(_HERE, "client_mic.js")
+"""Microphone capture script added to the WebXR client the app serves at ``/client/``."""
+
 _SUPERSEDED = 4001
 """Close code telling an older mic page a newer one took over (see :mod:`headset_mic`)."""
+_PEAK_WINDOW_CHUNKS = 20
+"""Chunks (0.1 s each) over which the page's "muted" verdict looks for any sound."""
+
+_SUBSCRIBER_BACKLOG_BYTES = 32 * 1024
+"""Unsent audio (about 1 s) a teleop consumer may have queued before further chunks are dropped for it."""
+
+_SOUND_PEAK = 0.02
+"""Chunk peak (0..1) above the headset's noise floor: the operator is speaking, not just present."""
+"""Close code telling an older mic page a newer one took over (see :mod:`headset_mic`)."""
+
 
 _STOP_GRACE_S = 12.0
 """Seconds to wait for a SIGINT (the Ctrl-C equivalent) before escalating."""
@@ -299,6 +313,212 @@ class TeleopProcess:
         # An adopted run is gone for good once stopped; forget it so a later
         # start() is not mistaken for "already running".
         self._adopted_pid = None
+
+
+def _pcm16_peak(chunk: bytes) -> float:
+    """Loudest |sample| of a little-endian PCM16 chunk, normalised to 0..1."""
+    if len(chunk) < 2:
+        return 0.0
+    samples = memoryview(chunk)[: len(chunk) // 2 * 2].cast("h")
+    return max(abs(min(samples)), abs(max(samples))) / 32768.0
+
+
+def _frame_source(message: str) -> str | None:
+    """The ``source`` a page stamps on its diagnostic frames, if it is one we know."""
+    try:
+        source = json.loads(message).get("source")
+    except (ValueError, AttributeError):
+        return None
+    return source if source in ("app", "client") else None
+
+
+_CLIENT_MIC_TAG = b'<script defer="defer" src="mic.js"></script>'
+
+
+def _inject_mic_script(index_html: bytes) -> bytes:
+    """The client's ``index.html`` with the microphone script tag added after its bundle."""
+    marker = b'<script defer="defer" src="bundle.js"></script>'
+    if marker in index_html:
+        return index_html.replace(marker, marker + _CLIENT_MIC_TAG, 1)
+    if b"</body>" in index_html:
+        return index_html.replace(b"</body>", _CLIENT_MIC_TAG + b"</body>", 1)
+    return index_html + _CLIENT_MIC_TAG
+
+
+def _client_mic_js() -> bytes:
+    """The capture script served into the client page (``client_mic.js`` next to this file, read per request)."""
+    try:
+        with open(_CLIENT_MIC_PATH, "rb") as f:
+            return f.read()
+    except OSError as exc:
+        return f"console.error({json.dumps(f'cannot read {_CLIENT_MIC_PATH}: {exc}')});".encode()
+
+
+class WebClientAssets:
+    """NVIDIA's WebXR client, served by the app so the microphone script can ride along.
+
+    The headset keeps exactly one window in the foreground during an immersive
+    session: the CloudXR client. A page behind it has its capture paused about a
+    minute after it is hidden and its track ended whenever the operator switches
+    windows, which is what made the microphone die mid-session while the app
+    page owned it. Serving the client from here and adding ``client_mic.js`` to
+    it puts the microphone in the window that stays awake.
+
+    The files come from the same versioned nvidia.github.io origin ``isaacteleop``
+    resolves for the installed runtime (``default_web_client_origin``), cached
+    under ``~/.cache/teleop_app/client/<release>/`` with their ETags, and
+    re-checked with conditional GETs because the "release-X.Y.x" build is a
+    moving target. ``TELEOP_WEB_CLIENT_STATIC_DIR`` (isaacteleop's own knob)
+    pins a directory to serve verbatim instead. While nothing is available
+    (offline first start) the app hands out the nvidia.github.io link and the
+    microphone stays on the app page.
+    """
+
+    _RETRY_S = 60.0
+    _REFRESH_S = 6 * 3600.0
+    _MAX_BYTES = 32 * 1024 * 1024
+    _FILES = ("index.html", "bundle.js")
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._files: dict[str, bytes] = {}
+        self._etags: dict[str, str] = {}
+        self._last_attempt = 0.0
+        self._pinned_dir = os.environ.get("TELEOP_WEB_CLIENT_STATIC_DIR", "").strip() or None
+
+    def available(self) -> bool:
+        """Whether both files are in memory."""
+        return all(name in self._files for name in self._FILES)
+
+    def index(self) -> bytes:
+        """The client's ``index.html`` with the microphone script tag added."""
+        return _inject_mic_script(self._files.get("index.html", b""))
+
+    def bundle(self) -> bytes:
+        return self._files.get("bundle.js", b"")
+
+    def etag(self, name: str) -> str | None:
+        return self._etags.get(name)
+
+    @staticmethod
+    def _origin() -> str | None:
+        try:
+            from isaacteleop.cloudxr.oob_teleop_env import default_web_client_origin
+
+            return default_web_client_origin()
+        except Exception:  # noqa: BLE001 — isaacteleop missing or too old: no local client
+            return None
+
+    def _cache_dir(self, origin: str) -> str:
+        release = origin.rstrip("/").rsplit("/", 1)[-1] or "client"
+        return os.path.join(os.path.expanduser("~/.cache"), "teleop_app", "client", release)
+
+    def load(self) -> bool:
+        """Read the cache, then refresh it from the origin when due. Blocking: run off the event loop.
+
+        Returns :meth:`available`. Failures are logged once per attempt and retried
+        after :attr:`_RETRY_S`; a stale cache keeps being served meanwhile.
+        """
+        with self._lock:
+            if time.monotonic() - self._last_attempt < self._RETRY_S:
+                return self.available()
+            self._last_attempt = time.monotonic()
+            if self._pinned_dir:
+                return self._read_dir(self._pinned_dir, pinned=True)
+            origin = self._origin()
+            if origin is None:
+                return False
+            cache = self._cache_dir(origin)
+            if not self._files:
+                self._read_dir(cache, pinned=False)
+            self._refresh(origin, cache)
+            return self.available()
+
+    def _read_dir(self, directory: str, pinned: bool) -> bool:
+        files, etags = {}, {}
+        for name in self._FILES:
+            try:
+                with open(os.path.join(directory, name), "rb") as f:
+                    files[name] = f.read()
+                with open(os.path.join(directory, name + ".etag"), encoding="utf-8") as f:
+                    etags[name] = f.read().strip()
+            except OSError:
+                if name not in files:
+                    if pinned:
+                        print(f"[APP] TELEOP_WEB_CLIENT_STATIC_DIR={directory} lacks {name}; no local WebXR client.")
+                    return False
+        if all(files.get(n) for n in self._FILES):
+            self._files, self._etags = files, etags
+            if pinned:
+                print(f"[APP] Serving the pinned WebXR client from {directory} at /client/ with the microphone script.")
+            return True
+        return False
+
+    def _refresh(self, origin: str, cache: str) -> None:
+        """Conditional GET of each file; new bodies are written atomically and swapped in."""
+        import urllib.error
+        import urllib.request
+
+        changed = []
+        for name in self._FILES:
+            url = origin.rstrip("/") + "/" + name
+            req = urllib.request.Request(url, headers={"User-Agent": "teleop-app"})
+            if name in self._files and self._etags.get(name):
+                req.add_header("If-None-Match", self._etags[name])
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    body = resp.read(self._MAX_BYTES + 1)
+                    etag = resp.headers.get("ETag", "")
+            except urllib.error.HTTPError as exc:
+                if exc.code == 304:
+                    continue
+                print(
+                    f"[APP] WebXR client: {url} -> HTTP {exc.code}; keeping the cached copy."
+                    if name in self._files
+                    else f"[APP] WebXR client not available ({url} -> HTTP {exc.code}); handing out the nvidia link."
+                )
+                return
+            except (OSError, ValueError) as exc:
+                print(
+                    f"[APP] WebXR client: could not reach {url} ({exc}); keeping the cached copy."
+                    if name in self._files
+                    else f"[APP] WebXR client not available ({exc}); handing out the nvidia.github.io link."
+                )
+                return
+            if not body or len(body) > self._MAX_BYTES:
+                print(f"[APP] WebXR client: {url} returned {len(body)} bytes; ignored.")
+                return
+            if name == "index.html" and b"Content-Security-Policy" in body:
+                print(
+                    "[APP] WebXR client: index.html now has a Content-Security-Policy; the mic script may be blocked."
+                )
+            try:
+                os.makedirs(cache, exist_ok=True)
+                for fname, data in ((name, body), (name + ".etag", etag.encode())):
+                    tmp = os.path.join(cache, fname + ".part")
+                    with open(tmp, "wb") as f:
+                        f.write(data)
+                    os.replace(tmp, os.path.join(cache, fname))
+            except OSError as exc:
+                print(f"[APP] WebXR client: cannot write {cache} ({exc}); serving from memory only.")
+            self._files[name], self._etags[name] = body, etag
+            changed.append(name)
+        if changed:
+            print(
+                f"[APP] WebXR client {origin} cached at {cache} ({', '.join(changed)} updated);"
+                " served at /client/ with the microphone script."
+            )
+        elif self.available():
+            print(f"[APP] WebXR client {origin} is current (cache {cache}); served at /client/ with the mic script.")
+
+    def refresh_loop(self) -> None:
+        """Keep the cache current for as long as the app runs (daemon thread)."""
+        while True:
+            try:
+                self.load()
+            except Exception as exc:  # noqa: BLE001 — a refresh must never kill the app
+                print(f"[APP] WebXR client refresh failed: {exc}")
+            time.sleep(self._REFRESH_S if self.available() else self._RETRY_S)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -581,6 +801,14 @@ class MicHub:
         self._active = None
         self._subscribers: set = set()
         self._last_rx = 0.0
+        # Loudest sample of each of the newest chunks, 0..1. The page reads the
+        # window's maximum: a single 0.1 s chunk is silent between every two
+        # words once the headset's noise suppression is on, and judging from it
+        # made the label flip to "muted" whenever a poll landed in a pause.
+        self._peaks: deque[float] = deque(maxlen=_PEAK_WINDOW_CHUNKS)
+        self._chunks = 0
+        self._last_sound = 0.0  # when a chunk last carried speech-level sound
+        self._source: str | None = None  # "app" (control page) or "client" (CloudXR page), from its diagnostics
 
     def connected(self) -> bool:
         """Whether a page is currently streaming."""
@@ -590,11 +818,28 @@ class MicHub:
         """Age of the newest audio chunk, or None if none has ever arrived."""
         return None if self._last_rx == 0.0 else round(time.monotonic() - self._last_rx, 1)
 
+    def seconds_since_sound(self) -> float | None:
+        """Age of the newest chunk that carried speech-level sound, or None if none has yet."""
+        return None if self._last_sound == 0.0 else round(time.monotonic() - self._last_sound, 1)
+
     def status(self) -> dict:
         """JSON-ready snapshot for the page."""
         return {
             "mic_connected": self.connected(),
             "mic_silent_s": self.seconds_since_audio(),
+            # Silence is the normal state between voice commands (the headset's
+            # noise suppression gates it to exact zeros), so the page reports
+            # how long ago a voice was last heard rather than calling silence
+            # "muted".
+            "mic_heard_s": self.seconds_since_sound(),
+            # Which page holds the microphone: the app's control page, or the
+            # CloudXR client page the app serves with its own capture script.
+            "mic_source": self._source if self.connected() else None,
+            # Tells silence apart from "no frames": frames arriving with a
+            # peak near zero for the whole window mean the headset delivers a
+            # muted track.
+            "mic_peak": round(max(self._peaks, default=0.0), 4),
+            "mic_chunks": self._chunks,
             "consumers": len(self._subscribers),
         }
 
@@ -603,20 +848,44 @@ class MicHub:
         from websockets.exceptions import ConnectionClosed
 
         previous, self._active = self._active, connection
+        # The page names itself in the socket URL (?source=app|client) so the
+        # eviction below can tell the loser who took over; older pages that
+        # do not still stamp their diagnostic frames.
+        query = urllib.parse.urlparse(connection.request.path or "").query
+        self._source = _frame_source(json.dumps(dict(urllib.parse.parse_qsl(query))))
         if previous is not None:
             with contextlib.suppress(Exception):
-                await previous.close(code=_SUPERSEDED, reason="superseded")
-            print("[APP] Superseded an older mic page (a stale tab was still open).")
-        print("[APP] Microphone page connected.")
+                await previous.close(code=_SUPERSEDED, reason=f"superseded by {self._source or 'page'}")
+            print(f"[APP] Microphone: {self._source or 'a newer page'} took over from the previous page.")
+        print(f"[APP] Microphone page connected ({self._source or 'unnamed'}).")
         try:
             async for message in connection:
                 if connection is not self._active:
                     break  # a newer page took over
                 if not isinstance(message, bytes):
+                    # Text frames are the page's own diagnostics: audio-track
+                    # state (label, muted, readyState), why capture restarted,
+                    # tab visibility. They tell headset-side mic trouble apart
+                    # from ours, so they go to the log verbatim. Their "source"
+                    # field says which page is speaking.
+                    self._source = _frame_source(message) or self._source
+                    print(f"[MIC] {self._source or 'page'}: {message[:400]}")
                     continue
                 self._last_rx = time.monotonic()
+                self._chunks += 1
+                peak = _pcm16_peak(message)
+                self._peaks.append(peak)
+                if peak > _SOUND_PEAK:
+                    self._last_sound = self._last_rx
                 for sub in list(self._subscribers):
-                    # Never let a slow or dead consumer stall capture.
+                    # Never let a slow or dead consumer stall capture. ``send``
+                    # waits for the socket's write buffer to drain once it is
+                    # over the high-water mark, and while it waits this loop is
+                    # not reading the page either. A consumer that has already
+                    # fallen a second behind loses this chunk instead.
+                    transport = getattr(sub, "transport", None)
+                    if transport is not None and transport.get_write_buffer_size() > _SUBSCRIBER_BACKLOG_BYTES:
+                        continue
                     with contextlib.suppress(Exception):
                         await sub.send(message)
         except ConnectionClosed:
@@ -624,13 +893,23 @@ class MicHub:
         finally:
             if connection is self._active:
                 self._active = None
+                # A fresh page must not inherit this one's silence age or
+                # chunk count, or it reads as "frozen" before its first frame.
+                self._last_rx = 0.0
+                self._last_sound = 0.0
+                self._chunks = 0
+                self._peaks.clear()
+                self._source = None
                 # Who hung up matters for triage: a close the page sent means
-                # the browser gave up; one we sent is our keepalive timing out.
+                # the browser gave up; one we sent is our keepalive timing out;
+                # neither means the TCP connection died under us, which on a
+                # headset is the tab being frozen or the device going to sleep.
                 rcvd_first = getattr(connection.protocol, "close_rcvd_then_sent", None)
                 who = {True: "page", False: "app", None: "transport"}[rcvd_first]
+                cause = getattr(connection.protocol, "close_exc", None)
                 print(
                     f"[APP] Microphone page disconnected (closed by {who}, code {connection.close_code},"
-                    f" reason {connection.close_reason!r})."
+                    f" reason {connection.close_reason!r}, {cause})."
                 )
 
     async def subscribe(self, connection) -> None:
@@ -774,6 +1053,8 @@ class TeleopApp:
         self._teleop = teleop
         self._config = config
         self._mic = MicHub()
+        self._client = WebClientAssets()
+        self._action_lock = threading.Lock()  # one start/stop/restart at a time
 
     def _proxy_port(self) -> int:
         """Port of the CloudXR WSS proxy, which moves when the host is shared.
@@ -787,22 +1068,29 @@ class TeleopApp:
                 return int(value)
         return 48322
 
-    @staticmethod
-    def _client_base() -> str:
-        """Origin of the WebXR client, which NVIDIA hosts rather than this machine.
+    def _client_base(self) -> str:
+        """Origin of the WebXR client handed to the headset.
 
-        Resolved from the installed ``isaacteleop`` so the client matches the
-        runtime it talks to (1.3.x gets the ``release-1.3.x`` build).
+        An operator override (``TELEOP_WEB_CLIENT_BASE``, isaacteleop's own knob)
+        wins and is handed out untouched. Otherwise our copy with the microphone
+        script (see :class:`WebClientAssets`) when it is available, else NVIDIA's
+        hosted build for the installed ``isaacteleop`` (1.3.x gets ``release-1.3.x``).
         """
+        override = os.environ.get("TELEOP_WEB_CLIENT_BASE", "").strip()
+        if override:
+            return override.rstrip("/")
+        if self._client.available():
+            return f"https://{_preferred_host()}:{self._port}/client"
         try:
-            from isaacteleop.cloudxr.oob_teleop_env import (
-                default_web_client_origin,
-                web_client_base_override_from_env,
-            )
+            from isaacteleop.cloudxr.oob_teleop_env import default_web_client_origin
 
-            return (web_client_base_override_from_env() or default_web_client_origin()).rstrip("/")
+            return default_web_client_origin().rstrip("/")
         except Exception:
             return "https://nvidia.github.io/IsaacTeleop/client/main"
+
+    def client_local(self) -> bool:
+        """Whether the link points at our copy of the client (the one with the microphone script)."""
+        return self._client_base().startswith(f"https://{_preferred_host()}:{self._port}/")
 
     def cert_url(self) -> str:
         """Page that exists solely to let the headset accept the proxy's certificate.
@@ -821,14 +1109,15 @@ class TeleopApp:
         ``PROXY_PORT`` moves when sharing the host with another user.
         """
         host, proxy = _preferred_host(), self._proxy_port()
+        base = self._client_base()
         # serverIP/port are query params the client reads on load, so its
         # connection fields arrive pre-filled instead of typed in the headset.
-        # mic=0 keeps the client from capturing the headset microphone for
-        # CloudXR's own audio passthrough (unused here): the Quest grants the
-        # mic to one page at a time, so with it on, the client and this app's
-        # page steal the mic from each other every ~15 s and every hand-over
-        # chops the audio the voice labeler hears.
-        return f"{self._client_base()}/?serverIP={host}&port={proxy}&mic=0"
+        # mic=0 keeps the client's own audio passthrough from capturing the
+        # headset microphone: the Quest grants the mic to one page at a time,
+        # so with it on, the bundle and our script (or the app page) steal the
+        # mic from each other every ~15 s and every hand-over chops the audio
+        # the voice labeler hears.
+        return f"{base}/?serverIP={host}&port={proxy}&mic=0"
 
     def status(self) -> dict:
         """Everything the page polls, in one round trip."""
@@ -842,6 +1131,7 @@ class TeleopApp:
             **self._teleop.status(),
             **self._mic.status(),
             "cloudxr_url": self.cloudxr_url(),
+            "client_local": self.client_local(),
             "cert_url": self.cert_url(),
             # Teleop takes ~30-60 s to boot, and the process existing says
             # nothing about the XR stack being up. The proxy port going live is
@@ -904,7 +1194,7 @@ class TeleopApp:
         """Run until cancelled."""
         from websockets.asyncio.server import serve
 
-        def process_request(connection, request):
+        async def process_request(connection, request):
             path, _, query = (request.path or "/").partition("?")
             if "upgrade" in request.headers.get("Connection", "").lower():
                 return None  # websocket routes are handled in the handler
@@ -914,6 +1204,35 @@ class TeleopApp:
                 return self._text(connection, _page_html(), "text/html; charset=utf-8")
             if path == "/app.css":
                 return self._text(connection, _page_css(), "text/css; charset=utf-8")
+            if path == "/client":
+                r = connection.respond(http.HTTPStatus.MOVED_PERMANENTLY, "")
+                r.headers["Location"] = "/client/" + (f"?{query}" if query else "")
+                return r
+            if path in ("/client/", "/client/index.html"):
+                # The WebXR client with the microphone script; fetched on first
+                # use if the startup fetch has not got it yet.
+                if not self._client.available() and not await asyncio.to_thread(self._client.load):
+                    return connection.respond(
+                        http.HTTPStatus.SERVICE_UNAVAILABLE,
+                        "The WebXR client is not available locally; open the nvidia.github.io link from the app page\n",
+                    )
+                return self._binary(self._client.index(), "text/html; charset=utf-8", cache="no-store")
+            if path == "/client/bundle.js":
+                if not self._client.available():
+                    return connection.respond(http.HTTPStatus.NOT_FOUND, "not fetched yet\n")
+                # 9.7 MB: let the browser revalidate instead of re-downloading per session.
+                etag = self._client.etag("bundle.js") or f'"{len(self._client.bundle())}"'
+                if request.headers.get("If-None-Match") == etag:
+                    r = connection.respond(http.HTTPStatus.NOT_MODIFIED, "")
+                    r.headers["ETag"] = etag
+                    return r
+                r = self._binary(self._client.bundle(), "text/javascript", cache="no-cache")
+                r.headers["ETag"] = etag
+                return r
+            if path == "/client/mic.js":
+                return self._binary(_client_mic_js(), "text/javascript", cache="no-store")
+            if path == "/client/favicon.ico":
+                return self._binary(_icon_png(64), "image/png")
             if path == "/manifest.webmanifest":
                 return self._text(connection, json.dumps(_MANIFEST), "application/manifest+json")
             if path == "/sw.js":
@@ -938,7 +1257,11 @@ class TeleopApp:
                         http.HTTPStatus.FORBIDDEN, f"{path} needs the {_CONTROL_HEADER} header; use the app page.\n"
                     )
                 action = {"/start": self._teleop.start, "/stop": self._teleop.stop, "/restart": self._teleop.restart}
-                ok, message = action[path]()
+                # stop() waits up to _STOP_GRACE_S for Isaac Sim to exit and
+                # start() shells out to nvidia-smi; run in the loop they would
+                # freeze the microphone relay and every status poll meanwhile.
+                # The lock keeps two taps from stopping and starting at once.
+                ok, message = await asyncio.to_thread(self._run_action, action[path])
                 print(f"[APP] {path[1:]}: {message}")
                 return self._json(connection, {"ok": ok, "message": message})
             return connection.respond(http.HTTPStatus.NOT_FOUND, "not found\n")
@@ -967,6 +1290,8 @@ class TeleopApp:
             ping_timeout=5,
         ):
             print(f"[APP] Teleop app ready. Bookmark this on the headset:\n[APP]     https://{host}:{self._port}/")
+            # Fetching the client can take a while; never hold the page for it.
+            threading.Thread(target=self._client.refresh_loop, daemon=True, name="webxr-client-cache").start()
             print(f"[APP] CloudXR client link it will hand out: {self.cloudxr_url()}")
             await asyncio.Future()  # run forever
 
@@ -989,8 +1314,18 @@ class TeleopApp:
     def _json(cls, connection, payload: dict):
         return cls._text(connection, json.dumps(payload), "application/json")
 
+    def _run_action(self, action: Callable[[], tuple[bool, str]]) -> tuple[bool, str]:
+        with self._action_lock:
+            return action()
+
     @staticmethod
-    def _binary(body: bytes, content_type: str):
+    def _json(connection, payload: dict):
+        r = connection.respond(http.HTTPStatus.OK, json.dumps(payload))
+        r.headers["Content-Type"] = "application/json"
+        return r
+
+    @staticmethod
+    def _binary(body: bytes, content_type: str, cache: str = "public, max-age=86400"):
         """Serve bytes, which ``connection.respond`` cannot do (it text-encodes)."""
         from websockets.datastructures import Headers
         from websockets.http11 import Response
@@ -998,7 +1333,7 @@ class TeleopApp:
         headers = Headers()
         headers["Content-Type"] = content_type
         headers["Content-Length"] = str(len(body))
-        headers["Cache-Control"] = "public, max-age=86400"
+        headers["Cache-Control"] = cache
         return Response(http.HTTPStatus.OK.value, "OK", headers, body)
 
 
