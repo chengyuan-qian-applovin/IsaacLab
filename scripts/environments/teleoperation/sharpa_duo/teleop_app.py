@@ -1037,7 +1037,9 @@ def _install_service(port: int, teleop_args: list[str]) -> None:
         workdir=os.path.dirname(_ISAACLAB_SH),
         script=os.path.abspath(__file__),
         port=port,
-        teleop_args=" ".join(f"--teleop-arg {shlex.quote(a)}" for a in teleop_args),
+        # "=" form: a forwarded flag such as "--device" would otherwise be read
+        # by argparse as an option of the app itself, not as the value.
+        teleop_args=" ".join(f"--teleop-arg={shlex.quote(a)}" for a in teleop_args),
     )
     with open(unit_path, "w") as f:
         f.write(body)
@@ -1062,7 +1064,8 @@ def main() -> None:
         metavar="ARG",
         help=(
             "Extra argument forwarded to make_teleop_scene.py, for flags the settings page does not cover;"
-            " repeat once per argument. Scenes, recording and the parameters on the page come from the saved"
+            " repeat once per argument and use the '=' form for flags, e.g. --teleop-arg=--device"
+            " --teleop-arg=cuda:1. Scenes, recording and the parameters on the page come from the saved"
             " settings, so do not pass --scene_list/--scene_usda/--record_dir here."
         ),
     )

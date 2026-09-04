@@ -383,7 +383,11 @@ function renderFleet() {
 // ---- parameters tab ----------------------------------------------------------
 function renderParams() {
   const host = $("param_groups");
-  if (host.dataset.built) { // already built: just refresh values
+  // Rebuild whenever the schema itself changes (a parameter added by an app
+  // update reaches a page that stayed open across the restart); otherwise only
+  // refresh the values so an input being edited is not torn down.
+  const built = JSON.stringify([state.schema.map(p => [p.flag, p.kind, p.choices, p.group]), state.hidden_params || []]);
+  if (host.dataset.built === built) { // already built: just refresh values
     for (const p of state.schema) {
       const el = document.getElementById("p:" + p.flag); if (!el || document.activeElement === el) continue;
       const v = settings.params[p.flag];
@@ -391,7 +395,8 @@ function renderParams() {
     }
     return;
   }
-  host.dataset.built = "1";
+  host.dataset.built = built;
+  host.innerHTML = "";
   const hidden = new Set(state.hidden_params || []);
   for (const group of state.groups) {
     const fs = document.createElement("fieldset");

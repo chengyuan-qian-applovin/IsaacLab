@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from dataclasses import dataclass
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -111,6 +112,25 @@ class Param:
         return self.kind.split(":", 1)[1].split(",") if self.kind.startswith("choice:") else None
 
 
+def _gpu_choices() -> list[str]:
+    """``cuda:N`` for every GPU ``nvidia-smi`` reports, so the UIs only offer devices that exist.
+
+    Falls back to ``cuda:0`` (the AppLauncher default) when nvidia-smi is missing.
+    """
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        ).stdout
+        indices = [int(line.strip()) for line in out.splitlines() if line.strip().isdigit()]
+    except (OSError, subprocess.TimeoutExpired):
+        indices = []
+    return [f"cuda:{i}" for i in indices] or ["cuda:0"]
+
+
 PARAMS: list[Param] = [
     Param("device", "Headset", "meta quest", "choice:meta quest,avp", "Operator & voice"),
     Param("--embodiment", "Robot embodiment", "yam_duo", "choice:franka_duo,yam_duo", "Operator & voice"),
@@ -134,6 +154,7 @@ PARAMS: list[Param] = [
     Param("--arm_visual", "Arm rendering", "transparent", "choice:transparent,hidden,normal", "Visuals"),
     Param("--visualize_hands", "Show tracked hand joints", False, "bool", "Visuals"),
     Param("--no_task_display", "Hide the task-description panel", False, "bool", "Visuals"),
+    Param("--device", "Simulation GPU", "cuda:0", "choice:" + ",".join(_gpu_choices()), "Advanced"),
     Param("--no_adjust", "Disable the adjust-object mode", False, "bool", "Advanced"),
     Param("--episode_length_s", "Episode timeout [s]", 300.0, "float", "Advanced"),
     Param("--render_frequency", "Render frequency [Hz]", 30.0, "float", "Advanced"),
