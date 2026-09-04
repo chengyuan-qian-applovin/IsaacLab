@@ -500,7 +500,7 @@ from isaaclab_physx.physics import PhysxCfg
 
 from duo_env import DuoEnvCfg
 from duo_robot import EMBODIMENTS
-from usda_scene import add_usda_scene
+from usda_scene import add_usda_scene, tracked_objects
 
 # The selected robot embodiment; per-embodiment placement defaults resolve here.
 SPEC = EMBODIMENTS[args_cli.embodiment]
@@ -1545,7 +1545,7 @@ def run_teleop(
     # kinematically by pinch-grabbing them. Spawn the panels + wire the
     # ObjectAdjuster only if the scene actually has tracked objects; otherwise
     # leave flow.adjuster None so the voice dispatcher explains the no-op.
-    tracked_names = [n.removeprefix("object_") for n in env.scene.rigid_objects.keys() if n.startswith("object_")]
+    tracked_names = list(tracked_objects(env).keys())
     if tracked_names and not args_cli.no_adjust:
         from adjust_mode import ObjectAdjuster
         from task_display import RangePanel
@@ -1824,7 +1824,7 @@ def run_adjust_smoke(env: ManagerBasedRLEnv, num_steps: int, scene_usda: str) ->
 
     env.reset()
     settle_scene(env)
-    tracked = [n.removeprefix("object_") for n in env.scene.rigid_objects.keys() if n.startswith("object_")]
+    tracked = list(tracked_objects(env).keys())
     if not tracked:
         print("[SMOKE-ADJUST] Scene has no tracked objects; nothing to validate.")
         return

@@ -7,11 +7,21 @@
 
 The USDA is referenced into the stage untouched at ``{ENV_REGEX_NS}/scene`` —
 whatever geometry, lights, materials, and physics it authors just work. On top
-of that, :func:`add_usda_scene` optionally discovers the file's rigid bodies
-and attaches one ``spawn=None`` :class:`~isaaclab.assets.RigidObjectCfg` stub
-per body, so Isaac Lab tracks them and ``reset_scene_to_default`` restores
-their authored poses on every env reset. Without the stubs the scene still
-loads and simulates; its objects just keep their state across resets.
+of that, :func:`add_usda_scene` optionally discovers the file's physics objects
+and attaches one ``spawn=None`` stub per object, so Isaac Lab tracks them and
+``reset_scene_to_default`` restores their authored state on every env reset:
+
+- a prim with ``ArticulationRootAPI`` (drawer, box with a lid, ...) gets an
+  :class:`~isaaclab.assets.ArticulationCfg` whose ``init_state.joint_pos`` is
+  read from the joints' authored ``JointStateAPI`` positions, so the reset also
+  puts every joint back where the file authored it;
+- any other topmost ``RigidBodyAPI`` prim gets a
+  :class:`~isaaclab.assets.RigidObjectCfg`.
+
+Without the stubs the scene still loads and simulates; its objects just keep
+their state across resets. Isaac Lab never reads default joint positions from
+the stage itself — only from the cfg — which is why the articulation stubs
+carry them explicitly.
 
 Requirements on the USDA:
 
@@ -30,7 +40,8 @@ import os
 import numpy as np
 import torch
 
-from isaaclab.assets import AssetBaseCfg, RigidObjectCfg
+from isaaclab.actuators import ImplicitActuatorCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import UsdFileCfg
 
@@ -213,17 +224,90 @@ def _object_support_points(prim, bbox_cache) -> np.ndarray:
     )
 
 
+def tracked_objects(env) -> dict[str, object]:
+    """The tracked scene objects, ``{name: asset}`` without the ``object_`` prefix.
+
+    Covers both kinds of stub :func:`add_usda_scene` registers — rigid objects
+    and articulations — so callers do not have to know which one a given
+    object is. Both asset types expose the root-pose/velocity API
+    (``data.root_pos_w``, ``write_root_pose_to_sim_index``, ...) used here.
+    """
+    out: dict[str, object] = {}
+    for coll in (env.scene.rigid_objects, env.scene.articulations):
+        for key, asset in coll.items():
+            if key.startswith("object_"):
+                out[key.removeprefix("object_")] = asset
+    return out
+
+
+def _articulation_root_link(art_prim, stage):
+    """The rigid link the physics engine treats as the articulation's root.
+
+    That is the ``RigidBodyAPI`` prim under ``art_prim`` (or ``art_prim`` itself)
+    that is never ``body1`` of a joint under it — the link every joint chain
+    hangs from. Falls back to the first rigid descendant in traversal order.
+    Returns None when the subtree has no rigid body at all.
+    """
+    from pxr import Usd, UsdPhysics
+
+    links = []
+    children = set()
+    for prim in Usd.PrimRange(art_prim, Usd.PrimAllPrimsPredicate):
+        if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            links.append(prim)
+        if prim.IsA(UsdPhysics.Joint):
+            joint = UsdPhysics.Joint(prim)
+            body0 = joint.GetBody0Rel().GetTargets()
+            body1 = joint.GetBody1Rel().GetTargets()
+            if body0 and body1:  # a joint to the world (empty body0) does not parent anything
+                children.add(body1[0])
+    if not links:
+        return None
+    for link in links:
+        if link.GetPath() not in children:
+            return link
+    return links[0]
+
+
+def _articulation_joint_positions(art_prim) -> dict[str, float]:
+    """Authored joint positions under ``art_prim``, ``{joint_prim_name: value}``.
+
+    Reads the ``PhysxSchema.JointStateAPI`` attributes — ``state:angular:physics:position``
+    [deg, converted to rad] for revolute joints and ``state:linear:physics:position``
+    [m] for prismatic ones — which is where USD stores a joint's initial
+    position. Joints without an authored state default to 0.0. Fixed and D6
+    joints are skipped (Isaac Lab names their DOFs differently, and they
+    usually carry no authored state).
+    """
+    import math
+
+    from pxr import Usd, UsdPhysics
+
+    joint_pos: dict[str, float] = {}
+    for prim in Usd.PrimRange(art_prim, Usd.PrimAllPrimsPredicate):
+        if prim.IsA(UsdPhysics.RevoluteJoint):
+            attr, scale = prim.GetAttribute("state:angular:physics:position"), math.pi / 180.0
+        elif prim.IsA(UsdPhysics.PrismaticJoint):
+            attr, scale = prim.GetAttribute("state:linear:physics:position"), 1.0
+        else:
+            continue
+        value = attr.Get() if attr and attr.HasAuthoredValue() else None
+        joint_pos[prim.GetName()] = float(value) * scale if value is not None else 0.0
+    return joint_pos
+
+
 def add_usda_scene(scene_cfg: InteractiveSceneCfg, usda_path: str, track_objects: bool = True) -> list[str]:
-    """Reference ``usda_path`` into the scene and optionally track its rigid bodies.
+    """Reference ``usda_path`` into the scene and optionally track its physics objects.
 
     Args:
         scene_cfg: The scene config instance to extend (attributes are added to it).
         usda_path: Path to the scene USD/USDA file (absolute, or relative to the cwd).
-        track_objects: Register a rigid-object stub per discovered rigid body so
-            env resets restore the authored poses.
+        track_objects: Register an articulation stub per ``ArticulationRootAPI``
+            prim and a rigid-object stub per other topmost rigid body, so env
+            resets restore the authored poses (and joint positions).
 
     Returns:
-        The names of the tracked rigid objects (empty when ``track_objects`` is off
+        The names of the tracked objects (empty when ``track_objects`` is off
         or the file authors none).
     """
     from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -257,16 +341,30 @@ def add_usda_scene(scene_cfg: InteractiveSceneCfg, usda_path: str, track_objects
     # in-headset "adjust object" mode writes it. Absent → the USDA is authoritative.
     overrides = load_pose_overrides(usda_path)
     bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_], useExtentsHint=True)
+    articulated: list[str] = []
     it = iter(Usd.PrimRange(root, Usd.PrimAllPrimsPredicate))
     for prim in it:
-        if prim == root or not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+        if prim == root:
             continue
-        # Only the topmost rigid prim of each subtree becomes a tracked object.
+        is_articulation = prim.HasAPI(UsdPhysics.ArticulationRootAPI)
+        if not is_articulation and not prim.HasAPI(UsdPhysics.RigidBodyAPI):
+            continue
+        # Only the topmost physics prim of each subtree becomes a tracked object:
+        # an articulation's links are part of it, never rigid objects of their own.
         it.PruneChildren()
         if prim.IsInstanceProxy():
-            print(f"[WARNING] {prim.GetPath()}: rigid body inside an instance; not tracking it.")
+            print(f"[WARNING] {prim.GetPath()}: physics object inside an instance; not tracking it.")
             continue
-        xform = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+        # Isaac Lab reports/writes an articulation's root pose on its ROOT LINK,
+        # so that link (not the ArticulationRootAPI Xform) is what init_state
+        # must describe.
+        pose_prim = prim
+        if is_articulation:
+            pose_prim = _articulation_root_link(prim, stage)
+            if pose_prim is None:
+                print(f"[WARNING] {prim.GetPath()}: ArticulationRootAPI without a rigid link; not tracking it.")
+                continue
+        xform = UsdGeom.Xformable(pose_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
         transform = Gf.Transform(xform)
         t = transform.GetTranslation()
         q = transform.GetRotation().GetQuat()  # Gf quaternion: real part w + imaginary (x, y, z)
@@ -296,25 +394,43 @@ def add_usda_scene(scene_cfg: InteractiveSceneCfg, usda_path: str, track_objects
         # (x, y, z, w) on this Isaac Lab release, while Gf stores w separately.
         pos = (float(t[0]), float(t[1]), float(t[2]))
         rot = (float(imag[0]), float(imag[1]), float(imag[2]), float(q.GetReal()))
-        if name in overrides:
-            ovr = overrides[name]
+        ovr = overrides.get(name, {})
+        if "pos" in ovr and "rot" in ovr:
             pos = tuple(float(v) for v in ovr["pos"])
             rot = tuple(float(v) for v in ovr["rot"])
-        setattr(
-            scene_cfg,
-            f"object_{name}",
-            RigidObjectCfg(
+        if is_articulation:
+            # Joint positions come from the authored JointStateAPI (Isaac Lab
+            # does not read them from the stage); the sidecar may override
+            # individual joints under "joint_pos".
+            joint_pos = _articulation_joint_positions(prim)
+            joint_pos.update({k: float(v) for k, v in (ovr.get("joint_pos") or {}).items()})
+            cfg = ArticulationCfg(
+                prim_path="{ENV_REGEX_NS}/scene" + rel_path,
+                spawn=None,
+                init_state=ArticulationCfg.InitialStateCfg(pos=pos, rot=rot, joint_pos=joint_pos or {".*": 0.0}),
+                # Passive object: keep whatever drive gains the USD authors
+                # (None = "use the USD value"), just so the articulation has an
+                # actuator group covering every joint, which the cfg requires.
+                actuators={"passive": ImplicitActuatorCfg(joint_names_expr=[".*"], stiffness=None, damping=None)},
+            )
+            articulated.append(name)
+        else:
+            cfg = RigidObjectCfg(
                 prim_path="{ENV_REGEX_NS}/scene" + rel_path,
                 spawn=None,
                 init_state=RigidObjectCfg.InitialStateCfg(pos=pos, rot=rot),
-            ),
-        )
+            )
+        setattr(scene_cfg, f"object_{name}", cfg)
         objects.append(name)
 
     if objects:
-        print(f"[INFO] scene '{os.path.basename(usda_path)}': tracking rigid objects {objects}")
+        rigid = [n for n in objects if n not in articulated]
+        print(
+            f"[INFO] scene '{os.path.basename(usda_path)}': tracking rigid objects {rigid}, articulated objects"
+            f" {articulated}"
+        )
     else:
-        print(f"[INFO] scene '{os.path.basename(usda_path)}': no rigid bodies found to track.")
+        print(f"[INFO] scene '{os.path.basename(usda_path)}': no physics objects found to track.")
     return objects
 
 
@@ -349,15 +465,16 @@ def randomize_tracked_objects(
     """
     from isaaclab.utils.math import quat_mul
 
-    names = [n for n in env.scene.rigid_objects.keys() if n.startswith("object_")]
+    assets = tracked_objects(env)  # rigid objects AND articulated ones
+    names = list(assets.keys())
     if len(names) == 0:
         return
     device = env.device
     base_pos = torch.stack(
-        [torch.tensor(env.scene[n].cfg.init_state.pos, dtype=torch.float32, device=device) for n in names]
+        [torch.tensor(assets[n].cfg.init_state.pos, dtype=torch.float32, device=device) for n in names]
     )
     base_rot = torch.stack(
-        [torch.tensor(env.scene[n].cfg.init_state.rot, dtype=torch.float32, device=device) for n in names]
+        [torch.tensor(assets[n].cfg.init_state.rot, dtype=torch.float32, device=device) for n in names]
     )
     if bias_toward is not None and bias_dist > 0.0:
         # Shift every randomization center toward the target point. Coincident
@@ -367,7 +484,7 @@ def randomize_tracked_objects(
         dist = to_target.norm(dim=-1, keepdim=True)
         direction = torch.where(dist > 1e-6, to_target / dist, torch.zeros_like(to_target))
         base_pos[:, :2] += direction * torch.clamp(dist, max=bias_dist)
-    radii = torch.tensor([FOOTPRINT_RADII.get(n.removeprefix("object_"), 0.05) + margin for n in names], device=device)
+    radii = torch.tensor([FOOTPRINT_RADII.get(n, 0.05) + margin for n in names], device=device)
 
     # Per-pair clearance requirement: the bounding-circle sum, but never MORE
     # than the (biased) layout already provides (some scenes author objects
@@ -413,7 +530,5 @@ def randomize_tracked_objects(
     origin = env.scene.env_origins[env_ids[0]]
     for i, name in enumerate(names):
         pose = torch.cat([positions[i] + origin, rots[i]]).unsqueeze(0)
-        env.scene[name].write_root_pose_to_sim_index(root_pose=pose, env_ids=env_ids)
-        env.scene[name].write_root_velocity_to_sim_index(
-            root_velocity=torch.zeros(1, 6, device=device), env_ids=env_ids
-        )
+        assets[name].write_root_pose_to_sim_index(root_pose=pose, env_ids=env_ids)
+        assets[name].write_root_velocity_to_sim_index(root_velocity=torch.zeros(1, 6, device=device), env_ids=env_ids)

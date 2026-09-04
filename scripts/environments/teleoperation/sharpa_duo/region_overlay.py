@@ -51,7 +51,9 @@ class RegionOverlay:
         from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
         self._env = env
-        self._names = [n for n in tracked_object_names if f"object_{n}" in env.scene.rigid_objects]
+        from usda_scene import tracked_objects
+
+        self._names = [n for n in tracked_object_names if n in tracked_objects(env)]
         self._visible = False
         self._markers = VisualizationMarkers(
             VisualizationMarkersCfg(

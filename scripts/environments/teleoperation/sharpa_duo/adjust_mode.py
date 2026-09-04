@@ -48,6 +48,7 @@ from collections.abc import Callable
 import numpy as np
 import torch
 from scipy.spatial.transform import Rotation as R
+from usda_scene import tracked_objects
 
 # OpenXR hand-joint indices in the 26-joint layout emitted by :mod:`xr_extras`.
 _THUMB_TIP = 5
@@ -322,7 +323,7 @@ class SceneGhoster:
         self._tracked_roots = set()
         for name in tracked_object_names:
             key = f"object_{name}"
-            if key in env.scene.rigid_objects:
+            if key in env.scene.rigid_objects or key in env.scene.articulations:
                 rel = env.scene[key].cfg.prim_path.split("/scene/", 1)[-1]
                 self._tracked_roots.add(rel.split("/", 1)[0])
         self._bound: list[str] = []
@@ -964,7 +965,7 @@ class ObjectAdjuster:
         """World-frame ``(position, quaternion xyzw)`` for every tracked object."""
         out: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         for name in self._names:
-            if f"object_{name}" not in self._env.scene.rigid_objects:
+            if name not in tracked_objects(self._env):
                 continue
             data = self._env.scene[f"object_{name}"].data
             out[name] = (
@@ -1003,7 +1004,7 @@ class ObjectAdjuster:
 
     def _zero_object_velocity(self, name: str) -> None:
         """Kill linear + angular velocity on ``name`` (used by :meth:`reset`)."""
-        if f"object_{name}" not in self._env.scene.rigid_objects:
+        if name not in tracked_objects(self._env):
             return
         self._env.scene[f"object_{name}"].write_root_velocity_to_sim_index(
             root_velocity=torch.zeros(1, 6, device=self._env.device), env_ids=self._env0

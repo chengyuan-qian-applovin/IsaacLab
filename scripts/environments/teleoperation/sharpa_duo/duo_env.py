@@ -53,7 +53,11 @@ class ObservationsCfg:
 
 @configclass
 class EventsCfg:
-    reset = EventTermCfg(func=reset_scene_to_default, mode="reset")
+    # reset_joint_targets: an articulated scene object whose USD authors a stiff
+    # drive would otherwise spring back to its pre-reset target right after the
+    # joints were written to their authored positions. For the robot it just
+    # re-arms the drives at the default pose the IK action overwrites next step.
+    reset = EventTermCfg(func=reset_scene_to_default, mode="reset", params={"reset_joint_targets": True})
 
 
 @configclass
